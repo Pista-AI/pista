@@ -129,7 +129,7 @@ function pageFillMarkOption(target: string, want: string, attr: string): { label
 }
 
 // Same wrapper as page-scripts.ts: tsx/esbuild wraps nested functions in __name(), which the page does not have.
-const inPage = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
+export const inPage = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
   `(() => { const __name = (f) => f; return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
 
 const probeScript = (target: string, readValue = false) => inPage(pageFillProbe, target, readValue);

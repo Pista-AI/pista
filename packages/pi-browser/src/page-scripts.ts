@@ -361,9 +361,12 @@ function pageSnapshot(maxElements: number, includeText: boolean, cutTemplate: st
       if (href) {
         try {
           const u = new URL(href, location.href);
-          // Only web and file links get a destination; javascript:, vbscript:, data: and friends would show script text as a path.
-          if (!["http:", "https:", "file:"].includes(u.protocol)) throw new Error("not a web link");
-          parts.push(`→ ${u.origin === location.origin ? u.pathname + u.search : u.host + u.pathname}`.slice(0, 90));
+          // Web and file links show a path, mailto:/tel: show scheme plus address; javascript:, vbscript:, data: and blob: get none.
+          if (u.protocol === "mailto:" || u.protocol === "tel:") {
+            parts.push(`→ ${u.protocol}${decodeURIComponent(u.pathname)}`.slice(0, 90));
+          } else if (["http:", "https:", "file:"].includes(u.protocol)) {
+            parts.push(`→ ${u.origin === location.origin ? u.pathname + u.search : u.host + u.pathname}`.slice(0, 90));
+          }
         } catch {
           /* unparsable href */
         }
