@@ -5,14 +5,70 @@ import { DEFAULT_OIDC_SCOPES } from "./policy-sso.ts";
 import { EXPOSURES, fromRaw, validateServers } from "./mcp-entries.ts";
 import { mcpKey } from "./policy-access.ts";
 import { parseMcpRule } from "./policy-tools.ts";
+import { compareVersions, parseVersion } from "./semver.ts";
+import { normalizeDomainPattern } from "@pista/pi-browser/domains";
+import { auditSection } from "./audit-policy.ts";
+import { isRecord, looksLikeSecret } from "./secrets.ts";
+import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
+
+export type PolicySourceKind = "env-file" | "mdm" | "file" | "url";
+
+/** Where a signed policy bundle is fetched from (the `policySource` block, or PISTA_POLICY_URL). */
+export interface RemoteSource {
+  url: string;
+  publicKey?: string;
+  publicKeyFile?: string;
+  refreshMinutes: number;
+}
+
+export const DEFAULT_REFRESH_MINUTES = 60;
+const MIN_REFRESH_MINUTES = 15;
+export const MAX_REFRESH_MINUTES = 10080;
+
+/** https only; plain http just for loopback (tests). */
+export function validPolicyUrl(text: string): boolean {
+  try {
+    const u = new URL(text);
+    if (u.protocol === "https:") return true;
+    return u.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Validates the `policySource` block; every problem is pushed to `problems` (a policy that points at a URL must not be ignored silently). */
+export function policySourceSection(raw: unknown, problems: string[]): RemoteSource | undefined {
+  const before = problems.length;
+  const text = (what: string): KeyCheck<Partial<RemoteSource>> => (v) => (typeof v === "string" && v.trim() ? undefined : what);
+  const out = strictBlock<Partial<RemoteSource>>(raw, "policySource", problems, {
+    url: (v, o) => (typeof v === "string" && validPolicyUrl(v) ? void (o.url = v) : "must be an https URL (http only for localhost)"),
+    publicKey: (v, o) => text("must be a PEM string")(v, o) ?? void (o.publicKey = v as string),
+    publicKeyFile: (v, o) => text("must be a path")(v, o) ?? void (o.publicKeyFile = v as string),
+    refreshMinutes: (v, o) => (intIn(v, 1, MAX_REFRESH_MINUTES) ? void (o.refreshMinutes = Math.max(MIN_REFRESH_MINUTES, v)) : `must be an integer from 1 to ${MAX_REFRESH_MINUTES}`),
+  });
+  if (isRecord(raw)) {
+    if (raw.url === undefined) problems.push("policySource.url must be an https URL (http only for localhost)");
+    if ((raw.publicKey === undefined) === (raw.publicKeyFile === undefined)) problems.push("policySource needs exactly one of publicKey and publicKeyFile");
+  }
+  if (problems.length > before) return undefined;
+  return { ...out, refreshMinutes: out.refreshMinutes ?? DEFAULT_REFRESH_MINUTES } as RemoteSource;
+}
 
 export interface LoadedPolicy {
   policy: ManagedPolicy | null;
   /** Path the policy was read from; null when there is none. */
   source: string | null;
+  /** Which of the three places the policy came from; null when none was found. */
+  sourceKind: PolicySourceKind | null;
   warnings: string[];
   /** True when the policy's MCP part cannot be trusted: the file failed to load, or the `mcp` section is malformed. The host then leaves what it installed earlier in place. */
   mcpUntrusted?: boolean;
+  /** Set when the host must not start: the policy file exists but is broken, or `PISTA_REQUIRE_POLICY=1` and there is none. */
+  failure?: string;
+  /** True when `failure` is only "PISTA_REQUIRE_POLICY=1 but no policy found"; a remote source from the environment may still satisfy it. */
+  missing?: boolean;
+  /** The `policySource` block, when the policy names a URL to fetch the real policy from. */
+  remote?: RemoteSource;
 }
 
 /** File access, injectable so tests need no real files. `read` throws like readFileSync. */
@@ -60,7 +116,6 @@ const ENUMS: Partial<Record<keyof HostConfig, readonly string[]>> = {
 const ROLES = ["explorer", "implementer", "reviewer"];
 const SERVER_KINDS = ["lmstudio", "ollama", "llamacpp", "openai"];
 
-const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const isModelRef = (value: unknown): boolean => isRecord(value) && typeof value.provider === "string" && typeof value.id === "string";
 const isServer = (value: unknown): boolean =>
   isRecord(value) && typeof value.id === "string" && typeof value.name === "string" && typeof value.baseUrl === "string" && SERVER_KINDS.includes(value.kind as string);
@@ -103,7 +158,6 @@ function cleanBaseUrl(raw: string): string | null {
 }
 
 /** A long value without an environment reference is probably a secret that belongs in an environment variable. Paths and URLs are not. */
-const looksLikeSecret = (value: string) => value.length > 40 && !/^(\/|\.\/|~|https?:)/.test(value) && !/\$\{?[A-Za-z_]/.test(value);
 
 /** Validates a gateway's `auth` block; a string is the reason it is unusable. Scopes are returned with the defaults merged in. */
 function oidcAuth(raw: unknown, warnings: string[], at: string): NonNullable<PolicyGateway["auth"]> | string {
@@ -399,12 +453,105 @@ function toolsSection(raw: unknown, warnings: string[]): NonNullable<ManagedPoli
   return out;
 }
 
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((x) => typeof x === "string" && x.trim() !== "");
+const intIn = (value: unknown, min: number, max: number): value is number => typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+const BAD_STRINGS = "must be an array of non-empty strings";
+const BAD_BOOLEAN = "must be a boolean";
+
+/** A per-key check for a strict block: stores a valid value in `out` and returns undefined, or returns the problem text that follows "<block>.<key> ". */
+type KeyCheck<T> = (value: unknown, out: T) => string | undefined;
+
+/** Shared shell of the strict policy blocks: a non-object or an unknown key is a problem, each known key goes to its check. Strict blocks stop the host on any problem (a dropped value would silently widen a policy). */
+export function strictBlock<T extends object>(raw: unknown, name: string, problems: string[], checks: Record<string, KeyCheck<T>>): T {
+  const out = {} as T;
+  if (!isRecord(raw)) {
+    problems.push(`"${name}" must be an object`);
+    return out;
+  }
+  for (const [key, value] of Object.entries(raw)) {
+    const check = Object.hasOwn(checks, key) ? checks[key] : undefined;
+    if (!check) problems.push(`${name}.${key}: unknown setting`);
+    else {
+      const bad = check(value, out);
+      if (bad) problems.push(`${name}.${key}${bad.startsWith(":") ? "" : " "}${bad}`);
+    }
+  }
+  return out;
+}
+
+const boolKey = <T extends object>(key: keyof T & string): KeyCheck<T> => (v, out) => (typeof v === "boolean" ? void ((out as Record<string, unknown>)[key] = v) : BAD_BOOLEAN);
+
+/** Validates `network`. A bad value stops the host: a dropped proxy or CA would silently send traffic the admin meant to route elsewhere. */
+function networkSection(raw: unknown, problems: string[]): NonNullable<ManagedPolicy["network"]> {
+  type N = NonNullable<ManagedPolicy["network"]>;
+  const list = (key: "noProxy" | "caCertFiles"): KeyCheck<N> => (v, out) => (strings(v) ? void (out[key] = v) : BAD_STRINGS);
+  return strictBlock<N>(raw, "network", problems, {
+    proxy: (v, out) => {
+      let ok = false;
+      try {
+        ok = typeof v === "string" && ["http:", "https:"].includes(new URL(v).protocol);
+      } catch {}
+      return ok ? void (out.proxy = v as string) : "must be an http(s) URL";
+    },
+    noProxy: list("noProxy"),
+    caCertFiles: list("caCertFiles"),
+    useSystemCa: boolKey<N>("useSystemCa"),
+  });
+}
+
+function telemetrySection(raw: unknown, problems: string[]): NonNullable<ManagedPolicy["telemetry"]> {
+  type T = NonNullable<ManagedPolicy["telemetry"]>;
+  return strictBlock<T>(raw, "telemetry", problems, { piTelemetry: boolKey<T>("piTelemetry"), versionCheck: boolKey<T>("versionCheck") });
+}
+
+/** Validates `browser`; fail-closed like `network`: a dropped entry would widen an allowlist or lift a block. */
+function browserSection(raw: unknown, problems: string[], warnings: string[]): NonNullable<ManagedPolicy["browser"]> {
+  type B = NonNullable<ManagedPolicy["browser"]>;
+  const domains = (key: "allowedDomains" | "deniedDomains"): KeyCheck<B> => (value, out) => {
+    if (!strings(value)) return BAD_STRINGS;
+    const bad = value.filter((v) => normalizeDomainPattern(v) === null);
+    if (bad.length) return `: ${bad.map((b) => JSON.stringify(b)).join(", ")} must be a host like "example.com" or "*.example.com" (no scheme, port, path or regex)`;
+    out[key] = [...new Set(value.map((v) => normalizeDomainPattern(v)!))];
+    for (const p of out[key]!) if (/^\*\.[^.]+$/.test(p)) warnings.push(`browser.${key}: "${p}" covers a whole top-level domain`);
+    return undefined;
+  };
+  return strictBlock<B>(raw, "browser", problems, { allowedDomains: domains("allowedDomains"), deniedDomains: domains("deniedDomains") });
+}
+
+/** Validates `retention`; fail-closed like `network`. Days are whole numbers from 1 to 3650. */
+function retentionSection(raw: unknown, problems: string[]): NonNullable<ManagedPolicy["retention"]> {
+  type R = NonNullable<ManagedPolicy["retention"]>;
+  const days = (key: "sessionDays" | "traceDays"): KeyCheck<R> => (v, out) => (intIn(v, 1, 3650) ? void (out[key] = v) : "must be an integer from 1 to 3650");
+  return strictBlock<R>(raw, "retention", problems, { sessionDays: days("sessionDays"), traceDays: days("traceDays"), purgeOnStartup: boolKey<R>("purgeOnStartup") });
+}
+
+/** Validates `updates`; fail-closed like `network`. Versions must be strict semver without a leading "v". */
+function updatesSection(raw: unknown, problems: string[]): NonNullable<ManagedPolicy["updates"]> {
+  type U = NonNullable<ManagedPolicy["updates"]>;
+  const version = (key: "minimumVersion" | "maximumVersion"): KeyCheck<U> => (v, out) => (typeof v === "string" && parseVersion(v) ? void (out[key] = v) : 'must be a semver version like 1.2.3 (no leading "v")');
+  const out = strictBlock<U>(raw, "updates", problems, {
+    enabled: boolKey<U>("enabled"),
+    channel: (v, o) => (v === "stable" || v === "beta" ? void (o.channel = v) : 'must be "stable" or "beta"'),
+    feedUrl: (v, o) => {
+      const clean = typeof v === "string" ? cleanBaseUrl(v) : null;
+      return clean ? void (o.feedUrl = clean) : "must be an https URL (http only for localhost) without credentials, query or fragment";
+    },
+    minimumVersion: version("minimumVersion"),
+    maximumVersion: version("maximumVersion"),
+    enforcementHours: (v, o) => (intIn(v, 1, 720) ? void (o.enforcementHours = v) : "must be an integer from 1 to 720"),
+  });
+  const min = out.minimumVersion ? parseVersion(out.minimumVersion) : null;
+  const max = out.maximumVersion ? parseVersion(out.maximumVersion) : null;
+  if (min && max && compareVersions(min, max) > 0) problems.push("updates.minimumVersion must not be greater than updates.maximumVersion");
+  return out;
+}
+
 /** Policy file candidates in precedence order: the env override alone, else the platform's location. */
-function candidates(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): { paths: string[]; explicit: boolean } {
-  if (env.PISTA_POLICY_FILE) return { paths: [env.PISTA_POLICY_FILE], explicit: true };
-  if (platform === "darwin") return { paths: ["/Library/Application Support/Pista/managed-policy.json"], explicit: false };
-  if (platform === "win32") return { paths: env.ProgramData ? [win32.join(env.ProgramData, "Pista", "managed-policy.json")] : [], explicit: false };
-  return { paths: [posix.join("/etc/pista", "managed-policy.json")], explicit: false };
+export function candidates(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): { paths: string[]; explicit: boolean; kind: "env-file" | "file" } {
+  if (env.PISTA_POLICY_FILE) return { paths: [env.PISTA_POLICY_FILE], explicit: true, kind: "env-file" };
+  if (platform === "darwin") return { paths: ["/Library/Application Support/Pista/managed-policy.json"], explicit: false, kind: "file" };
+  if (platform === "win32") return { paths: env.ProgramData ? [win32.join(env.ProgramData, "Pista", "managed-policy.json")] : [], explicit: false, kind: "file" };
+  return { paths: [posix.join("/etc/pista", "managed-policy.json")], explicit: false, kind: "file" };
 }
 
 /** Validates one `locked`/`defaults` section, returning only the usable keys. */
@@ -433,33 +580,51 @@ function section(raw: unknown, name: string, warnings: string[]): Partial<HostCo
   return out as Partial<HostConfig>;
 }
 
-/** Reads the managed policy; never throws and never writes. Problems come back as warnings and the file is then ignored or trimmed. */
-export function loadManagedPolicy(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, io: PolicyIo = realIo): LoadedPolicy {
+/** Reads the managed policy; never throws and never writes. Problems come back as warnings and the file is then ignored or trimmed.
+ * One source is used, first found wins: PISTA_POLICY_FILE, then MDM (macOS managed preferences, Windows HKLM), then the platform file. */
+export function loadManagedPolicy(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, io: PolicyIo = realIo, mdm: { run?: CommandRunner; lstat?: LstatFn } = {}): LoadedPolicy {
   const warnings: string[] = [];
-  const { paths, explicit } = candidates(env, platform);
+  const { paths, explicit, kind } = candidates(env, platform);
   // A relative PISTA_POLICY_FILE is resolved against the working directory; symlinks are followed so the log names the real file.
-  const found = paths.map((path) => (explicit ? resolve(path) : path)).find((path) => io.exists(path)) ?? null;
-  if (!found) {
-    if (explicit) warnings.push(`PISTA_POLICY_FILE ${resolve(paths[0]!)} does not exist, no policy applied`);
-    return { policy: null, source: null, warnings, ...(explicit ? { mcpUntrusted: true } : {}) };
+  const resolved = paths.map((path) => (explicit ? resolve(path) : path));
+  if (!explicit) {
+    const m = readMdmPolicy(platform, env, mdm.run, mdm.lstat);
+    if (m.kind === "error") return { policy: null, source: m.source, sourceKind: "mdm", warnings, mcpUntrusted: true, failure: `${m.source}: cannot read policy (${m.message})` };
+    if (m.kind === "ok") return parsePolicy(m.text, m.source, "mdm", warnings);
+    if (m.warnings) warnings.push(...m.warnings);
   }
-  let source = found;
-  let parsed: unknown;
+  const file = resolved.find((path) => io.exists(path)) ?? null;
+  if (!file) {
+    if (explicit) warnings.push(`PISTA_POLICY_FILE ${resolve(paths[0]!)} does not exist, no policy applied`);
+    const failure = env.PISTA_REQUIRE_POLICY === "1" ? `PISTA_REQUIRE_POLICY=1 but no managed policy was found (${[...(explicit ? [] : ["MDM"]), ...resolved].join(", ") || "no location for this platform"})` : undefined;
+    return { policy: null, source: null, sourceKind: null, warnings, ...(explicit ? { mcpUntrusted: true } : {}), ...(failure ? { failure, ...(explicit ? {} : { missing: true }) } : {}) };
+  }
+    let source = file;
+  let text: string;
   try {
-    source = io.realpath?.(found) ?? found;
+    source = io.realpath?.(file) ?? file;
     const mode = platform === "win32" ? null : io.mode?.(source) ?? null;
     if (mode !== null && (mode & 0o022) !== 0) warnings.push(`${source}: writable by group or others, anyone who can edit it can change the policy`);
-    parsed = JSON.parse(io.read(source));
+    text = io.read(source);
   } catch (error) {
-    warnings.push(`${source}: cannot read policy (${(error as Error).message}), no policy applied`);
-    return { policy: null, source: null, warnings, mcpUntrusted: true };
+    return { policy: null, source: null, sourceKind: null, warnings, mcpUntrusted: true, failure: `${source}: cannot read policy (${(error as Error).message})` };
   }
-  if (kindOf(parsed) !== "object" || (parsed as { version?: unknown }).version !== 1) {
-    warnings.push(`${source}: "version" must be 1, no policy applied`);
-    return { policy: null, source: null, warnings, mcpUntrusted: true };
+  return parsePolicy(text, source, kind, warnings);
+}
+
+/** Parses and validates policy text, whichever source it came from. */
+export function parsePolicy(text: string, source: string, sourceKind: PolicySourceKind, warnings: string[]): LoadedPolicy {
+  // A broken file reports no source (policy check then names the file it tried); a broken MDM policy keeps its source, there is no path to fall back on.
+  const fail = (failure: string): LoadedPolicy => ({ policy: null, source: sourceKind === "mdm" ? source : null, sourceKind: sourceKind === "mdm" ? "mdm" : null, warnings, mcpUntrusted: true, failure });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return fail(`invalid JSON in ${source}`); // the parser's message can echo policy content, so it is not reported
   }
+  if (kindOf(parsed) !== "object" || (parsed as { version?: unknown }).version !== 1) return fail(`${source}: "version" must be 1`);
   const file = parsed as Record<string, unknown>;
-  for (const key of Object.keys(file)) if (!["version", "locked", "defaults", "providers", "models", "mcp", "extensions", "tools"].includes(key)) warnings.push(`${key}: unknown top-level key, ignored`);
+  for (const key of Object.keys(file)) if (!["version", "locked", "defaults", "providers", "models", "mcp", "extensions", "tools", "network", "telemetry", "browser", "updates", "audit", "retention", "policySource"].includes(key)) warnings.push(`${key}: unknown top-level key, ignored`);
   const policy: ManagedPolicy = { version: 1, locked: section(file.locked, "locked", warnings), defaults: section(file.defaults, "defaults", warnings) };
   if (file.providers !== undefined) {
     const section = providers(file.providers, warnings);
@@ -473,12 +638,21 @@ export function loadManagedPolicy(env: NodeJS.ProcessEnv = process.env, platform
     const untrusted = { value: false };
     const section = mcpSection(file.mcp, warnings, untrusted);
     if (section) policy.mcp = section;
-    if (untrusted.value) return { policy, source, warnings, mcpUntrusted: true };
+    if (untrusted.value) return { policy, source, sourceKind, warnings, mcpUntrusted: true };
   }
   if (file.extensions !== undefined) {
     const section = extensionsSection(file.extensions, warnings);
     if (section) policy.extensions = section;
   }
   if (file.tools !== undefined) policy.tools = toolsSection(file.tools, warnings);
-  return { policy, source, warnings };
+  const problems: string[] = [];
+  if (file.network !== undefined) policy.network = networkSection(file.network, problems);
+  if (file.telemetry !== undefined) policy.telemetry = telemetrySection(file.telemetry, problems);
+  if (file.browser !== undefined) policy.browser = browserSection(file.browser, problems, warnings);
+  if (file.updates !== undefined) policy.updates = updatesSection(file.updates, problems);
+  if (file.audit !== undefined) policy.audit = auditSection(file.audit, problems, warnings);
+  if (file.retention !== undefined) policy.retention = retentionSection(file.retention, problems);
+  const remote = file.policySource === undefined ? undefined : policySourceSection(file.policySource, problems);
+  if (problems.length) return fail(`${source}: ${problems.join("; ")}`);
+  return { policy, source, sourceKind, warnings, ...(remote ? { remote } : {}) };
 }

@@ -1,5 +1,8 @@
-// Sets PI_CODING_AGENT_DIR before any Pi code runs; keep it first.
+// The CLI runs first and exits for `policy check`, so that command touches no state (no PISTA_HOME writes, no stdout noise).
+import "./cli.ts";
+// Sets PI_CODING_AGENT_DIR before any Pi code runs; keep it right after the CLI.
 import "./pi-env.ts";
+import { loadedPolicy } from "./policy-boot.ts";
 import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
@@ -14,21 +17,24 @@ import {
   type MethodName,
   type Methods,
 } from "@pista/protocol";
-import { cancelLogin, forgetSubject, listModels, listProviders, login } from "./auth.ts";
-import { CLIENT_DIR, ConfigStore } from "./config.ts";
-import { extensionsSummary, loadManagedPolicy } from "./policy.ts";
+import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
+import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
+import { extensionsSummary } from "./policy.ts";
 import { describeMcp } from "./policy-mcp.ts";
 import { accessSummary, assertProviderAllowed, unknownAllowedProviders } from "./policy-access.ts";
+import { createAudit } from "./audit.ts";
 import { Hub } from "./hub.ts";
 import { ThreadManager } from "./threads.ts";
+import { startRetention } from "./retention.ts";
 import { detectLocalServers, ensureServerRunning, localPreparer, prepareWith, registerLocalServer } from "./local.ts";
 import { registerNebiusProvider } from "./nebius.ts";
 import { registerPolicyGateways } from "./policy-providers.ts";
 import { readMemory } from "./memory.ts";
 import { createLlama } from "./llama.ts";
+import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
 import { activeBrowserDriverConfig, describeBrowserDriver } from "./browser-driver.ts";
 
-const VERSION = "0.1.0";
+const VERSION = resolveAppVersion(process.env, (message) => console.warn(`[pista-host] ${message}`));
 const PORT = Number(process.env.PISTA_HOST_PORT ?? DEFAULT_HOST_PORT);
 const here = dirname(fileURLToPath(import.meta.url));
 const UI_DIR = process.env.PISTA_UI_DIR ?? resolve(here, "../../ui/dist");
@@ -66,7 +72,6 @@ try {
   process.exit(1);
 }
 
-const loadedPolicy = loadManagedPolicy();
 const store = new ConfigStore(loadedPolicy);
 console.log(
   store.policySource
@@ -87,7 +92,14 @@ const gatewayResult = registerPolicyGateways(
 );
 for (const warning of [...gatewayResult.warnings, ...unknownAllowedProviders(loadedPolicy.policy, models.getProviders().map((provider) => provider.id))]) console.warn(`[pista-host] managed policy: ${warning}`);
 const llama = createLlama({ hub, store, models, reloadIdle: () => threads.reloadIdle() });
-const threads = new ThreadManager(store, hub, models, prepareWith([localPreparer(store, hub), llama.prepare]));
+// policy-boot.ts (imported first) has already installed the proxy/CA dispatcher the exporter's fetch relies on.
+const versionGate = evaluateVersionGate(VERSION, loadedPolicy.policy?.updates);
+const updates = updatesSummary(loadedPolicy.policy?.updates, process.env);
+if (versionGate.status !== "ok") console.error(`[pista-host] ${gateMessage(versionGate)} The host stays up in blocked mode: agent work is refused.`);
+const audit = createAudit(loadedPolicy.policy, { version: VERSION, subject: currentSubject });
+if (loadedPolicy.policy?.audit) console.log(`[pista-host] audit export: OTLP/HTTP to ${new URL(loadedPolicy.policy.audit.otlpEndpoint).origin}`);
+const threads = new ThreadManager(store, hub, models, prepareWith([localPreparer(store, hub), llama.prepare]), undefined, audit);
+startRetention(loadedPolicy.policy?.retention, { purgeThreads: (cutoff, stats) => threads.purgeThreads(cutoff, join(piAgentDir(), "sessions"), stats) }, CLIENT_DIR, audit);
 
 llama.start();
 
@@ -103,12 +115,16 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     homeDir: homedir(),
     config: store.config,
     policy: store.policy,
+    policySource: store.policySource,
+    versionGate,
+    updates,
+    configSources: store.sources(),
     projects: store.projects,
   }),
   "config.set": async ({ patch }) => {
     store.assertUnlocked(patch);
     const config = store.patchConfig(patch, { userSet: true });
-    hub.emit({ type: "config.changed", config });
+    hub.emit({ type: "config.changed", config, configSources: store.sources() });
     if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.maxOutputTokens !== undefined) await threads.reloadIdle();
     return config;
   },
@@ -120,6 +136,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
   },
   "projects.setTrusted": async ({ projectId, trusted }) => {
     const project = store.setProjectTrusted(projectId, trusted);
+    threads.auditTrust(projectId, trusted, "set by user", "user", true);
     hub.emit({ type: "projects.changed", projects: store.projects });
     // Busy threads keep their current trust until they are next rebuilt.
     await threads.reloadIdle(projectId);
@@ -165,13 +182,13 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     assertProviderAllowed(store.managedPolicy, id);
     const config = store.patchConfig({ localServers: [...store.config.localServers.filter((s) => s.id !== id), server] }, { userSet: true });
     await registerLocalServer(models, server);
-    hub.emit({ type: "config.changed", config });
+    hub.emit({ type: "config.changed", config, configSources: store.sources() });
   },
   "local.remove": ({ id }) => {
     store.assertUnlocked({ localServers: [] });
     models.unregisterProvider(id);
     const config = store.patchConfig({ localServers: store.config.localServers.filter((s) => s.id !== id) }, { userSet: true });
-    hub.emit({ type: "config.changed", config });
+    hub.emit({ type: "config.changed", config, configSources: store.sources() });
   },
   ...llama.handlers,
   "auth.providers": () => listProviders(models, store.managedPolicy),
@@ -238,7 +255,7 @@ const MIME: Record<string, string> = {
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/health") {
-    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, version: VERSION }));
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, version: VERSION, versionGate, updates }));
     return;
   }
   if (!existsSync(UI_DIR)) {
@@ -276,6 +293,8 @@ wss.on("connection", (ws) => {
     if (frame.method === "host.hello") hub.describe(ws, (frame.params as Methods["host.hello"]["params"]).client);
     const handler = handlers[frame.method] as Handler<MethodName> | undefined;
     if (!handler) return reply({ kind: "res", id: frame.id, ok: false, error: `Unknown method ${frame.method}` });
+    const blocked = blockedReason(versionGate, frame.method); // blocked mode: the one place agent work is refused
+    if (blocked) return reply({ kind: "res", id: frame.id, ok: false, error: blocked });
     try {
       const result = await handler(frame.params as never);
       reply({ kind: "res", id: frame.id, ok: true, result: result ?? null });
@@ -293,7 +312,9 @@ const shutdown = () => {
   threads.dispose();
   llama.stop();
   server.close();
-  process.exit(0);
+  // Give the final audit flush a moment; the exporter has its own timeout.
+  void audit.dispose().finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 6000).unref();
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

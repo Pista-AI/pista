@@ -14,6 +14,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
+import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
 
 const DEV_URL = process.env.PISTA_DEV_URL;
 const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
@@ -84,19 +85,77 @@ async function startHost(): Promise<string> {
       PISTA_HOST_PORT: String(port),
       PISTA_UI_DIR: path.join(resources, "ui"),
       PISTA_PARENT_PID: String(process.pid),
+      PISTA_APP_VERSION: app.getVersion(),
       ...llamaEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
   hostProcess.stdout?.pipe(log);
   hostProcess.stderr?.pipe(log);
+  // The host's last stderr line is its fatal reason (for example a broken managed policy); show it in the error box.
+  let lastError = "";
+  hostProcess.stderr?.on("data", (chunk: Buffer) => {
+    const line = chunk.toString().trim().split("\n").filter(Boolean).pop();
+    if (line) lastError = line.slice(0, 500);
+  });
   hostProcess.on("exit", (code) => {
-    if (code && !quitting) dialog.showErrorBox("Pista agent host stopped", `Exit code ${code}. See ${path.join(CLIENT_HOME, "host.log")}.`);
+    if (code && !quitting) dialog.showErrorBox("Pista agent host stopped", `${lastError ? `${lastError}\n\n` : ""}Exit code ${code}. See ${path.join(CLIENT_HOME, "host.log")}.`);
   });
 
   const url = `http://127.0.0.1:${port}`;
   await waitFor(`${url}/health`, 20_000);
   return url;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update (packaged macOS builds only; policy in docs/ENTERPRISE.md)
+// ---------------------------------------------------------------------------
+
+async function startUpdater(hostUrl: string) {
+  const log = (msg: string) => console.log(`[updater] ${msg}`);
+  try {
+    const health = parseHealth(await (await fetch(`${hostUrl}/health`, { signal: AbortSignal.timeout(5000) })).json());
+    const config = resolveUpdaterConfig({
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      hasAppUpdateYml: app.isPackaged && existsSync(path.join(process.resourcesPath, "app-update.yml")),
+      summary: health.summary,
+      gate: health.gate,
+    });
+    if (!config.enabled) return log(`off: ${config.reason}`);
+    // Loaded lazily so dev, unpackaged and disabled runs never touch electron-updater.
+    const { autoUpdater } = require("electron-updater") as { autoUpdater: UpdaterLike & { logger: unknown } };
+    autoUpdater.logger = { info: log, warn: log, error: log, debug: () => {} };
+    const show = (options: Electron.MessageBoxOptions) => (mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options));
+    new UpdateController({
+      updater: autoUpdater,
+      timers: {
+        now: () => Date.now(),
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        setInterval: (fn, ms) => setInterval(fn, ms),
+        unref: (h) => (h as NodeJS.Timeout).unref(),
+      },
+      log,
+      prompt: {
+        async askRestart({ version }) {
+          const { response } = await show({ type: "info", message: `Pista ${version ?? ""} is ready to install`.replace("  ", " "), detail: "Restart Pista to finish updating.", buttons: ["Restart now", "Later"], defaultId: 0, cancelId: 1 });
+          return response === 0 ? "now" : "later";
+        },
+        async forceRestart({ version }, seconds) {
+          // The button or the countdown, whichever comes first; the controller installs once either way.
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, seconds * 1000);
+            void show({ type: "info", message: `Pista ${version ?? ""} must be installed`.replace("  ", " "), detail: `Pista restarts automatically in ${seconds} seconds, as required by your organisation.`, buttons: ["Restart now"], defaultId: 0 }).then(() => {
+              clearTimeout(timer);
+              resolve();
+            });
+          });
+        },
+      },
+    }).start(config);
+  } catch (error) {
+    log(`not started: ${(error as Error).message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +321,7 @@ function registerBrowserIpc(pane: BrowserPane) {
 
 async function createWindow() {
   const uiUrl = DEV_URL ?? (await startHost());
+  if (!DEV_URL) void startUpdater(uiUrl);
   if (DEV_URL) await waitFor(DEV_URL, 60_000);
 
   const win = new BrowserWindow({

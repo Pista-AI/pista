@@ -23,6 +23,7 @@ class HostClient {
   private pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private listeners = new Set<Listener>();
   private statusListeners = new Set<StatusListener>();
+  private blockedListeners = new Set<(message: string) => void>();
   private queue: string[] = [];
   private retry = 0;
   connected = false;
@@ -45,7 +46,10 @@ class HostClient {
       if (!p) return;
       this.pending.delete(frame.id);
       if (frame.ok) p.resolve(frame.result);
-      else p.reject(new Error(frame.error));
+      else {
+        if (frame.error.startsWith("version_blocked:")) for (const l of this.blockedListeners) l(frame.error.slice("version_blocked:".length).trim());
+        p.reject(new Error(frame.error));
+      }
     };
     ws.onclose = () => {
       this.setConnected(false);
@@ -69,6 +73,12 @@ class HostClient {
   on(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Fires when the host refuses agent work because the app version is outside the managed range. */
+  onVersionBlocked(listener: (message: string) => void): () => void {
+    this.blockedListeners.add(listener);
+    return () => this.blockedListeners.delete(listener);
   }
 
   onStatus(listener: StatusListener): () => void {

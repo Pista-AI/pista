@@ -20,6 +20,8 @@ import type {
   ThreadSnapshot,
   ThreadSummary,
 } from "@pista/protocol";
+import { type AuditSink, auditHash, noopAudit } from "./audit.ts";
+import { emitPrompt, emitUsage, scopeAudit, ToolAudit } from "./audit-events.ts";
 import { type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import { DecisionLog } from "./decisions.ts";
 import { Children, extensionsFor } from "./children.ts";
@@ -35,6 +37,7 @@ import { clip, type TextContent } from "./text.ts";
 import { ROLES, rolePrompt } from "./roles.ts";
 import { describeDenied, isModelAllowed, pickAllowedModel, restrictsModels } from "./policy-access.ts";
 import { isLocalProvider } from "./local.ts";
+import { deleteFile } from "./retention.ts";
 import { autoLevel, fallbackNeedsThinking, judgeNeedsThinking, recentHistory } from "./thinking.ts";
 
 import type { Hub } from "./hub.ts";
@@ -56,6 +59,8 @@ const MAX_SAME_ERROR_STREAK = 4;
 const MAX_TOOL_CALLS_PER_RUN = 60;
 
 export interface LiveThread {
+  /** Tool audit; absent when the policy has no `audit` block. */
+  toolAudit?: ToolAudit;
   guard: RunGuard;
   /** "auto" decides per user message; otherwise the pinned level. */
   thinkingMode: ThinkingMode;
@@ -118,6 +123,8 @@ export class ThreadManager {
     /** Called before a prompt runs, e.g. to load a local model with enough context. */
     private prepareModel: (provider: string, modelId: string) => Promise<void> = async () => {},
     goalJudge?: GoalJudge,
+    /** Audit export; the no-op sink when the policy has no `audit` block. */
+    readonly audit: AuditSink = noopAudit,
   ) {
     this.goals = new GoalRunner(
       {
@@ -241,6 +248,9 @@ export class ThreadManager {
     const { role, restricted } = kind;
     const cwd = role ? sessionManager.getCwd() : project.path;
     const trust = resolveProjectTrust(cwd, this.store.projects, WORKSPACE_DIR);
+    const audit = scopeAudit(this.audit, () => ({ "session.id": ref.threadId, "project.id": projectId }));
+    const toolAudit = this.audit === noopAudit ? undefined : new ToolAudit(audit);
+    this.auditTrust(projectId, trust.trusted, trust.reason, trust.reason === "project marked trusted" ? "user" : "default", false, audit);
     if (!trust.trusted && existsSync(join(cwd, ".pi"))) console.info(`[pista-host] ${cwd}: skipped .pi/ (project untrusted: ${trust.reason})`);
     const startModel = await this.allowedStartModel(model ?? this.store.config.defaultModel);
     const session = await buildSession({
@@ -267,6 +277,7 @@ export class ThreadManager {
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
         thinkingMode: () => thread?.thinkingMode,
+        ...(toolAudit ? { toolAudit } : {}),
       }),
     });
     // A restored session keeps the model Pi saved with it; move it off one the policy has since disallowed.
@@ -298,6 +309,7 @@ export class ThreadManager {
       plan: readCustomEntry<Plan>(sessionManager, ENTRY.plan),
       decisions,
       alwaysAllowed,
+      ...(toolAudit ? { toolAudit } : {}),
       session,
       queue: { steering: [], followUp: [] },
       runStart: session.messages.length,
@@ -320,6 +332,7 @@ export class ThreadManager {
     this.live.set(thread.summary.id, thread);
     this.index.delete(thread.summary.id);
     this.hub.emit({ type: "thread.updated", thread: thread.summary });
+    this.audit.emit("pista.session.start", { "session.id": thread.summary.id, "project.id": projectId, "cwd.hash": auditHash(cwd), "session.restored": !!thread.summary.sessionFile && session.messages.length > 0 });
     this.goals.restore(thread.summary.id, readCustomEntry<{ goal: GoalState | null }>(sessionManager, ENTRY.goal)?.goal);
     return thread;
   }
@@ -362,13 +375,18 @@ export class ThreadManager {
         thread.compactionError = undefined;
         this.touch(thread, { status: "running" });
         break;
+      case "tool_execution_start":
+        thread.toolAudit?.start(event as { toolCallId: string; toolName: string; args?: unknown });
+        break;
       case "tool_execution_end":
+        thread.toolAudit?.end(event as { toolCallId: string; isError?: boolean });
         this.guardRun(thread, event as { toolName: string; isError: boolean; result?: { content?: { type: string; text?: string }[] } });
         break;
       case "agent_settled":
         this.touch(thread, { status: thread.compactionError ? "error" : "idle", messageCount: thread.session.messages.length, sessionFile: thread.session.sessionFile });
         this.warmJudge(thread);
         const usage = runUsage(thread.session.messages as ChatMessage[], thread.runStart);
+        emitUsage(scopeAudit(this.audit, () => ({ "session.id": summary.id, "project.id": summary.projectId })), thread.session.messages as ChatMessage[], thread.runStart);
         void this.goals
           .onSettle(summary.id, this.settleKind(thread), usage.billed, usage.cacheRead)
           .catch((e: Error) => console.warn(`[goal] settle failed: ${e.message}`));
@@ -564,6 +582,7 @@ export class ThreadManager {
       if (!session.isStreaming) this.touch(thread, { status: "idle" });
       return { run: Promise.resolve() };
     }
+    emitPrompt(scopeAudit(this.audit, () => ({ "session.id": threadId, "project.id": thread.summary.projectId })), text, session.isStreaming);
     // session.prompt() resolves when the run settles.
     const run = session
       .prompt(text, { images, streamingBehavior: session.isStreaming ? delivery : undefined })
@@ -667,15 +686,35 @@ export class ThreadManager {
     this.touch(thread, { title });
   }
 
-  async archive(threadId: string, visited = new Set<string>()) {
+  private trustSeen = new Map<string, boolean>();
+  /** Records a project's trust decision when it changed since last recorded (or `force`, for the user toggle). */
+  auditTrust(projectId: string, trusted: boolean, reason: string, source: "user" | "default", force: boolean, sink: AuditSink = this.audit): void {
+    if (!force && this.trustSeen.get(projectId) === trusted) return;
+    this.trustSeen.set(projectId, trusted);
+    sink.emit("pista.project.trust", { "project.id": projectId, trusted, "trust.reason": reason, "trust.source": source });
+  }
+
+  /** Disposes a live session and records its end in the audit stream. */
+  private endLive(thread: LiveThread, reason: string) {
+    thread.unsubscribe();
+    thread.session.dispose();
+    thread.toolAudit?.clear();
+    this.audit.emit("pista.session.end", { "session.id": thread.summary.id, "project.id": thread.summary.projectId, "session.end.reason": reason, "session.message_count": thread.summary.messageCount });
+  }
+
+  async archive(threadId: string) {
+    await this.list(); // refresh the index so unloaded children are found
+    this.archiveTree(threadId, new Set());
+  }
+
+  /** The synchronous part of archive: no awaits, so a caller can check and archive in one step. */
+  private archiveTree(threadId: string, visited: Set<string>) {
     if (visited.has(threadId)) return; // inconsistent threadMeta must not recurse forever
     visited.add(threadId);
-    await this.list(); // refresh the index so unloaded children are found
-    for (const child of this.children.childIds(threadId)) await this.archive(child, visited);
+    for (const child of this.children.childIds(threadId)) this.archiveTree(child, visited);
     const live = this.live.get(threadId);
     if (live) {
-      live.unsubscribe();
-      live.session.dispose();
+      this.endLive(live, "archived");
       this.live.delete(threadId);
     }
     this.goals.drop(threadId);
@@ -697,8 +736,7 @@ export class ThreadManager {
       if (live) {
         this.goals.pauseIfRunning(id, "Project removed");
         await live.session.abort().catch(() => {});
-        live.unsubscribe();
-        live.session.dispose();
+        this.endLive(live, "project_removed");
         this.live.delete(id);
       }
       this.goals.drop(id);
@@ -808,6 +846,33 @@ export class ThreadManager {
   }
 
   /**
+   * Retention purge: archives (same code as a user delete) every idle thread tree last active before `cutoff`, then
+   * removes its session files. Live (open) or running threads, and trees containing one, are kept. The index is
+   * refreshed once; each tree is then checked and archived with no await in between, so a thread the user opens
+   * meanwhile is seen as live and kept, and a tree that gained a child is checked as it is now.
+   */
+  async purgeThreads(cutoff: number, sessionsDir: string, stats: { threads: number; skipped: number }): Promise<void> {
+    await this.list();
+    const roots = this.summaries().filter((t, _i, all) => !t.parentId || !all.some((p) => p.id === t.parentId));
+    for (const root of roots) {
+      if (this.store.isArchived(root.id)) continue;
+      const byId = new Map(this.summaries().map((s) => [s.id, s]));
+      const tree: ThreadSummary[] = [];
+      const walk = (id: string) => {
+        const node = byId.get(id);
+        if (!node || tree.includes(node)) return;
+        tree.push(node);
+        for (const child of this.children.childIds(id)) walk(child);
+      };
+      walk(root.id);
+      if (tree.some((n) => n.updatedAt >= cutoff || n.status === "running" || this.live.has(n.id) || this.goals.get(n.id)?.status === "running")) continue;
+      this.archiveTree(root.id, new Set());
+      stats.threads += tree.length;
+      for (const n of tree) if (n.sessionFile && !deleteFile(n.sessionFile, sessionsDir)) stats.skipped++;
+    }
+  }
+
+  /**
    * Recreate idle live sessions so config changes (MCP endpoint, instructions, project trust) take effect.
    * With `projectId`, only that project's threads are dropped.
    */
@@ -820,8 +885,7 @@ export class ThreadManager {
       if (parentId && this.live.get(parentId)?.session.isStreaming) continue;
       // A child that was never prompted has no session file, so dropping it would lose it.
       if (parentId && thread.summary.messageCount === 0) continue;
-      thread.unsubscribe();
-      thread.session.dispose();
+      this.endLive(thread, "reloaded");
       this.live.delete(id);
       if (thread.summary.sessionFile && thread.summary.messageCount > 0) this.index.set(id, { ...thread.summary, loaded: false });
       else this.hub.emit({ type: "thread.removed", threadId: id });
@@ -829,9 +893,6 @@ export class ThreadManager {
   }
 
   dispose() {
-    for (const thread of this.live.values()) {
-      thread.unsubscribe();
-      thread.session.dispose();
-    }
+    for (const thread of this.live.values()) this.endLive(thread, "shutdown");
   }
 }

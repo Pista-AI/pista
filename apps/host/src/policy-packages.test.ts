@@ -54,7 +54,7 @@ const pkg = (name: string) => {
 const [corp, corp2, mine] = [pkg("corp"), pkg("corp2"), pkg("mine")];
 const settingsFile = join(agentDir, "settings.json");
 const packagesOnDisk = () => JSON.parse(readFileSync(settingsFile, "utf8")).packages;
-const policyOf = (extensions: ManagedPolicy["extensions"]) => ({ policy: { version: 1, extensions } as ManagedPolicy, source: "t", warnings: [] as string[] });
+const policyOf = (extensions: ManagedPolicy["extensions"]) => ({ policy: { version: 1, extensions } as ManagedPolicy, source: "t", sourceKind: "file" as const, warnings: [] as string[] });
 
 async function build(store: InstanceType<typeof ConfigStore>, extra: { isLocal?: (m: { provider: string }) => boolean; contextWindow?: number } = {}) {
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, refreshOnCreate: false });

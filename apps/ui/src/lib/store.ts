@@ -7,6 +7,7 @@ import type {
   AuthPrompt,
   ChatMessage,
   ConfigPolicy,
+  ConfigSource,
   DecisionEntry,
   GoalState,
   HostConfig,
@@ -115,9 +116,14 @@ function loadPinned(): string[] {
 interface AppState {
   connected: boolean;
   info?: HostInfo;
+  /** Set when a request failed with `version_blocked:` before (or without) a structured gate; the message without its prefix. */
+  versionBlockMessage: string | null;
   config?: HostConfig;
   /** Settings an organisation policy has locked; see `isLocked`. */
   policy: ConfigPolicy;
+  /** Managed policy file in force, and where each setting's value comes from (shown in Settings). */
+  policySource: string | null;
+  configSources: Partial<Record<keyof HostConfig, ConfigSource>>;
   projects: Project[];
   threads: ThreadSummary[];
   views: Record<string, ThreadView>;
@@ -157,7 +163,10 @@ interface AppState {
 
 export const useApp = create<AppState>(() => ({
   connected: false,
+  versionBlockMessage: null,
   policy: { locked: [] },
+  policySource: null,
+  configSources: {},
   projects: [],
   threads: [],
   views: {},
@@ -228,8 +237,11 @@ export const actions = {
     if (!get().panel.tabs.some((t) => t.kind === "web")) actions.newWebTab(info.config.homeUrl);
     set({
       info,
+      versionBlockMessage: null,
       config: info.config,
       policy: info.policy ?? { locked: [] },
+      policySource: info.policySource ?? null,
+      configSources: info.configSources ?? {},
       projects: info.projects,
       draftProjectId: get().draftProjectId ?? info.projects[0]?.id ?? null,
     });
@@ -385,7 +397,7 @@ export const actions = {
 
   async patchConfig(patch: Parameters<typeof host.call<"config.set">>[1]["patch"]) {
     const config = await host.call("config.set", { patch });
-    set({ config });
+    set((s) => ({ config, configSources: { ...s.configSources, ...Object.fromEntries(Object.keys(patch).map((k) => [k, "user"])) } }));
     browser.baseUrl = config.homeUrl;
     return config;
   },
@@ -743,7 +755,7 @@ function onHostEvent(event: HostEvent) {
       break;
     }
     case "config.changed":
-      set({ config: event.config });
+      set((s) => ({ config: event.config, configSources: event.configSources ?? s.configSources }));
       break;
     case "projects.changed":
       set({ projects: event.projects });
@@ -773,3 +785,5 @@ export function startHostConnection() {
   });
   host.connect();
 }
+
+host.onVersionBlocked((message) => useApp.setState({ versionBlockMessage: message }));

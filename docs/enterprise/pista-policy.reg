@@ -1,0 +1,4 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Pista]
+"PolicyJSON"="{\"version\":1,\"locked\":{\"approvalMode\":\"ask-writes\",\"webSearchEnabled\":false},\"defaults\":{\"maxOutputTokens\":8192}}"

@@ -62,6 +62,7 @@ Pista must be deployable as a headless server, not only as a desktop app.
 
 - TypeScript strict, ESM imports with explicit extensions where the package requires it.
 - Call out any new dependency in the PR description.
+- Before building a new feature, check whether an existing Pi extension or package already covers it, and note the result in the PR description.
 - Do not touch `pnpm-lock.yaml` by hand.
 - Keep the UI shell-agnostic: anything Electron-specific goes behind
   `DesktopBrowserBridge` or `window.pistaDesktop`.

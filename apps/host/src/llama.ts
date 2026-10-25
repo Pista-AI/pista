@@ -35,7 +35,7 @@ export function createLlama({ hub, store, models: pi, reloadIdle }: LlamaOptions
   const provider = new LlamaProvider(pi, () => runtime.baseUrl, models);
   statusSinks.push((status) => provider.onStatus(status));
 
-  const setEnabled = (on: boolean) => hub.emit({ type: "config.changed", config: store.patchConfig({ llamaEnabled: on }, { userSet: true }) });
+  const setEnabled = (on: boolean) => hub.emit({ type: "config.changed", config: store.patchConfig({ llamaEnabled: on }, { userSet: true }), configSources: store.sources() });
   // Enabling persists only once it works, so a failed install is not retried on every start. Disabling and
   // removing persist at once and reload idle sessions afterwards, so they drop the vanished provider.
   const handlers: LlamaHandlers = {

@@ -7,6 +7,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./domains": "./src/domains.ts",
     "./package.json": "./package.json"
   },
   "pi": {

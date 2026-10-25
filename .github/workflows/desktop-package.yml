@@ -1,0 +1,135 @@
+name: Desktop packages
+
+# Builds the Windows (NSIS) and Linux (AppImage + deb) desktop packages.
+# Runs on pull requests that touch the desktop shell or workflows, and is called from release.yml
+# on v* tags. Signing is opt-in: Windows signs only when WIN_CSC_LINK (or the AZURE_TRUSTED_SIGNING_*
+# values) are available, see docs/release-signing.md. Same-repo pull requests DO receive secrets, so every
+# signing secret is passed only on tags (github.ref_type == 'tag'); PR builds are always unsigned.
+# Uploading to the draft release is done by the single `release` job in release.yml.
+
+on:
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - "apps/host/**"
+      - "apps/ui/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "package.json"
+      - "scripts/**"
+      - ".github/workflows/desktop-package.yml"
+      - ".github/workflows/release.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  package-win:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      # On a tag the version comes from the tag (v0.3.0 -> 0.3.0), not apps/desktop/package.json, so artifact names,
+      # app.getVersion(), app-update.yml and the channel ymls all carry it. Other runs keep package.json's version.
+      - name: Version from tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not a release version: expected vMAJOR.MINOR.PATCH with an optional -prerelease (for example v0.3.0 or v0.3.0-rc.1)."
+            exit 1
+          fi
+          echo "Building version $VERSION"
+          echo "PISTA_BUILD_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+      # Mirrors the mac job: a tag must be signed unless the repository variable ALLOW_UNSIGNED_RELEASE is 1.
+      - name: Require signing on tags
+        if: github.ref_type == 'tag' && vars.ALLOW_UNSIGNED_RELEASE != '1'
+        shell: bash
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+        run: |
+          if [ -z "${WIN_CSC_LINK:-}" ] && [ -z "${AZURE_TRUSTED_SIGNING_ACCOUNT:-}" ]; then
+            echo "::error::Tagged releases must be signed: configure WIN_CSC_LINK or the Azure Trusted Signing secrets, or set the repository variable ALLOW_UNSIGNED_RELEASE=1."
+            exit 1
+          fi
+      - name: Package (NSIS)
+        shell: bash
+        env:
+          WIN_CSC_LINK: ${{ github.ref_type == 'tag' && secrets.WIN_CSC_LINK || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+          AZURE_TENANT_ID: ${{ github.ref_type == 'tag' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ github.ref_type == 'tag' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ github.ref_type == 'tag' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT || '' }}
+          AZURE_TRUSTED_SIGNING_PROFILE: ${{ github.ref_type == 'tag' && secrets.AZURE_TRUSTED_SIGNING_PROFILE || '' }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER: ${{ github.ref_type == 'tag' && secrets.AZURE_TRUSTED_SIGNING_PUBLISHER || '' }}
+        run: |
+          # Absent secrets arrive as empty strings; drop them so electron-builder sees them as unset.
+          for name in WIN_CSC_LINK WIN_CSC_KEY_PASSWORD AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TRUSTED_SIGNING_ENDPOINT AZURE_TRUSTED_SIGNING_ACCOUNT AZURE_TRUSTED_SIGNING_PROFILE AZURE_TRUSTED_SIGNING_PUBLISHER; do
+            if [ -z "${!name:-}" ]; then unset "$name"; fi
+          done
+          pnpm --filter @pista/desktop package:win
+      - name: List output
+        shell: bash
+        run: ls -la apps/desktop/release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pista-windows-x64
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/*.yml
+            !apps/desktop/release/builder-*.yml
+          if-no-files-found: error
+
+  package-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      # On a tag the version comes from the tag (v0.3.0 -> 0.3.0), not apps/desktop/package.json, so artifact names,
+      # app.getVersion(), app-update.yml and the channel ymls all carry it. Other runs keep package.json's version.
+      - name: Version from tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not a release version: expected vMAJOR.MINOR.PATCH with an optional -prerelease (for example v0.3.0 or v0.3.0-rc.1)."
+            exit 1
+          fi
+          echo "Building version $VERSION"
+          echo "PISTA_BUILD_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pista/desktop package:linux
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pista-linux-x64
+          path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*-linux.yml
+          if-no-files-found: error

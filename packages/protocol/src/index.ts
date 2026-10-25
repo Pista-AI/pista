@@ -429,6 +429,53 @@ export interface ManagedPolicy {
     /** `false` removes packages employees added themselves and keeps them out. Default true. */
     allowUserPackages?: boolean;
   };
+  /** Outbound network settings for corporate networks. Policy wins over the HTTPS_PROXY / HTTP_PROXY / NO_PROXY / NODE_EXTRA_CA_CERTS environment. */
+  network?: {
+    /** Proxy URL for all outbound requests (model providers, MCP over HTTP, OIDC). */
+    proxy?: string;
+    /** Hosts that bypass the proxy (NO_PROXY entries). */
+    noProxy?: string[];
+    /** PEM files of extra trusted CAs, read once at startup. An unreadable file stops the host. */
+    caCertFiles?: string[];
+    /** Also trust the operating system's certificate store. */
+    useSystemCa?: boolean;
+  };
+  /** `false` switches off Pi's install telemetry / its version check. Absent keeps Pi's behaviour. */
+  telemetry?: { piTelemetry?: boolean; versionCheck?: boolean };
+  /** Domain rules for the agent's browser tools. Admin-locked and validated fail-closed. Entries: an exact host or `*.example.com` (subdomains only). Deny wins; `allowedDomains` denies everything else. */
+  browser?: { allowedDomains?: string[]; deniedDomains?: string[] };
+  /** Update control. Admin-only (no user setting) and validated fail-closed. Versions are semver `MAJOR.MINOR.PATCH[-prerelease]`, no leading "v". */
+  updates?: {
+    /** `false` switches the desktop updater off. */
+    enabled?: boolean;
+    channel?: "stable" | "beta";
+    /** https URL of the update feed (http only for loopback). */
+    feedUrl?: string;
+    /** The host runs in blocked mode (no agent work) below this version. */
+    minimumVersion?: string;
+    /** ... and above this version. */
+    maximumVersion?: string;
+    /** Hours between forced update checks, 1..720. */
+    enforcementHours?: number;
+  };
+  /** Audit export: the host sends OTLP/HTTP JSON logs to this collector. Admin-locked, no default tier. Header values are read from the named environment variables, never stored here. */
+  audit?: {
+    otlpEndpoint: string;
+    protocol?: "http";
+    headersEnv?: Record<string, string>;
+    includePrompts?: boolean;
+    includeToolArgs?: boolean;
+    resourceAttributes?: Record<string, string>;
+  };
+  /** Local data retention. Admin-locked, no default tier; a missing block deletes nothing automatically. */
+  retention?: {
+    /** Threads (and their session files) idle for longer than this many days are deleted. */
+    sessionDays?: number;
+    /** Browser trace files older than this many days are deleted. */
+    traceDays?: number;
+    /** Run the purge at host startup (default true); false leaves it to the periodic run. */
+    purgeOnStartup?: boolean;
+  };
   /**
    * Tool rules, enforced in the host for every tool call. Patterns are `*`/`?` globs, case-sensitive;
    * deny beats allow; an `allow` list that is present means "only these".
@@ -544,6 +591,17 @@ export interface McpServerStatus {
   exposure?: string;
 }
 
+/** Result of checking the running app version against the policy's `updates` range. */
+export type VersionGate = { status: "ok" } | { status: "below" | "above"; current: string; minimumVersion?: string; maximumVersion?: string };
+
+/** Non-secret updater settings, resolved by the host (policy plus PISTA_DISABLE_AUTOUPDATER). */
+export interface UpdatesSummary {
+  enabled: boolean;
+  channel: "stable" | "beta";
+  feedUrl?: string;
+  enforcementHours?: number;
+}
+
 export interface HostInfo {
   version: string;
   piVersion: string;
@@ -551,8 +609,17 @@ export interface HostInfo {
   homeDir: string;
   config: HostConfig;
   policy: ConfigPolicy;
+  /** Path of the managed policy file in force, or null. */
+  policySource: string | null;
+  /** Blocked mode when not "ok": agent work is refused with `version_blocked`. */
+  versionGate: VersionGate;
+  updates: UpdatesSummary;
+  /** Where each setting's current value comes from. */
+  configSources: Partial<Record<keyof HostConfig, ConfigSource>>;
   projects: Project[];
 }
+
+export type ConfigSource = "locked" | "policy" | "user" | "default";
 
 // ---------------------------------------------------------------------------
 // Browser bridge: the agent drives the UI's built-in browser through these.
@@ -692,7 +759,7 @@ export type HostEvent =
       /** When the code stops working, epoch milliseconds. */
       expiresAt?: number;
     }
-  | { type: "config.changed"; config: HostConfig }
+  | { type: "config.changed"; config: HostConfig; configSources?: Partial<Record<keyof HostConfig, ConfigSource>> }
   | { type: "projects.changed"; projects: Project[] }
   | { type: "host_notification_request"; threadId: string; title: string; body: string }
   | { type: "toast"; level: "info" | "warn" | "error"; message: string }

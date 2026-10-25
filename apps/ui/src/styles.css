@@ -2630,6 +2630,9 @@ select:focus-visible {
   font-weight: 500;
   vertical-align: middle;
 }
+.managed-badge-soft {
+  border-style: dashed;
+}
 
 /* Provider sign-in in progress (device code) */
 .signin-panel {
@@ -2684,4 +2687,29 @@ select:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+/* ---------- Version block (managed policy) ---------- */
+.version-block p {
+  margin: 0;
+  color: var(--text-2);
+}
+.version-block-icon {
+  color: var(--primary);
+}
+.version-block-facts {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+.version-block-facts dt {
+  color: var(--text-2);
+  text-align: right;
+}
+.version-block-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
 }

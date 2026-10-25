@@ -74,7 +74,7 @@ function AgentRoles() {
   return (
     <div className="field">
       <label>
-        Sub-agent roles <ManagedBadge locked={field.locked} />
+        Sub-agent roles <ManagedBadge field={field} />
       </label>
       {(Object.keys(ROLE_DESCRIPTIONS) as AgentRoleName[]).map((role) => {
         const model = roles[role]?.model;
@@ -161,7 +161,7 @@ function General() {
       <HomePage />
       <div className="field">
         <label>
-          Open links in <ManagedBadge locked={linkTarget.locked} />
+          Open links in <ManagedBadge field={linkTarget} />
         </label>
         <div className="seg">
           {(
@@ -180,7 +180,7 @@ function General() {
       </div>
       <div className="field">
         <label>
-          Web search <ManagedBadge locked={webSearch.locked} />
+          Web search <ManagedBadge field={webSearch} />
         </label>
         <div className="seg">
           {([true, false] as const).map((on) => (
@@ -196,7 +196,7 @@ function General() {
       </div>
       <div className="field">
         <label>
-          Permissions <ManagedBadge locked={approval.locked} />
+          Permissions <ManagedBadge field={approval} />
         </label>
         <div className="seg">
           {(
@@ -215,7 +215,7 @@ function General() {
       </div>
       <div className="field">
         <label>
-          Max output tokens per response <ManagedBadge locked={maxTokens.locked} />
+          Max output tokens per response <ManagedBadge field={maxTokens} />
         </label>
         <input
           type="number"
@@ -233,7 +233,7 @@ function General() {
       <AgentRoles />
       <div className="field">
         <label>
-          Custom instructions <ManagedBadge locked={custom.locked} />
+          Custom instructions <ManagedBadge field={custom} />
         </label>
         <textarea
           value={instructions ?? ""}
@@ -256,7 +256,7 @@ function HomePage() {
   return (
     <div className="field">
       <label>
-        Browser home page <ManagedBadge locked={home.locked} />
+        Browser home page <ManagedBadge field={home} />
       </label>
       <input
         type="url"

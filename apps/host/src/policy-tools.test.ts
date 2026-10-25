@@ -230,7 +230,7 @@ test("a user extension cannot change a command into a denied one, or override th
 `,
   );
 
-  const store = new ConfigStore({ policy: { version: 1, tools: { bash: { deny: ["echo DENIED*"] } } }, source: "test", warnings: [] });
+  const store = new ConfigStore({ policy: { version: 1, tools: { bash: { deny: ["echo DENIED*"] } } }, source: "test", sourceKind: "file", warnings: [] });
   // The denied call must not ask for approval (ask-writes is the default); the allowed one then runs without a window to ask.
   store.patchConfig({ approvalMode: "ask-writes" });
   const text = (m: unknown) => JSON.stringify((m as { content?: unknown }).content);
@@ -390,7 +390,7 @@ async function runSession(opts: { tools: NonNullable<ManagedPolicy["tools"]>; mo
   const { Hub } = await import("./hub.ts");
   const runtime = await ModelRuntime.create({ authPath: join(root, `auth-${Math.random()}.json`), modelsPath: null, refreshOnCreate: false });
   const { piAi, faux, models, ref } = await fauxModels(runtime);
-  const store = new ConfigStore({ policy: { version: 1, tools: opts.tools }, source: "test", warnings: [] });
+  const store = new ConfigStore({ policy: { version: 1, tools: opts.tools }, source: "test", sourceKind: "file", warnings: [] });
   store.patchConfig({ approvalMode: opts.mode });
   const work = mkdtempSync(join(root, "ws-"));
   faux.setResponses([...opts.calls.map(([name, input]) => piAi.fauxAssistantMessage(piAi.fauxToolCall(name, input))), piAi.fauxAssistantMessage("done")]);

@@ -18,6 +18,7 @@ import { modelRef } from "./models.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";
+import { auditToolsExtension, type DecisionSource, observeBlocks, type ToolAudit } from "./audit-events.ts";
 
 /** What decides a thread's tools and extensions: its role (children only) and whether it is a child at all. */
 export interface ThreadKind {
@@ -40,12 +41,16 @@ export interface ExtensionDeps {
   alwaysAllowed?: Set<string>;
   /** The thread's thinking mode, read per request; without it browsing turns keep the thinking level they were given. */
   thinkingMode?: () => ThinkingMode | undefined;
+  /** Tool audit for this thread; absent when the policy has no `audit` block. */
+  toolAudit?: ToolAudit;
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
 export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExtension[] {
   const { role, restricted, isChild } = kind;
   const { store, hub, ref } = deps;
+  const tools = deps.toolAudit;
+  const watch = <T extends InlineExtension>(ext: T, source: DecisionSource): InlineExtension => (tools ? observeBlocks(ext, source, tools) : ext);
   return [
     // Restricted roles are read-only: no codemode, tool search, MCP or browser.
     ...(restricted
@@ -54,21 +59,23 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),
           createMcpExtension(),
-          browserExtension(hub, ref),
+          browserExtension(hub, ref, store.managedPolicy?.browser),
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),
     // Depth is 1: a child never gets the agent tool.
     ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record })]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
-    ...(role ? [roleGateExtension(role)] : []),
-    loopGuardExtension(store),
+    ...(role ? [watch(roleGateExtension(role), "policy")] : []),
+    watch(loopGuardExtension(store), "loop_guard"),
     stateExtension(),
     contextPruneExtension(store),
     // Children share the parent's cwd, so only role-less threads may write the plan file.
     ...(role ? [] : [planTool({ ...deps.plan, record: deps.record })]),
-    approvalExtension(hub, store, ref, deps.alwaysAllowed),
+    watch(approvalExtension(hub, store, ref, deps.alwaysAllowed), "approval"),
     // Last, so it sees the input as every other extension left it and nothing runs after its block.
-    ...(store.toolRules ? [policyGateExtension(store.toolRules)] : []),
+    ...(store.toolRules ? [policyGateExtension(store.toolRules, tools ? (name, input, denial, id) => tools.decision(id, name, input, "deny", { source: "policy", rule: denial.rule }) : undefined)] : []),
+    // After every gate, so it only sees calls that were allowed.
+    ...(tools ? [auditToolsExtension(tools)] : []),
   ];
 }
 
