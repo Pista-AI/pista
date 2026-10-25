@@ -1,0 +1,64 @@
+{
+  "tag": "b11552",
+  "assets": {
+    "darwin-arm64": [
+      {
+        "variant": "metal",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-macos-arm64.tar.gz",
+        "size": 12086252,
+        "sha256": "f4b33fe40d098033fb1a19a8a4a84383c4ca84c37b6a60d9f9a253f349b48c07",
+        "binaryPath": "llama-b11552/llama-server"
+      }
+    ],
+    "linux-x64": [
+      {
+        "variant": "vulkan",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-ubuntu-vulkan-x64.tar.gz",
+        "size": 31790005,
+        "sha256": "c7bb933f3584b73296fbadea6e0d6273ddb7907699ec59ef08d0bb59e0a8b997",
+        "binaryPath": "llama-b11552/llama-server"
+      },
+      {
+        "variant": "cpu",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-ubuntu-x64.tar.gz",
+        "size": 17824766,
+        "sha256": "a45a6afda05d08028bd37998072ab602c96799bccde126835941623cb99bb727",
+        "binaryPath": "llama-b11552/llama-server"
+      }
+    ],
+    "linux-arm64": [
+      {
+        "variant": "cpu",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-ubuntu-arm64.tar.gz",
+        "size": 13812438,
+        "sha256": "8c5e5074c4e303308367471941b70a0f1fac4a1a35c7c67c0bec895d8df092f9",
+        "binaryPath": "llama-b11552/llama-server"
+      }
+    ],
+    "win32-x64": [
+      {
+        "variant": "vulkan",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-win-vulkan-x64.zip",
+        "size": 33473578,
+        "sha256": "83dc16325b532ba603034719e8377e28ca5093c5d4370141a6522f1a0250386c",
+        "binaryPath": "llama-server.exe"
+      },
+      {
+        "variant": "cpu",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-win-cpu-x64.zip",
+        "size": 19528406,
+        "sha256": "c00741179811ff903b515eae28bdeef1f47af6e81c49920c4e68b62954e056d6",
+        "binaryPath": "llama-server.exe"
+      }
+    ],
+    "win32-arm64": [
+      {
+        "variant": "cpu",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11552/llama-b11552-bin-win-cpu-arm64.zip",
+        "size": 12353326,
+        "sha256": "f4f181cca934b676c276d488d89a22e4d140f678332c43611f7f85c7fa0aedae",
+        "binaryPath": "llama-server.exe"
+      }
+    ]
+  }
+}

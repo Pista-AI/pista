@@ -1,0 +1,21 @@
+<!doctype html><html><head><title>Delta fixture</title></head>
+<body>
+<h1>Trip planner</h1>
+<nav id="nav"></nav>
+<label for="dest">Where to?</label>
+<input id="dest" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="lb" autocomplete="off">
+<ul id="lb" role="listbox" hidden>
+  <li role="option">Barcelona, Spain</li><li role="option">Berlin, Germany</li><li role="option">Bergen, Norway</li><li role="option">Bern, Switzerland</li><li role="option">Bilbao, Spain</li>
+</ul>
+<a id="go" href="/about.html">About us</a>
+<div id="deals"></div>
+<script>
+  // A busy page: 60 offer links, so that typing changes a few lines out of many.
+  const nav = document.getElementById("nav"), deals = document.getElementById("deals");
+  for (let i = 1; i <= 12; i++) nav.insertAdjacentHTML("beforeend", `<a href="/about.html#n${i}">Destination guide number ${i}</a> `);
+  for (let i = 1; i <= 48; i++) deals.insertAdjacentHTML("beforeend", `<div><a href="/about.html#d${i}">Weekend offer ${i}</a> <button onclick="void 0">Save offer ${i}</button></div>`);
+  const input = document.getElementById("dest"), list = document.getElementById("lb");
+  const show = (on) => { list.hidden = !on; input.setAttribute("aria-expanded", String(on)); };
+  input.addEventListener("input", () => show(!!input.value));
+</script>
+</body></html>

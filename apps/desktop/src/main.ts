@@ -1,0 +1,353 @@
+/**
+ * Pista desktop shell (Electron).
+ *
+ * - Dev (`PISTA_DEV_URL` set): loads the Vite dev server; the host runs from `pnpm dev`.
+ * - Packaged: spawns the bundled agent host with Electron's own Node runtime on a free
+ *   port, waits for it, and loads the UI that the host serves.
+ * - Implements the UI's DesktopBrowserBridge with a WebContentsView (real Chromium),
+ *   so the agent can read, script and screenshot any page.
+ */
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, WebContentsView } from "electron";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { createServer } from "node:net";
+import { homedir } from "node:os";
+import path from "node:path";
+import { neutralizePaneDragRegions } from "./pane-drag.js";
+
+const DEV_URL = process.env.PISTA_DEV_URL;
+const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
+
+let mainWindow: BrowserWindow | null = null;
+let hostProcess: ChildProcess | null = null;
+
+// ---------------------------------------------------------------------------
+// Agent host
+// ---------------------------------------------------------------------------
+
+/** Apps launched from Finder get a minimal PATH; agents need the user's real one (node, git, CLIs). */
+function loginShellPath(): string | undefined {
+  if (process.platform === "win32") return undefined;
+  try {
+    const shellPath = process.env.SHELL ?? "/bin/zsh";
+    const out = execFileSync(shellPath, ["-ilc", 'printf "__PATH__%s__PATH__" "$PATH"'], { timeout: 5000, encoding: "utf8" });
+    return out.match(/__PATH__(.*)__PATH__/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function freePort(preferred: number): Promise<number> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => {
+      const fallback = createServer();
+      fallback.listen(0, "127.0.0.1", () => {
+        const port = (fallback.address() as { port: number }).port;
+        fallback.close(() => resolve(port));
+      });
+    });
+    server.listen(preferred, "127.0.0.1", () => server.close(() => resolve(preferred)));
+  });
+}
+
+async function waitFor(url: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(url);
+      if (res.ok || res.status === 404) return;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`Timed out waiting for ${url}`);
+}
+
+async function startHost(): Promise<string> {
+  const port = await freePort(4417);
+  const resources = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "../build");
+  const entry = path.join(resources, "host", "dist", "host.mjs");
+  mkdirSync(CLIENT_HOME, { recursive: true });
+  const log = createWriteStream(path.join(CLIENT_HOME, "host.log"), { flags: "a" });
+
+  // A packaged build may ship llama-server (see scripts/fetch-llama.mjs); the host only learns of it through this variable.
+  const bundledLlama = path.join(resources, "llama");
+  const llamaEnv = app.isPackaged && existsSync(bundledLlama) ? { PISTA_LLAMA_BUNDLE_DIR: bundledLlama } : {};
+
+  hostProcess = spawn(process.execPath, [entry], {
+    env: {
+      ...process.env,
+      PATH: loginShellPath() ?? process.env.PATH,
+      ELECTRON_RUN_AS_NODE: "1",
+      PISTA_HOST_PORT: String(port),
+      PISTA_UI_DIR: path.join(resources, "ui"),
+      PISTA_PARENT_PID: String(process.pid),
+      ...llamaEnv,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  hostProcess.stdout?.pipe(log);
+  hostProcess.stderr?.pipe(log);
+  hostProcess.on("exit", (code) => {
+    if (code && !quitting) dialog.showErrorBox("Pista agent host stopped", `Exit code ${code}. See ${path.join(CLIENT_HOME, "host.log")}.`);
+  });
+
+  const url = `http://127.0.0.1:${port}`;
+  await waitFor(`${url}/health`, 20_000);
+  return url;
+}
+
+// ---------------------------------------------------------------------------
+// Browser view (implements DesktopBrowserBridge from apps/ui/src/browser/bridge.ts)
+// ---------------------------------------------------------------------------
+
+interface LoadError {
+  code: number;
+  description: string;
+  url: string;
+}
+
+class BrowserPane {
+  /** Electron renders failed loads as a blank page, so failures are reported to the UI. */
+  private error: LoadError | undefined;
+  private visible = false;
+  readonly view = new WebContentsView({
+    webPreferences: { partition: "persist:pista-browser", sandbox: true, contextIsolation: true },
+  });
+
+  constructor(private window: BrowserWindow) {
+    window.contentView.addChildView(this.view);
+    this.view.setVisible(false);
+    // The native view is square by default and would cover the workspace card's
+    // rounded corners: 12px card radius minus its 1px border.
+    this.view.setBorderRadius(11);
+    neutralizePaneDragRegions(this.view.webContents);
+    const wc = this.view.webContents;
+    // Popups and target=_blank stay in the pane instead of spawning windows.
+    wc.setWindowOpenHandler(({ url }) => {
+      void wc.loadURL(url);
+      return { action: "deny" };
+    });
+    for (const event of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-stop-loading"] as const) {
+      wc.on(event as "did-navigate", () => this.emitState());
+    }
+    wc.on("did-start-loading", () => {
+      this.error = undefined;
+      this.emitState();
+    });
+    wc.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+      // -3 is ERR_ABORTED: a navigation superseded by another one, not a failure.
+      if (!isMainFrame || code === -3) return;
+      this.error = { code, description, url };
+      this.emitState();
+    });
+  }
+
+  state() {
+    const wc = this.view.webContents;
+    return {
+      url: wc.getURL(),
+      title: wc.getTitle(),
+      loading: wc.isLoading(),
+      canGoBack: wc.navigationHistory.canGoBack(),
+      canGoForward: wc.navigationHistory.canGoForward(),
+      error: this.error,
+    };
+  }
+
+  private emitState() {
+    if (!this.window.isDestroyed()) this.window.webContents.send("browser:state", this.state());
+  }
+
+  setBounds(rect: { x: number; y: number; width: number; height: number } | null) {
+    this.visible = Boolean(rect && rect.width >= 1 && rect.height >= 1);
+    if (!rect || !this.visible) {
+      this.view.setVisible(false);
+      return;
+    }
+    this.view.setBounds({ x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) });
+    this.view.setVisible(true);
+  }
+
+  async navigate(url: string) {
+    try {
+      await this.view.webContents.loadURL(url);
+    } catch {
+      /* aborted or failed loads still update state; the page shows Chromium's error */
+    }
+  }
+
+  async readText(maxChars: number): Promise<string> {
+    const text = await this.view.webContents.executeJavaScript("document.body ? document.body.innerText : ''", true);
+    return String(text).slice(0, maxChars);
+  }
+
+  async screenshot() {
+    let image = await this.view.webContents.capturePage();
+    const { width } = image.getSize();
+    if (width > 1440) image = image.resize({ width: 1440 });
+    return { data: image.toJPEG(80).toString("base64"), mimeType: "image/jpeg" };
+  }
+
+  evaluate(script: string) {
+    return this.view.webContents.executeJavaScript(script, true);
+  }
+
+  /**
+   * Trusted input (isTrusted events), so sites that ignore synthetic DOM events still react.
+   * Hit-testing needs a laid-out view, so a hidden pane reports false and the UI falls back
+   * to DOM events.
+   */
+  async input(event: NativeInput): Promise<boolean> {
+    if (!this.visible) return false;
+    const wc = this.view.webContents;
+    if (event.type === "click") {
+      const zoom = wc.getZoomFactor();
+      const x = Math.round(event.x * zoom);
+      const y = Math.round(event.y * zoom);
+      wc.sendInputEvent({ type: "mouseMove", x, y });
+      wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+      wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+      return true;
+    }
+    if (event.type === "text") {
+      await wc.insertText(event.text);
+      return true;
+    }
+    const parts = event.key.split("+");
+    const key = KEY_NAMES[parts.at(-1)!] ?? parts.at(-1)!;
+    const modifiers = parts.slice(0, -1).map((m) => MODIFIERS[m.toLowerCase()] ?? m.toLowerCase()) as Electron.KeyboardInputEvent["modifiers"];
+    wc.sendInputEvent({ type: "keyDown", keyCode: key, modifiers });
+    // Enter and printable keys also need a char event to submit forms / insert text.
+    if (key === "Enter") wc.sendInputEvent({ type: "char", keyCode: "\r", modifiers });
+    else if (key.length === 1) wc.sendInputEvent({ type: "char", keyCode: key, modifiers });
+    wc.sendInputEvent({ type: "keyUp", keyCode: key, modifiers });
+    return true;
+  }
+}
+
+type NativeInput = { type: "click"; x: number; y: number } | { type: "text"; text: string } | { type: "key"; key: string };
+
+/** DOM `KeyboardEvent.key` names → Electron accelerator key codes. */
+const KEY_NAMES: Record<string, string> = {
+  ArrowDown: "Down",
+  ArrowUp: "Up",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  " ": "Space",
+  Esc: "Escape",
+  Return: "Enter",
+};
+const MODIFIERS: Record<string, string> = { ctrl: "control", cmd: "meta", command: "meta", option: "alt" };
+
+function registerBrowserIpc(pane: BrowserPane) {
+  ipcMain.on("browser:setBounds", (_e, rect) => pane.setBounds(rect));
+  ipcMain.handle("browser:navigate", (_e, url: string) => pane.navigate(url));
+  ipcMain.handle("browser:back", () => pane.view.webContents.navigationHistory.goBack());
+  ipcMain.handle("browser:forward", () => pane.view.webContents.navigationHistory.goForward());
+  ipcMain.handle("browser:reload", () => pane.view.webContents.reload());
+  ipcMain.handle("browser:state", () => pane.state());
+  ipcMain.handle("browser:readText", (_e, maxChars: number) => pane.readText(maxChars));
+  ipcMain.handle("browser:screenshot", () => pane.screenshot());
+  ipcMain.handle("browser:evaluate", (_e, script: string) => pane.evaluate(script));
+  ipcMain.handle("browser:input", (_e, event: NativeInput) => pane.input(event));
+  ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
+}
+
+// ---------------------------------------------------------------------------
+// Window
+// ---------------------------------------------------------------------------
+
+async function createWindow() {
+  const uiUrl = DEV_URL ?? (await startHost());
+  if (DEV_URL) await waitFor(DEV_URL, 60_000);
+
+  const win = new BrowserWindow({
+    width: 1480,
+    height: 940,
+    minWidth: 900,
+    minHeight: 600,
+    show: false,
+    title: "Pista",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    trafficLightPosition: { x: 16, y: 14 },
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#262626" : "#ececec",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  mainWindow = win;
+
+  const pane = new BrowserPane(win);
+  registerBrowserIpc(pane);
+
+  // Links opened from the app UI (docs, OAuth sign-in) go to the system browser.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => {
+    mainWindow = null;
+    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input"])
+      ipcMain.removeHandler(channel);
+    ipcMain.removeAllListeners("browser:setBounds");
+    ipcMain.removeAllListeners("browser:openDevTools");
+  });
+  await win.loadURL(uiUrl);
+}
+
+ipcMain.handle("shell:openExternal", (_e, url: string) => {
+  if (/^https?:\/\//i.test(url)) return shell.openExternal(url);
+});
+ipcMain.handle("dialog:pickFolder", async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, { properties: ["openDirectory", "createDirectory"] });
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+
+let quitting = false;
+app.on("before-quit", () => {
+  quitting = true;
+  hostProcess?.kill();
+});
+
+app.whenReady().then(async () => {
+  app.setName("Pista");
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      { role: "appMenu" },
+      { role: "editMenu" },
+      {
+        label: "View",
+        submenu: [
+          { role: "reload" },
+          { role: "toggleDevTools" },
+          { type: "separator" },
+          { role: "resetZoom" },
+          { role: "zoomIn" },
+          { role: "zoomOut" },
+          { type: "separator" },
+          { role: "togglefullscreen" },
+        ],
+      },
+      { role: "windowMenu" },
+    ]),
+  );
+  try {
+    await createWindow();
+  } catch (error) {
+    dialog.showErrorBox("Pista could not start", (error as Error).message);
+    app.quit();
+  }
+});
+
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) void createWindow();
+});
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});

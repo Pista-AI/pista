@@ -1,0 +1,242 @@
+import { defineTool, type AgentSession, type ExtensionAPI, type InlineExtension } from "@earendil-works/pi-coding-agent";
+import type { AgentRoleName } from "@pista/protocol";
+import { Type } from "typebox";
+import type { RecordDecision } from "./decisions.ts";
+import type { ThreadRef } from "./extensions.ts";
+import { usageTotals } from "./models.ts";
+import { ROLES } from "./roles.ts";
+import { clip } from "./text.ts";
+import type { ThreadManager } from "./threads.ts";
+
+export const MAX_RUNNING_CHILDREN = 3;
+export const DEFAULT_CHILD_TIMEOUT_MS = 30 * 60_000;
+
+/** The slice of ThreadManager the tool needs; narrow so tests can stub it. */
+export type ChildThreads = Pick<ThreadManager, "spawnChild" | "startPrompt" | "continueChild" | "abort">;
+
+export interface AgentToolOptions {
+  threads: ChildThreads;
+  /** The thread that owns this tool; read at call time because the id is bound after the session is built. */
+  ref: ThreadRef;
+  /** Safety net for a child that never finishes (default 30 minutes). */
+  timeoutMs?: number;
+  /** Logs `agent_dispatch` and `agent_result` decisions. */
+  record?: RecordDecision;
+}
+
+export interface AgentToolParams {
+  /** Required unless `continueId` is set; a continued child keeps its own role. */
+  role?: AgentRoleName;
+  brief: string;
+  continueId?: string;
+  /** Why delegate this, in one sentence; logged with the dispatch. */
+  reason?: string;
+}
+
+/** Shown with the tool call so the UI can link to the child before it finishes. */
+export interface AgentToolDetails {
+  /** Id of the child thread; present from the first update, absent only if the call never reached a child. */
+  childThreadId?: string;
+  /** The child's role (a continued child keeps the role it was spawned with). */
+  role?: AgentRoleName;
+  /** Tool calls the child has finished so far; updates while it runs. */
+  toolCalls?: number;
+  /** Billed tokens of the finished child (cache reads and writes included). */
+  tokens?: number;
+  /** Of `tokens`, the cache reads. */
+  cacheReadTokens?: number;
+  /** True when the child was stopped because the parent run was aborted. */
+  aborted?: boolean;
+}
+
+type UpdateFn = (update: { content: { type: "text"; text: string }[]; details: AgentToolDetails }) => void;
+
+/** Appended to an implementer brief when it starts beside a running explorer. */
+const EXPLORER_RUNNING_NOTE = "Note: an explorer is still running; do not repeat its exploration, read only the files you need to edit.";
+
+const text = (value: string) => [{ type: "text" as const, text: value }];
+
+/** `runDone` resolves when the child's run is over: Pi's `agent_settled` fires once retries and compaction are done. */
+function runWaiter(session: AgentSession, onToolEnd: () => void) {
+  let finish!: () => void;
+  const runDone = new Promise<void>((resolve) => (finish = resolve));
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === "tool_execution_end") onToolEnd();
+    if (event.type === "agent_settled") finish();
+  });
+  return { runDone, unsubscribe };
+}
+
+/**
+ * Runs one sub-agent task: spawn (or continue) a child thread, send it the brief, wait for it to
+ * finish and return only its final assistant message. Exported for tests; the extension wraps it.
+ */
+export function createAgentRunner(opts: AgentToolOptions) {
+  const { threads, ref } = opts;
+  /** Calls in flight, counted before any await so parallel calls in one turn cannot exceed the limit. */
+  let active = 0;
+  const busy = new Set<string>();
+  /** Calls in flight with their role and (once spawned) child id, to spot an implementer started beside the explorer it depends on. Registered before any await so same-turn calls see each other. */
+  const inflight = new Map<symbol, { role?: AgentRoleName; childId?: string }>();
+
+  return async function runAgent(params: AgentToolParams, signal?: AbortSignal, onUpdate?: UpdateFn) {
+    if (active >= MAX_RUNNING_CHILDREN) {
+      throw new Error(`Too many sub-agents are running (${MAX_RUNNING_CHILDREN}). Wait for one to finish, or do the work yourself.`);
+    }
+    if (!params.continueId && !params.role) throw new Error("role is required unless continueId is set.");
+    if (!params.brief?.trim()) throw new Error("The brief is empty: describe the task for the sub-agent.");
+    if (signal?.aborted) return { content: text("Aborted before the sub-agent started."), details: { aborted: true } as AgentToolDetails };
+    active++;
+    // getSessionStats is cumulative for the child thread, so a continued child reports its whole thread.
+    const tokenLabel = (n: number) => `${params.continueId ? "thread total " : ""}${n} tokens`;
+    const key = Symbol();
+    const mine: { role?: AgentRoleName; childId?: string } = { role: params.role };
+    inflight.set(key, mine);
+    let unsubscribe = () => {};
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort = () => {};
+    try {
+      let childId: string;
+      if (params.continueId) {
+        childId = params.continueId;
+        const existing = await threads.continueChild(childId).catch(() => undefined);
+        if (!existing || existing.summary.parentId !== ref.threadId) throw new Error(`continueId ${childId} is not a sub-agent thread of this thread.`);
+        if (busy.has(childId) || existing.session.isStreaming) throw new Error(`Sub-agent ${childId} is still running.`);
+      } else {
+        childId = await threads.spawnChild(ref.threadId, { role: params.role! });
+      }
+      busy.add(childId);
+      mine.childId = childId;
+      try {
+        const child = await threads.continueChild(childId);
+        const role = child.summary.role ?? params.role;
+        mine.role = role;
+        const who = role ? `${role} sub-agent` : "sub-agent";
+        let toolCalls = 0;
+        const update = (line: string) => onUpdate?.({ content: text(line), details: { childThreadId: childId, role, toolCalls } });
+        // The signal aborted while the child was being set up: leave it idle and never send the brief.
+        if (signal?.aborted) return { content: text(`Aborted before the ${who} started (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
+        update(`Started ${who}.`);
+        let brief = params.brief;
+        if (role === "implementer") {
+          const explorer = [...inflight].find(([k, v]) => k !== key && v.role === "explorer")?.[1];
+          if (explorer) {
+            brief += `\n\n${EXPLORER_RUNNING_NOTE}`;
+            opts.record?.({
+              kind: "agent_dispatch",
+              summary: "Warning: implementer dispatched while explorer still running",
+              reason: "The implementer cannot use the explorer's findings and will repeat its exploration; dispatch it after the explorer reports.",
+              data: { explorerChildThreadId: explorer.childId ?? null, implementerChildThreadId: childId },
+            });
+          }
+        }
+        opts.record?.({
+          kind: "agent_dispatch",
+          summary: `Dispatch ${role ?? "sub-agent"}: ${clip(params.brief, 80)}`,
+          ...(params.reason?.trim() ? { reason: clip(params.reason, 300) } : {}),
+          data: { role: role ?? null, childThreadId: childId, continueId: params.continueId ?? null },
+        });
+        /** Logs how the dispatch ended; `evidence` is the start of what the child said (or the error). */
+        let logged = false;
+        const logResult = (outcome: "done" | "aborted" | "timeout" | "error", evidence?: string) => {
+          logged = true;
+          let tokens = 0;
+          let cacheRead = 0;
+          try {
+            ({ billed: tokens, cacheRead } = usageTotals(child.session.getSessionStats().tokens));
+          } catch {}
+          const label = role ?? "sub-agent";
+          opts.record?.({
+            kind: "agent_result",
+            summary: outcome === "done" ? `${label} done: ${toolCalls} tool calls, ${tokenLabel(tokens)}` : `${label} ${outcome}`,
+            ...(evidence ? { evidence: evidence.slice(0, 300) } : {}),
+            data: { childThreadId: childId, outcome, toolCalls, tokens, cacheReadTokens: cacheRead },
+          });
+        };
+        try {
+          // Subscribe before prompting so a fast run cannot finish unobserved.
+          const waiter = runWaiter(child.session, () => update(`${who} working: ${++toolCalls} tool calls.`));
+          unsubscribe = waiter.unsubscribe;
+          const stopped = new Promise<"aborted" | "timeout">((resolve) => {
+            onAbort = () => resolve("aborted");
+            signal?.addEventListener("abort", onAbort, { once: true });
+            if (signal?.aborted) onAbort();
+            timer = setTimeout(() => resolve("timeout"), opts.timeoutMs ?? DEFAULT_CHILD_TIMEOUT_MS);
+          });
+          // startPrompt's run rejects when Pi cannot start the run (no model, auth, ...): no agent_settled would follow.
+          const finished = threads.startPrompt(childId, brief, undefined).then(({ run }) => run).then(() => waiter.runDone.then(() => "finished" as const));
+          finished.catch(() => {}); // an abort or timeout can win the race; do not leave a late rejection unhandled
+          const outcome = await Promise.race([stopped, finished]);
+
+          if (outcome !== "finished") {
+            await threads.abort(childId);
+            if (outcome === "timeout") {
+              logResult("timeout");
+              throw new Error(`The ${who} did not finish in time and was stopped (thread ${childId}).`);
+            }
+            logResult("aborted");
+            return { content: text(`Aborted: the ${who} was stopped (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
+          }
+          const final = child.session.getLastAssistantText()?.trim();
+          if (!final) throw new Error(`The ${who} produced no final message (thread ${childId}).`);
+          const { billed: tokens, cacheRead } = usageTotals(child.session.getSessionStats().tokens);
+          const footer = `[sub-agent thread ${childId}${tokens ? `, ${tokenLabel(tokens)}` : ""}]`;
+          logResult("done", final);
+          return { content: text(`${final}\n\n${footer}`), details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead } as AgentToolDetails };
+        } catch (error) {
+          if (!logged) logResult("error", error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      } finally {
+        busy.delete(childId);
+      }
+    } finally {
+      inflight.delete(key);
+      unsubscribe();
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      active--;
+    }
+  };
+}
+
+const description = [
+  "Delegate a scoped task to a sub-agent that runs in its own thread and returns only its final message.",
+  `Roles: ${Object.values(ROLES)
+    .map((r) => `${r.name} (${r.description})`)
+    .join(" ")}`,
+  "The sub-agent sees nothing of this conversation, only the brief: state the goal, the scope (files or areas, and what is off limits), the facts it needs, how to tell it is done, and ask for a short report.",
+  "Use it to keep exploration and large changes out of your own context, and to run independent tasks in parallel (at most 3 at once). Do not use it for a step you can do in one or two tool calls.",
+  "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time.",
+  "Set continueId to a thread id from an earlier result to send a follow-up to that sub-agent, which keeps its context.",
+  "Give a short reason for each delegation: it is shown to the user in the decision log.",
+].join(" ");
+
+export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
+  const run = createAgentRunner(opts);
+  return {
+    name: "agent-tool",
+    factory: (pi: ExtensionAPI) => {
+      pi.registerTool(
+        defineTool({
+          name: "agent",
+          label: "Sub-agent",
+          description,
+          promptSnippet: "agent: delegate a scoped task to an explorer, implementer or reviewer sub-agent; returns its final report",
+          parameters: Type.Object({
+            role: Type.Optional(
+              Type.Union(
+                Object.keys(ROLES).map((name) => Type.Literal(name)),
+                { description: "Required for a new sub-agent (ignored with continueId, which keeps its own role). explorer and reviewer are read-only; implementer can change files" },
+              ),
+            ),
+            brief: Type.String({ description: "The complete task: goal, scope, context, acceptance, and the report format you want back" }),
+            continueId: Type.Optional(Type.String({ description: "Thread id of an earlier sub-agent to send this brief to as a follow-up instead of starting a new one" })),
+            reason: Type.Optional(Type.String({ description: "One sentence on why you are delegating this (the why, not the what), e.g. 'Reading the whole module would flood my context, so an explorer summarises it.'" })),
+          }),
+          execute: (_id, params, signal, onUpdate) => run(params as AgentToolParams, signal, onUpdate as UpdateFn | undefined),
+        }),
+      );
+    },
+  };
+}

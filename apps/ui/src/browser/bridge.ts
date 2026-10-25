@@ -1,0 +1,57 @@
+/**
+ * Contract a desktop shell (Electron or Tauri 2) implements to give the UI a real,
+ * native browser surface. The web build falls back to an <iframe>, which cannot
+ * read cross-origin pages, take screenshots or bypass frame-ancestors headers.
+ *
+ * Electron: implement with a WebContentsView positioned over `setBounds()` and
+ * expose it from the preload script via contextBridge as `window.pistaDesktop`.
+ * Tauri 2: implement with a child Webview (`Webview::new` / `add_child`) and
+ * forward these calls through `invoke()` commands.
+ */
+export interface NativeBrowserState {
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** Set when the last main-frame load failed (e.g. ERR_NAME_NOT_RESOLVED). */
+  error?: { code: number; description: string; url: string };
+}
+
+/** Trusted input the shell injects like a real user would (coordinates in CSS px of the view). */
+export type NativeInput =
+  | { type: "click"; x: number; y: number }
+  | { type: "text"; text: string }
+  | { type: "key"; key: string };
+
+export interface DesktopBrowserBridge {
+  /** Show the native view over this rectangle (CSS pixels, relative to the window). */
+  setBounds(rect: { x: number; y: number; width: number; height: number } | null): void;
+  navigate(url: string): Promise<void>;
+  back(): Promise<void>;
+  forward(): Promise<void>;
+  reload(): Promise<void>;
+  state(): Promise<NativeBrowserState>;
+  onState(listener: (state: NativeBrowserState) => void): () => void;
+  readText(maxChars: number): Promise<string>;
+  screenshot(): Promise<{ data: string; mimeType: string }>;
+  evaluate(script: string): Promise<unknown>;
+  /** Resolves false when the input couldn't be delivered (e.g. the view is hidden); callers fall back to DOM events. */
+  input?(event: NativeInput): Promise<boolean>;
+  openDevTools?(): void;
+}
+
+export interface PistaDesktop {
+  shell: "electron" | "tauri";
+  /** Base URL of the agent host sidecar the shell started, e.g. http://127.0.0.1:4317 */
+  hostUrl?: string;
+  browser?: DesktopBrowserBridge;
+  openExternal?(url: string): void;
+  pickFolder?(): Promise<string | null>;
+}
+
+declare global {
+  interface Window {
+    pistaDesktop?: PistaDesktop;
+  }
+}

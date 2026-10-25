@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Fill form</title><style>body{font-family:sans-serif;margin:20px} #lb{list-style:none;padding:0;margin:0;border:1px solid #888;width:200px} #lb[hidden]{display:none}</style></head>
+<body>
+<h1>Fill form</h1>
+<form id="f" action="/result.html" method="get">
+  <label for="from">From</label> <input id="from" name="from" placeholder="City"><br>
+  <label for="notes">Notes</label> <textarea id="notes" name="notes"></textarea><br>
+  <select name="cabin" aria-label="Cabin class"><option>Economy</option><option>Premium economy</option><option>Business</option></select><br>
+  <label><input type="checkbox" name="flex"> Flexible dates</label><br>
+  <fieldset><legend>Meal</legend>
+    <label><input type="radio" name="meal" value="std" checked> Standard</label>
+    <label><input type="radio" name="meal" value="veg"> Vegetarian</label>
+  </fieldset>
+  <label for="dest">Destination</label>
+  <input id="dest" name="dest" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="lb" autocomplete="off">
+  <ul id="lb" role="listbox" hidden>
+    <li role="option">Lisbon</li><li role="option">Lima</li><li role="option">London</li><li role="option">Lyon</li>
+  </ul>
+  <label for="pw">Password</label> <input id="pw" name="pw" type="password">
+  <button type="submit">Search</button>
+</form>
+<script>
+  const input = document.getElementById("dest"), list = document.getElementById("lb");
+  const show = () => {
+    const q = input.value.toLowerCase();
+    let n = 0;
+    for (const o of list.children) { const hit = !!q && o.textContent.toLowerCase().startsWith(q); o.hidden = !hit; n += hit; }
+    list.hidden = !n; input.setAttribute("aria-expanded", String(!!n));
+  };
+  input.addEventListener("input", show);
+  list.addEventListener("click", (e) => { input.value = e.target.textContent; list.hidden = true; });
+</script>
+</body></html>

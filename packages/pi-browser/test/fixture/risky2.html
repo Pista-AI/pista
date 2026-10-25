@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Shop 2</title>
+<button id="trash" onclick="document.title='deleted'"><img alt="Delete" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" /></button>
+<button id="svg" onclick="document.title='removed'"><svg width="16" height="16"><title>Remove account</title><rect width="16" height="16" /></svg></button>
+<div id="kop" onclick="document.title='kop'" style="cursor:pointer;padding:4px">Köp nu</div>
+<div role="presentation" id="pay" onclick="document.title='paid'" style="cursor:pointer;padding:4px">Betala</div>
+<a href="#po" onclick="document.title='po'">Post office</a>
+<a href="#conf" onclick="document.title='conf'">Confirmation details</a>
+<a href="#post" onclick="document.title='post'">Post</a>
+<form onsubmit="document.title='submitted'; return false;">
+  <label>Query <input type="text" /></label>
+  <button type="submit">Place order</button>
+</form>
+<form onsubmit="document.title='searched'; return false;">
+  <label>Find <input type="text" /></label>
+  <button type="submit">Search</button>
+</form>
+<label>Secret <input type="password" /></label>

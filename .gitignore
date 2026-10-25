@@ -1,0 +1,25 @@
+node_modules
+dist
+.DS_Store
+*.log
+.env
+apps/desktop/build
+apps/desktop/.cache
+apps/desktop/release
+*.tmp.*
+.pista/
+
+# Agent worktrees created by the Claude desktop app
+.claude/worktrees/
+
+# Personal Claude Code overrides
+.claude/settings.local.json
+
+# secrets and model files
+.env.*
+*.p12
+*.pem
+*.key
+auth.json
+*.gguf
+*.onnx

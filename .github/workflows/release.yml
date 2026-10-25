@@ -1,0 +1,191 @@
+name: Release
+
+# Builds the mac-arm64 desktop app (Pista.app and a dmg) on a version tag or on demand.
+# Signing and notarization are opt-in through repository secrets, see
+# docs/release-signing.md (section "CI release") for what to configure and how to cut a release.
+# Without secrets a manual run still produces an unsigned build, so the pipeline can be
+# exercised on forks. Tags must be signed unless the repository variable
+# ALLOW_UNSIGNED_RELEASE is set to 1.
+#
+# This job is deliberately NOT part of ci.yml: macOS runners are billed at a multiple of
+# Linux minutes, so the pull request workflow stays on ubuntu-latest.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      notarize:
+        description: Notarize the build (needs the APPLE_* secrets). Untick to sign only.
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # create the draft release and upload assets; nothing else is granted
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-mac:
+    # macos-15 is the Apple silicon (arm64) image; the step below asserts it. macos-latest
+    # is not used because its target OS moves (it switched to macOS 26 in 2026), and a
+    # release build should not change toolchain under us.
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      # False only for a manual run that unticked "notarize". Tag pushes always notarize
+      # when the Apple secrets exist.
+      NOTARIZE_REQUESTED: ${{ github.event_name != 'workflow_dispatch' || inputs.notarize }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Version comes from "packageManager" in the root package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Assert Apple silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          echo "runner arch: $arch"
+          [ "$arch" = "arm64" ] || { echo "Expected an arm64 runner, got $arch" >&2; exit 1; }
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+
+      # Only reports presence (set / not set) of each input, never a value.
+      - name: Check signing inputs
+        id: plan
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          APPLE_ID: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          ALLOW_UNSIGNED_RELEASE: ${{ vars.ALLOW_UNSIGNED_RELEASE }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          sign=off
+          notarize=off
+          [ -n "${CSC_LINK:-}" ] && sign=on
+
+          apple_set=0
+          for name in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!name:-}" ]; then apple_set=$((apple_set + 1)); fi
+          done
+          if [ "$apple_set" -ne 0 ] && [ "$apple_set" -ne 3 ]; then
+            echo "::error::APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID must be all set or all unset ($apple_set of 3 set)."
+            exit 1
+          fi
+          if [ "$apple_set" -eq 3 ]; then
+            if [ "$sign" = off ]; then
+              echo "::error::Apple notarization secrets are set but CSC_LINK is not; notarization needs a signed build."
+              exit 1
+            fi
+            notarize=on
+          fi
+
+          if [ "$REF_TYPE" = tag ] && [ "$sign" = off ] && [ "${ALLOW_UNSIGNED_RELEASE:-}" != 1 ]; then
+            echo "::error::Tagged releases must be signed: configure the CSC_LINK secret, or set the repository variable ALLOW_UNSIGNED_RELEASE=1 to publish an unsigned build."
+            exit 1
+          fi
+
+          echo "signing: $sign, notarization: $notarize"
+          echo "signing=$sign" >> "$GITHUB_OUTPUT"
+          echo "notarize=$notarize" >> "$GITHUB_OUTPUT"
+
+      # Secrets are mapped here and read only by electron-builder (see
+      # apps/desktop/electron-builder.config.cjs). When notarization was declined for a
+      # manual run, the APPLE_* values are empty so the config takes the no-notarize path.
+      - name: Package (dmg and app)
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          set -euo pipefail
+          pnpm --filter @pista/desktop package:dmg
+
+      - name: Verify signature
+        id: verify
+        shell: bash
+        env:
+          SIGNING: ${{ steps.plan.outputs.signing }}
+          NOTARIZE: ${{ steps.plan.outputs.notarize }}
+        run: |
+          set -euo pipefail
+          release=apps/desktop/release
+          app="$release/mac-arm64/Pista.app"
+          dmg="$(ls "$release"/*.dmg | head -n 1)"
+          test -d "$app"
+          test -f "$dmg"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+
+          if [ "$SIGNING" != on ]; then
+            echo "Unsigned build (ad-hoc signature only): skipping Developer ID, stapler and Gatekeeper checks."
+            exit 0
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --verbose=2 "$dmg"
+
+          if [ "$NOTARIZE" = on ]; then
+            xcrun stapler validate "$app"
+            spctl -a -vv -t exec "$app"
+          else
+            echo "Notarization off: skipping stapler and Gatekeeper checks (spctl rejects a signed, un-notarized app)."
+          fi
+
+      - name: Zip the app
+        id: zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          zip="apps/desktop/release/Pista-${version}-arm64-mac.zip"
+          ditto -c -k --keepParent apps/desktop/release/mac-arm64/Pista.app "$zip"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pista-mac-arm64
+          path: |
+            ${{ steps.verify.outputs.dmg }}
+            ${{ steps.zip.outputs.zip }}
+          if-no-files-found: error
+
+      # softprops/action-gh-release over `gh release create`: it is idempotent (a re-run
+      # updates the existing draft instead of failing on "release already exists") and takes
+      # a file list directly. The draft is published manually after a human check.
+      - name: Draft GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.verify.outputs.dmg }}
+            ${{ steps.zip.outputs.zip }}

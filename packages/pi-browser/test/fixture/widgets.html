@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>Widgets</title></head>
+<body>
+<h1>Widgets</h1>
+<label for="dest">Where to?</label>
+<input id="dest" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="lb" autocomplete="off">
+<ul id="lb" role="listbox" hidden>
+  <li role="option">Barcelona</li><li role="option">Berlin</li><li role="option">Bergen</li><li role="option">Bern</li><li role="option">Bilbao</li>
+</ul>
+<label for="pay">Payment</label> <input id="pay" name="cardNumber" inputmode="numeric">
+<button id="noop" onclick="void 0">Do nothing</button>
+<button id="menu" aria-expanded="false" onclick="this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">Menu</button>
+<a id="long" href="/about.html">Näckrosen Hallonbergen Sundbyberg Solna Stockholm Uppsala Västerås Örebro Linköping Norrköping Jönköping Göteborg Malmö</a>
+<a href="/about.html">About us</a>
+<script>
+  const input = document.getElementById("dest"), list = document.getElementById("lb");
+  const show = (on) => { list.hidden = !on; input.setAttribute("aria-expanded", String(on)); };
+  input.addEventListener("input", () => show(!!input.value));
+  list.addEventListener("click", (e) => { input.value = e.target.textContent; show(false); });
+</script>
+</body></html>

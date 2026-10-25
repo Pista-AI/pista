@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from "packageManager" in the root package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      # Headless mode: the built host must start without Electron and serve the UI.
+      - name: Smoke test headless host
+        env:
+          PISTA_HOST_PORT: "4399"
+        run: |
+          export PISTA_HOME="$RUNNER_TEMP/pista-home"
+          node apps/host/dist/host.mjs > "$RUNNER_TEMP/host.log" 2>&1 &
+          host_pid=$!
+          ok=0
+          for _ in $(seq 1 20); do
+            if curl -sf -o /dev/null http://127.0.0.1:4399/; then ok=1; break; fi
+            if ! kill -0 "$host_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$host_pid" 2>/dev/null || true
+          if [ "$ok" -ne 1 ]; then
+            echo "Host did not answer on http://127.0.0.1:4399/ within 20 s" >&2
+            cat "$RUNNER_TEMP/host.log" >&2
+            exit 1
+          fi
+          echo "Host answered 200 on /"

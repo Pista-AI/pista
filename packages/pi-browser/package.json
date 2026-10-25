@@ -1,0 +1,34 @@
+{
+  "name": "@pista/pi-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension for driving a browser through ref-based page snapshots. Runs inside Pista (built-in browser) or standalone against any Chromium over CDP. Not published.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "pi": {
+    "extensions": [
+      "./src/standalone.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "eval:browser": "tsx test/suite.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^1.0.2",
+    "@earendil-works/pi-coding-agent": "^1.0.2",
+    "typebox": "^1.3.34"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.0.2",
+    "@earendil-works/pi-coding-agent": "^1.0.2",
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typebox": "^1.3.34"
+  }
+}

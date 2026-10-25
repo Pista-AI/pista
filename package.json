@@ -1,0 +1,25 @@
+{
+  "name": "pista",
+  "private": true,
+  "description": "Open-source desktop agent app built on the Pi agent harness.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n host,ui -c blue,magenta \"pnpm --filter @pista/host dev\" \"pnpm --filter @pista/ui dev\"",
+    "build": "pnpm --filter @pista/ui build && pnpm --filter @pista/host build",
+    "start": "pnpm --filter @pista/host start",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
+    "package:desktop": "pnpm --filter @pista/desktop package",
+    "analyze:session": "node scripts/analyze-session.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

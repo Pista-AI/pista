@@ -1,0 +1,22 @@
+{
+  "name": "@pista/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for Pista: native window, agent host process and a Chromium browser view.",
+  "license": "Apache-2.0",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build:main": "esbuild src/main.ts src/preload.ts --bundle --platform=node --format=cjs --target=node22 --outdir=dist --external:electron --out-extension:.js=.cjs",
+    "dev": "pnpm build:main && PISTA_DEV_URL=http://localhost:${PISTA_UI_PORT:-5317} electron .",
+    "package": "node scripts/package.mjs",
+    "package:dmg": "node scripts/package.mjs --dmg",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2"
+  }
+}

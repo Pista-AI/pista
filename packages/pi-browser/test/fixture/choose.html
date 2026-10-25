@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Choose</title></head>
+<body>
+<h1>Choose</h1>
+
+<!-- 1. ARIA combobox; the suggestion list appears 300 ms after typing and is filtered by what was typed. -->
+<label for="dest">Where to?</label>
+<input id="dest" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="dest-lb" autocomplete="off"
+  data-options='["Barcelona, Spain","Barcelona Airport (BCN), Spain","Berlin, Germany","Bergen, Norway","Málaga, Spain","Bilbao, Spain"]' data-filter="1">
+<ul id="dest-lb" role="listbox" hidden></ul>
+
+<!-- 2. ARIA combobox whose list is not linked by aria-controls and shows every option, one of them risky-looking. -->
+<div class="wrap">
+  <label for="cmd">Command</label>
+  <input id="cmd" role="combobox" aria-expanded="false" autocomplete="off" data-options='["Open settings","Delete account","Show help"]'>
+  <ul role="listbox" id="cmd-lb" hidden></ul>
+</div>
+
+<!-- 3. A native <input list>. -->
+<label for="fruit">Fruit</label>
+<input id="fruit" list="fruits" autocomplete="off">
+<datalist id="fruits"><option value="Apple"><option value="Banana"><option value="Cherry"></datalist>
+
+<!-- 4. A native <select>. -->
+<label for="country">Country</label>
+<select id="country"><option value="">Pick one</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option></select>
+
+<!-- 5. A combobox that only commits from the keyboard: clicking its options does nothing. -->
+<label for="keys">Keys only</label>
+<input id="keys" role="combobox" aria-expanded="false" aria-controls="keys-lb" autocomplete="off">
+<ul id="keys-lb" role="listbox" hidden>
+  <li role="option" id="k1">Red</li><li role="option" id="k2">Green</li><li role="option" id="k3">Blue</li>
+</ul>
+
+<!-- A secret field that is also a combobox. -->
+<label for="card">Card number</label>
+<input id="card" name="cardNumber" role="combobox" aria-expanded="false" aria-controls="dest-lb" autocomplete="off">
+
+<form onsubmit="return false"><label for="plain">Plain</label><input id="plain"><button type="submit">Place order</button></form>
+
+<script>
+  const fold = (s) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  for (const input of document.querySelectorAll("input[data-options]")) {
+    const list = input.parentElement.querySelector("ul[role=listbox]") || document.getElementById(input.getAttribute("aria-controls"));
+    const options = JSON.parse(input.dataset.options);
+    const show = (on) => { list.hidden = !on; input.setAttribute("aria-expanded", String(on)); };
+    let timer;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      if (!input.value) return show(false);
+      timer = setTimeout(() => {
+        const shown = input.dataset.filter ? options.filter((o) => fold(o).includes(fold(input.value))) : options;
+        list.replaceChildren(...shown.map((o) => { const li = document.createElement("li"); li.setAttribute("role", "option"); li.textContent = o; return li; }));
+        show(shown.length > 0);
+      }, 300);
+    });
+    list.addEventListener("click", (e) => {
+      if (e.target.getAttribute("role") !== "option") return;
+      input.value = e.target.textContent.split(",")[0];
+      input.dataset.committed = e.target.textContent;
+      show(false);
+    });
+  }
+  {
+    const input = document.getElementById("keys"), list = document.getElementById("keys-lb"), opts = [...list.children];
+    let at = -1;
+    const paint = () => { opts.forEach((o, i) => o.setAttribute("aria-selected", String(i === at))); input.setAttribute("aria-activedescendant", at >= 0 ? opts[at].id : ""); };
+    const show = (on) => { list.hidden = !on; input.setAttribute("aria-expanded", String(on)); };
+    input.addEventListener("input", () => { at = -1; paint(); show(!!input.value); });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { at = Math.min(at + 1, opts.length - 1); paint(); e.preventDefault(); }
+      else if (e.key === "Enter" && at >= 0) { input.value = opts[at].textContent; show(false); e.preventDefault(); }
+    });
+  }
+</script>
+</body></html>

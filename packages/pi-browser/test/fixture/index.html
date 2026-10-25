@@ -1,0 +1,20 @@
+<!doctype html><html><head><title>Fixture shop</title><style>body{font-family:sans-serif;margin:20px} .spacer{height:1400px}</style></head>
+<body>
+<h1>Fixture shop</h1>
+<nav><a href="/about.html">About us</a> <a href="https://example.com/">External</a></nav>
+<h2>Search flights</h2>
+<form id="f" action="/result.html" method="get">
+  <label for="from">From</label> <input id="from" name="from" placeholder="City">
+  <label>To <input name="to" placeholder="Destination"></label>
+  <select name="cabin" aria-label="Cabin class"><option>Economy</option><option>Premium economy</option><option>Business</option></select>
+  <label><input type="checkbox" name="flex"> Flexible dates</label>
+  <button type="submit">Search</button>
+</form>
+<div role="button" tabindex="0" id="fancy" onclick="this.textContent='Fancy pressed'">Fancy div button</div>
+<button id="trusted" onclick="this.textContent = event.isTrusted ? 'trusted click' : 'synthetic click'">Check trust</button>
+<input id="keys" aria-label="Key log" onkeydown="this.value += '['+event.key+(event.isTrusted?'+':'-')+']'">
+<div contenteditable="true" aria-label="Notes" id="notes">old note</div>
+<button style="display:none">Hidden button</button>
+<div class="spacer"></div>
+<h2>Footer</h2><a href="/terms.html">Terms</a>
+</body></html>
