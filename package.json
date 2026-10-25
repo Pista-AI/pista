@@ -27,8 +27,8 @@
     "analyze:session": "node scripts/analyze-session.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.2.4",
-    "typescript": "^5.9.3"
+    "concurrently": "^10.0.6",
+    "typescript": "^7.0.2"
   },
   "packageManager": "pnpm@9.12.0"
 }
