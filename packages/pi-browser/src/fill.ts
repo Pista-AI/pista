@@ -16,7 +16,7 @@ import type { RiskApprover } from "./approval.ts";
 import { chooseEnabled, runChoose, type ChooseResult } from "./choose.ts";
 import { deltaEnabled, presentSnapshot } from "./delta.ts";
 import type { BrowserDriver, PageState } from "./driver.ts";
-import { formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
+import { formatSnapshot, jsLiteral, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 /** Registered unless PI_BROWSER_FILL=0. Read at call time so a test can switch it. */
 export const fillEnabled = (): boolean => process.env.PI_BROWSER_FILL !== "0";
@@ -129,8 +129,8 @@ function pageFillMarkOption(target: string, want: string, attr: string): { label
 }
 
 // Same wrapper as page-scripts.ts: tsx/esbuild wraps nested functions in __name(), which the page does not have.
-const inPage = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
-  `(() => { const __name = (f) => f; return (${fn.toString()})(${args.map((a) => JSON.stringify(a ?? null)).join(", ")}); })()`;
+export const inPage = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
+  `(() => { const __name = (f) => f; return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
 
 const probeScript = (target: string, readValue = false) => inPage(pageFillProbe, target, readValue);
 const markRadioScript = (target: string, want: string) => inPage(pageFillMarkRadio, target, want, PICK_ATTR);

@@ -275,7 +275,8 @@ function pageSnapshot(maxElements: number, includeText: boolean, cutTemplate: st
       if (el.tagName !== "A") return "";
       try {
         const u = new URL(el.getAttribute("href") ?? "", location.href);
-        if (/^(javascript|mailto|tel|data|blob):$/.test(u.protocol)) return "";
+        // Allowlist (http, https, file): javascript:, vbscript:, data:, blob:, mailto: and the rest carry no readable path.
+        if (!/^(?:https?|file):$/.test(u.protocol)) return "";
         const seg = u.pathname.split("/").filter(Boolean).pop() ?? "";
         let decoded = seg;
         try {
@@ -357,10 +358,15 @@ function pageSnapshot(maxElements: number, includeText: boolean, cutTemplate: st
       parts.push(text ? (isSecret(el) ? 'value="•••"' : `value="${text}"`) : "empty");
     } else if (el.tagName === "A") {
       const href = el.getAttribute("href") ?? "";
-      if (href && !href.startsWith("javascript:")) {
+      if (href) {
         try {
           const u = new URL(href, location.href);
-          parts.push(`→ ${u.origin === location.origin ? u.pathname + u.search : u.host + u.pathname}`.slice(0, 90));
+          // Web and file links show a path, mailto:/tel: show scheme plus address; javascript:, vbscript:, data: and blob: get none.
+          if (u.protocol === "mailto:" || u.protocol === "tel:") {
+            parts.push(`→ ${u.protocol}${decodeURIComponent(u.pathname)}`.slice(0, 90));
+          } else if (["http:", "https:", "file:"].includes(u.protocol)) {
+            parts.push(`→ ${u.origin === location.origin ? u.pathname + u.search : u.host + u.pathname}`.slice(0, 90));
+          }
         } catch {
           /* unparsable href */
         }
@@ -832,8 +838,15 @@ function pageObserve(target: string | null): PageObservation {
 
 // esbuild with keepNames (tsx, pi's extension loader) wraps nested functions in `__name(fn, "name")`;
 // the page has no such helper, so each script brings a no-op one.
+/**
+ * JSON for embedding in generated script source. JSON.stringify output is already a valid JS literal; this also escapes
+ * `<`, `>`, `/`, U+2028 and U+2029 so the text is safe even if the script is ever inlined into HTML or an older parser.
+ */
+export const jsLiteral = (value: unknown): string =>
+  JSON.stringify(value ?? null).replace(/[<>/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+
 export const call = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
-  `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${JSON.stringify(SECRET_FIELD)}, name); return (${fn.toString()})(${args.map((a) => JSON.stringify(a ?? null)).join(", ")}); })()`;
+  `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
 
 export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),

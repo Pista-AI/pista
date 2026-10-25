@@ -77,7 +77,31 @@ test("unnamed controls get derived names from title, placeholder, image alt, svg
     "button|", // numeric id is skipped
     "textbox|~email", // a field keeps its name attribute even though text precedes it
     "button|", // a counter/price is not a label
+    "link|", // vbscript: href never names a link
+    "link|", // javascript: (mixed case, leading space) likewise
+    "link|", // data: likewise
+    "link|Guide",
+    "link|Mail",
+    "link|Call",
+    "link|Blob",
+    "link|Blank",
+    "link|Rel",
+    "link|Up",
+    "link|File",
   ]);
+});
+
+test("only http(s) and file links get a destination; script-bearing schemes do not", { skip }, () => {
+  const links = snap.lines.filter((l) => l.includes("link"));
+  const text = links.join("\n");
+  assert.doesNotMatch(text, /vbs-seg|js-seg|data-seg|vbscript|javascript|data:/i);
+  assert.match(text, /→ example\.com\/docs\/guide/);
+  assert.match(text, /"Mail".*→ mailto:a@b\.c/);
+  assert.match(text, /"Call".*→ tel:\+4670000/);
+  assert.match(text, /"Rel".*→ \/x/);
+  assert.match(text, /"Up".*→ \//);
+  assert.match(text, /"File".*→ \/tmp\/file-seg\/ok/);
+  for (const label of ["Blob", "Blank"]) assert.doesNotMatch(links.find((l) => l.includes(`"${label}"`)) ?? "", /→/);
 });
 
 test("derived names are flagged nameSource=fallback and real names are not", { skip }, () => {
