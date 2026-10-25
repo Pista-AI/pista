@@ -73,7 +73,7 @@ test("config.set lock check rejects locked keys by name, writes nothing, and let
   assert.equal(store.patchConfig({ homeUrl: "https://example.org/" }).homeUrl, "https://example.org/");
 });
 
-const managed = (locked: object, defaults: object = {}) => ({ policy: { version: 1 as const, locked, defaults }, source: "/p.json", warnings: [] });
+const managed = (locked: object, defaults: object = {}) => ({ policy: { version: 1 as const, locked, defaults }, source: "/p.json", sourceKind: null, warnings: [] });
 
 test("locked policy values overlay the config, are listed in policy.locked, and never reach config.json", () => {
   const store = new ConfigStore(managed({ approvalMode: "read-only", webSearchEnabled: false }));
@@ -139,4 +139,12 @@ test("a default for a locked key is ignored with a warning", () => {
   assert.equal(store.config.approvalMode, "read-only");
   assert.equal(store.config.linkTarget, "home");
   assert.ok(store.policyWarnings.some((w) => w.includes("defaults.approvalMode")));
+});
+
+test("sources() reports locked, policy default, user and built-in values", () => {
+  const store = new ConfigStore({ policy: { version: 1, locked: { approvalMode: "read-only" }, defaults: { webSearchEnabled: false, homeUrl: "https://example.org/" } }, source: "/p.json", sourceKind: null, warnings: [] });
+  assert.equal(store.sources().approvalMode, "locked");
+  assert.equal(store.sources().webSearchEnabled, "policy");
+  store.patchConfig({ homeUrl: "https://example.net/" }, { userSet: true });
+  assert.equal(store.sources().homeUrl, "user");
 });

@@ -4,6 +4,7 @@ import { declineCookieBanner, runPageAction, type ActionResult, type PageAction 
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
 import { registerContextPruning } from "./context.ts";
+import { guardDriver, type DomainRules } from "./domains.ts";
 import type { BrowserDriver, PageState } from "./driver.ts";
 import { fillEnabled, registerFillTool } from "./fill.ts";
 import { traceTools } from "./trace.ts";
@@ -26,13 +27,28 @@ export interface BrowserToolOptions {
   traceDir?: string;
   /** Recorded as `threadId` on each trace line. */
   threadId?: string;
+  /** Managed domain rules (see domains.ts). Without any list the driver is used as is. */
+  domainRules?: DomainRules;
+  /** Called with the reason when a page is refused by `domainRules`. */
+  onDomainBlock?: (reason: string) => void;
 }
 
 /**
  * Registers the browser_* tools. `driver` is resolved per call, so hosts can create it
  * lazily (e.g. connect over CDP on first use) or route to whichever browser is active.
  */
-export function registerBrowserTools(api: ExtensionAPI, driver: () => BrowserDriver | Promise<BrowserDriver>, options: BrowserToolOptions = {}) {
+export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => BrowserDriver | Promise<BrowserDriver>, options: BrowserToolOptions = {}) {
+  const rules = options.domainRules;
+  const guards = new WeakMap<BrowserDriver, BrowserDriver>();
+  const driver =
+    rules && (rules.allowedDomains || rules.deniedDomains?.length)
+      ? async () => {
+          const d = await rawDriver();
+          let g = guards.get(d);
+          if (!g) guards.set(d, (g = guardDriver(d, rules, options.onDomainBlock)));
+          return g;
+        }
+      : rawDriver;
   // All browser tools below register through `pi`, which also writes the per-call trace when tracing is on.
   const { pi, askApproval } = traceTools(api, driver, options);
   const respond = (state: PageState, result: ActionResult = {}, image?: { data: string; mimeType: string }) => {

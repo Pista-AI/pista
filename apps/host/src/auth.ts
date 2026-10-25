@@ -11,6 +11,11 @@ const inflight = new Map<string, AbortController>();
 /** Sign-ins aborted because a newer one started on the same provider (not by the user). */
 const superseded = new WeakSet<AbortController>();
 
+/** The signed-in SSO user's subject (OIDC `sub`), if any provider has one. */
+export function currentSubject(): string | undefined {
+  return subjects.values().next().value;
+}
+
 /** Forget the remembered signed-in user of a provider (call on sign-out). */
 export function forgetSubject(provider: string): void {
   subjects.delete(provider);

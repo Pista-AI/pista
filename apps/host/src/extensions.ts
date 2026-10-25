@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type InlineExtension } from "@earendil-works/pi-coding-agent";
-import { registerBrowserTools, type RiskApprover } from "@pista/pi-browser";
+import { registerBrowserTools, type DomainRules, type RiskApprover } from "@pista/pi-browser";
 import { activeBrowserDriverConfig, createBrowserDriver, type ThreadRef } from "./browser-driver.ts";
 import type { ConfigStore } from "./config.ts";
 import type { Hub } from "./hub.ts";
@@ -89,7 +89,7 @@ export function browserApprover(hub: Hub, ref: ThreadRef, timeoutMs = BROWSER_AS
   };
 }
 
-export function browserExtension(hub: Hub, ref: ThreadRef): InlineExtension {
+export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules): InlineExtension {
   const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref });
   return {
     name: "browser",
@@ -101,6 +101,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef): InlineExtension {
         askApproval: browserApprover(hub, ref),
         traceDir: CLIENT_DIR,
         threadId: ref.threadId,
+        domainRules,
       }),
   };
 }
@@ -285,7 +286,7 @@ export function denyToolCall(rules: ToolRules, toolName: string, input: unknown)
  * Must be the last inline extension: inline extensions load after user and project ones, so this handler
  * sees the final `input` of every earlier handler, and a block ends the chain. Any error blocks (fail closed).
  */
-export function policyGateExtension(rules: ToolRules): InlineExtension {
+export function policyGateExtension(rules: ToolRules, onDeny?: (toolName: string, input: unknown, denial: Denial, toolCallId: string) => void): InlineExtension {
   return {
     name: "policy-gate",
     factory: (pi: ExtensionAPI) => {
@@ -303,8 +304,10 @@ export function policyGateExtension(rules: ToolRules): InlineExtension {
       pi.on("tool_call", (event) => {
         try {
           const denied = denyToolCall(rules, event.toolName, event.input);
+          if (denied) onDeny?.(event.toolName, event.input, denied, event.toolCallId);
           return denied ? { block: true, reason: denied.reason } : undefined;
         } catch (error) {
+          onDeny?.(event.toolName, event.input, { rule: "tools.error", reason: (error as Error).message }, event.toolCallId);
           return { block: true, reason: `Blocked by your organisation's policy: the rules could not be checked (${(error as Error).message})` };
         }
       });

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { loadManagedPolicy, type PolicyIo } from "./policy.ts";
+import type { CommandRunner } from "./policy-mdm.ts";
+
+// No MDM source: darwin finds no plist, win32 finds no registry value. Keeps these tests off the real machine.
+const noMdm = { run: (() => ({ status: 1, stdout: "", stderr: "unable to find" })) as CommandRunner, lstat: () => null };
 
 function io(files: Record<string, string>): PolicyIo {
   return { exists: (path) => path in files, read: (path) => files[path]! };
@@ -11,16 +15,16 @@ const load = (text: string) => loadManagedPolicy({ PISTA_POLICY_FILE: FILE }, "l
 
 test("no policy file: null policy, no warnings, on every platform", () => {
   for (const platform of ["darwin", "linux", "win32"] as const) {
-    assert.deepEqual(loadManagedPolicy({ ProgramData: "C:\\ProgramData" }, platform, io({})), { policy: null, source: null, warnings: [] });
+    assert.deepEqual(loadManagedPolicy({ ProgramData: "C:\\ProgramData" }, platform, io({}), noMdm), { policy: null, source: null, sourceKind: null, warnings: [] });
   }
 });
 
 test("platform locations are read when the env var is unset", () => {
   const darwin = "/Library/Application Support/Pista/managed-policy.json";
   const body = JSON.stringify({ version: 1, locked: { approvalMode: "read-only" } });
-  assert.equal(loadManagedPolicy({}, "darwin", io({ [darwin]: body })).source, darwin);
+  assert.equal(loadManagedPolicy({}, "darwin", io({ [darwin]: body }), noMdm).source, darwin);
   assert.equal(loadManagedPolicy({}, "linux", io({ "/etc/pista/managed-policy.json": body })).policy?.locked?.approvalMode, "read-only");
-  const win = loadManagedPolicy({ ProgramData: "C:\\ProgramData" }, "win32", io({ "C:\\ProgramData\\Pista\\managed-policy.json": body }));
+  const win = loadManagedPolicy({ ProgramData: "C:\\ProgramData" }, "win32", io({ "C:\\ProgramData\\Pista\\managed-policy.json": body }), noMdm);
   assert.equal(win.policy?.locked?.approvalMode, "read-only");
 });
 
@@ -32,12 +36,13 @@ test("PISTA_POLICY_FILE wins over the platform path, and a missing file is a war
   assert.match(missing.warnings[0]!, /does not exist/);
 });
 
-test("invalid JSON and wrong version give a warning and no policy", () => {
+test("invalid JSON and wrong version are fatal and give no policy", () => {
   for (const text of ["{nope", JSON.stringify({ version: 2 }), JSON.stringify({}), "[]", "null"]) {
     const result = load(text);
     assert.equal(result.policy, null, text);
     assert.equal(result.source, null, text);
-    assert.equal(result.warnings.length, 1, text);
+    assert.equal(result.warnings.length, 0, text);
+    assert.ok(result.failure, text);
   }
 });
 
@@ -328,3 +333,27 @@ test("a bad auth block, or auth together with apiKeyEnv, drops the gateway with 
     assert.ok(result.warnings.some((w) => pattern.test(w)), `${JSON.stringify(over)}: ${result.warnings.join("|")}`);
   }
 });
+
+// Strict blocks: any unknown key or wrong-typed value stops the host.
+const STRICT_BLOCKS: Array<[string, Record<string, unknown>]> = [
+  ["network", { proxy: 1 }],
+  ["telemetry", { piTelemetry: "yes" }],
+  ["browser", { allowedDomains: "example.com" }],
+  ["updates", { enabled: "yes" }],
+  ["retention", { sessionDays: "7" }],
+  ["policySource", { url: 1 }],
+];
+
+for (const [name, wrongType] of STRICT_BLOCKS) {
+  test(`strict block ${name}: unknown key, wrong type and non-object are fatal`, () => {
+    for (const [value, pattern] of [
+      [{ nope: 1 }, new RegExp(`${name}\\.nope: unknown setting`)],
+      [wrongType, new RegExp(`${name}\\.${Object.keys(wrongType)[0]}`)],
+      [[], new RegExp(`"${name}" must be an object`)],
+    ] as const) {
+      const result = load(JSON.stringify({ version: 1, [name]: value }));
+      assert.ok(result.failure, `${name}: ${JSON.stringify(value)} should be fatal`);
+      assert.match(result.failure!, pattern);
+    }
+  });
+}

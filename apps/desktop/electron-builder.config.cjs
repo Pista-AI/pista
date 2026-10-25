@@ -7,7 +7,7 @@
 // electron-builder from the environment and are never logged or written to disk.
 const { existsSync } = require("node:fs");
 const path = require("node:path");
-const { signingPlan, describePlan } = require("./scripts/signing-plan.cjs");
+const { signingPlan, describePlan, winSigningPlan } = require("./scripts/signing-plan.cjs");
 
 function buildConfig(env = process.env) {
   const plan = signingPlan(env);
@@ -42,6 +42,13 @@ function buildConfig(env = process.env) {
       }
     : { identity: "-", hardenedRuntime: false, notarize: false };
 
+  // Windows signing is opt-in too; unsigned builds succeed. WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD are read by
+  // electron-builder itself, so the shared CSC_* (macOS) variables are never used for Windows.
+  const win = winSigningPlan(env);
+  if (win.method === "azure" && win.missing.length > 0) {
+    throw new Error(`Azure Trusted Signing is partly configured; also set ${win.missing.join(", ")}`);
+  }
+
   return {
     appId: "app.pista.desktop",
     productName: "Pista",
@@ -56,9 +63,34 @@ function buildConfig(env = process.env) {
     ],
     asar: true,
     npmRebuild: false,
-    mac: { category: "public.app-category.developer-tools", target: ["dir"], ...mac },
+    mac: { category: "public.app-category.developer-tools", target: ["dir", "zip"], ...mac },
     dmg: { title: "Pista", ...(plan.sign ? { sign: true } : {}) },
+    win: {
+      // MSI is not built: electron-builder's WiX template fails without an application icon (LGHT0094 Icon:PistaIcon.exe)
+      // and the repo has none yet. Add build-resources/icon.ico and re-add { target: "msi", arch: ["x64"] } then.
+      target: [{ target: "nsis", arch: ["x64"] }],
+      ...(win.method === "pfx" ? { forceCodeSigning: true } : {}),
+      ...(win.method === "azure"
+        ? {
+            forceCodeSigning: true,
+            azureSignOptions: {
+              endpoint: env.AZURE_TRUSTED_SIGNING_ENDPOINT,
+              codeSigningAccountName: env.AZURE_TRUSTED_SIGNING_ACCOUNT,
+              certificateProfileName: env.AZURE_TRUSTED_SIGNING_PROFILE,
+              publisherName: env.AZURE_TRUSTED_SIGNING_PUBLISHER,
+            },
+          }
+        : {}),
+    },
+    // oneClick off shows the per-user / per-machine choice; /S /allusers installs silently for all users.
+    nsis: { oneClick: false, perMachine: false, allowElevation: true, allowToChangeInstallationDirectory: true, artifactName: "Pista-Setup-${version}-${arch}.${ext}" },
+    linux: { executableName: "pista", category: "Development", maintainer: "Pista <noreply@pista.app>", target: ["AppImage", "deb"], artifactName: "Pista-${version}-${arch}.${ext}" },
     afterPack: "scripts/after-pack.cjs",
+    // Generates latest-mac.yml (beta-mac.yml when the version has a "-beta.N" prerelease tag; electron-builder
+    // derives the channel from it) and app-update.yml, the default feed baked into the app. The package script runs
+    // electron-builder with --publish never, so nothing is uploaded here: release.yml attaches the files to the draft
+    // GitHub release. updates.feedUrl in the managed policy overrides this feed (docs/ENTERPRISE.md).
+    publish: [{ provider: "github", owner: process.env.PISTA_UPDATE_OWNER || "Pista-AI", repo: process.env.PISTA_UPDATE_REPO || "pista", releaseType: "release" }],
   };
 }
 

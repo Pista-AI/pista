@@ -12,7 +12,7 @@ const { ConfigStore } = await import("./config.ts");
 const server = { command: "npx", args: ["-y", "srv"], env: { TOKEN: "${TOKEN}" } };
 const file = join(agentDir, "mcp.json");
 const read = () => JSON.parse(readFileSync(file, "utf8")).mcpServers;
-const policy = (mcp: NonNullable<ManagedPolicy["mcp"]>) => ({ policy: { version: 1, mcp } as ManagedPolicy, source: "test", warnings: [] as string[] });
+const policy = (mcp: NonNullable<ManagedPolicy["mcp"]>) => ({ policy: { version: 1, mcp } as ManagedPolicy, source: "test", sourceKind: null, warnings: [] as string[] });
 const reset = () => {
   for (const f of [file, join(home, "config.json")]) rmSync(f, { force: true });
 };
@@ -79,7 +79,7 @@ test("ConfigStore: no mcp section and nothing managed before leaves mcp.json alo
   reset();
   new ConfigStore();
   assert.equal(existsSync(file), false);
-  const store = new ConfigStore({ policy: { version: 1 }, source: "t", warnings: [] });
+  const store = new ConfigStore({ policy: { version: 1 }, source: "t", sourceKind: null, warnings: [] });
   assert.equal(existsSync(file), false);
   assert.equal(store.policy.mcp, undefined);
 });
@@ -120,16 +120,16 @@ test("ConfigStore: an untrusted policy leaves mcp.json and managedMcp alone and 
   reset();
   new ConfigStore(policy({ servers: { corp: server }, blockedServers: ["banned"] }));
   writeFileSync(file, JSON.stringify({ mcpServers: { ...read(), banned: { command: "z" } } }));
-  const store = new ConfigStore({ policy: null, source: null, warnings: [], mcpUntrusted: true });
+  const store = new ConfigStore({ policy: null, source: null, sourceKind: null, warnings: [], mcpUntrusted: true });
   assert.deepEqual(Object.keys(read()), ["corp", "banned"], "nothing uninstalled, block not lifted");
   assert.deepEqual(JSON.parse(readFileSync(join(home, "config.json"), "utf8")).managedMcp, ["corp"]);
   assert.ok(store.policyWarnings.some((w) => w.startsWith("mcp: the policy could not be read in full")));
   // A malformed mcp section in a loaded policy behaves the same.
-  const bad = new ConfigStore({ policy: { version: 1, mcp: {} }, source: "t", warnings: [], mcpUntrusted: true });
+  const bad = new ConfigStore({ policy: { version: 1, mcp: {} }, source: "t", sourceKind: null, warnings: [], mcpUntrusted: true });
   assert.deepEqual(Object.keys(read()), ["corp", "banned"]);
   assert.equal(bad.policyWarnings.length, 1);
   // An explicit policy without the section does uninstall.
-  new ConfigStore({ policy: { version: 1 }, source: "t", warnings: [] });
+  new ConfigStore({ policy: { version: 1 }, source: "t", sourceKind: null, warnings: [] });
   assert.deepEqual(Object.keys(read()), ["banned"]);
 });
 

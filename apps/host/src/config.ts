@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import type { ConfigPatch, ConfigPolicy, HostConfig, ManagedPolicy, Project, ThreadSummary } from "@pista/protocol";
+import type { ConfigPatch, ConfigPolicy, ConfigSource, HostConfig, ManagedPolicy, Project, ThreadSummary } from "@pista/protocol";
 import { CLIENT_DIR, piAgentDir } from "./pi-env.ts";
 import { convertLegacy, type LegacyServer, McpFile, validateServers } from "./mcp-config.ts";
 import type { LoadedPolicy } from "./policy.ts";
@@ -66,7 +66,7 @@ export class ConfigStore {
   readonly toolRules: ToolRules | null;
   private lockedValues: Partial<HostConfig> = {};
 
-  constructor(managed: LoadedPolicy = { policy: null, source: null, warnings: [] }) {
+  constructor(managed: LoadedPolicy = { policy: null, source: null, sourceKind: null, warnings: [] }) {
     this.policySource = managed.source;
     this.managedPolicy = managed.policy;
     this.policyWarnings = [...managed.warnings];
@@ -198,6 +198,14 @@ export class ConfigStore {
   deleteThreadMeta(threadId: string): void {
     delete this.state.threadMeta[threadId];
     this.save();
+  }
+
+  /** Where each setting's value comes from: locked by policy, an org default, the user's own, or the built-in default. */
+  sources(): Partial<Record<keyof HostConfig, ConfigSource>> {
+    const defaults = this.managedPolicy?.defaults ?? {};
+    return Object.fromEntries(
+      (Object.keys(DEFAULT_CONFIG) as Array<keyof HostConfig>).map((key) => [key, key in this.lockedValues ? "locked" : this.state.userSet.includes(key) ? "user" : key in defaults ? "policy" : "default"]),
+    );
   }
 
   /** Throws, naming the keys, when a client patch touches a locked setting. Call before `patchConfig`; nothing is written.

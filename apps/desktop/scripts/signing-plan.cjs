@@ -25,4 +25,23 @@ function describePlan(plan) {
   return `WARNING: Signing: on, notarization: OFF (missing ${plan.missing.join(", ")}); this build will not pass Gatekeeper on other Macs`;
 }
 
-module.exports = { signingPlan, describePlan, APPLE_VARS };
+const AZURE_CREDS = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"];
+const AZURE_VARS = ["AZURE_TRUSTED_SIGNING_ENDPOINT", "AZURE_TRUSTED_SIGNING_ACCOUNT", "AZURE_TRUSTED_SIGNING_PROFILE", "AZURE_TRUSTED_SIGNING_PUBLISHER"];
+
+/**
+ * Decide how the Windows build signs. Pure, so it can be unit tested.
+ * "pfx" = electron-builder's WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD, "azure" = Azure Trusted Signing
+ * (needs the four AZURE_TRUSTED_SIGNING_* values plus the AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+ * credentials that Azure's SDK reads; `missing` lists names only), "none" = unsigned. A partial Azure set is an error, not a silent unsigned build.
+ * @param {Record<string, string | undefined>} env
+ * @returns {{ method: "none" | "pfx" | "azure", missing: string[] }}
+ */
+function winSigningPlan(env) {
+  const set = (name) => typeof env[name] === "string" && env[name].trim() !== "";
+  const azureSet = AZURE_VARS.filter(set);
+  if (azureSet.length > 0) return { method: "azure", missing: [...AZURE_VARS, ...AZURE_CREDS].filter((n) => !set(n)) };
+  if (set("WIN_CSC_LINK")) return { method: "pfx", missing: [] };
+  return { method: "none", missing: [] };
+}
+
+module.exports = { signingPlan, describePlan, winSigningPlan, APPLE_VARS, AZURE_VARS, AZURE_CREDS };

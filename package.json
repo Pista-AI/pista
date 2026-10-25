@@ -23,6 +23,7 @@
     "test": "pnpm -r --if-present test",
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "package:desktop": "pnpm --filter @pista/desktop package",
+    "policy:check": "pnpm --filter @pista/host policy:check",
     "analyze:session": "node scripts/analyze-session.mjs"
   },
   "devDependencies": {

@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { downloadFile, freePort, ManagedProcess, ProcessStoppedError } from "@pista/local-runtime";
 import type { LlamaRuntimeStatus } from "@pista/protocol";
 import llamaBuild from "./llama-build.json";
+import { clampTimerMs } from "./timers.ts";
 
 const run = promisify(execFile);
 
@@ -171,7 +172,7 @@ export class LlamaRuntime {
     this.proc = new ManagedProcess({
       name: "llama-server",
       readyTimeoutMs: 60_000,
-      idleMs: idle > 0 ? idle : DEFAULT_IDLE_MS,
+      idleMs: idle > 0 ? clampTimerMs(idle) : DEFAULT_IDLE_MS,
       launch: () => this.launch(),
       onStateChange: () => this.emit(),
       // Runs before the "stopped" state change is emitted, so listeners see the error, not a flicker of "installed".

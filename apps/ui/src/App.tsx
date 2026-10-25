@@ -37,6 +37,7 @@ import { Workspace, WorkspaceTabs } from "./components/SidePanel.tsx";
 import { SettingsDialog } from "./components/Settings.tsx";
 import { AuthPromptDialog } from "./components/AuthPrompt.tsx";
 import { GoalDialog } from "./components/GoalControls.tsx";
+import { VersionBlock } from "./components/VersionBlock.tsx";
 import { MenuItem, Popover } from "./components/Popover.tsx";
 
 const SUGGESTIONS = [
@@ -46,7 +47,9 @@ const SUGGESTIONS = [
 ];
 
 export function App() {
-  const { activeThreadId, threads, projects, views, panel, sidebarOpen, sidebarWidth, connected, toasts, draftProjectId, pinned, startingMessage } = useApp();
+  const { activeThreadId, threads, projects, views, panel, sidebarOpen, sidebarWidth, connected, toasts, draftProjectId, pinned, startingMessage, info, versionBlockMessage } = useApp();
+  const gate = info?.versionGate;
+  const blocked = (gate && gate.status !== "ok") || versionBlockMessage !== null;
   const thread = threadById(threads, activeThreadId);
   const parent = threadById(threads, thread?.parentId);
   const view = activeThreadId ? views[activeThreadId] : undefined;
@@ -295,7 +298,9 @@ export function App() {
 
       {!maximized && (
         <main className="chat card" ref={chatRef}>
-          {thread && view ? (
+          {blocked ? (
+            <VersionBlock gate={gate} message={versionBlockMessage} />
+          ) : thread && view ? (
             <Transcript view={view} threadId={thread.id} />
           ) : startingMessage?.role === "user" ? (
             <div className="transcript">
@@ -344,7 +349,7 @@ export function App() {
               </div>
             </>
           )}
-          <Composer autoFocusKey={activeThreadId ?? "new"} seed={seed} />
+          {!blocked && <Composer autoFocusKey={activeThreadId ?? "new"} seed={seed} />}
         </main>
       )}
 

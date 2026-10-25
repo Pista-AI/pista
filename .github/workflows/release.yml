@@ -28,6 +28,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Windows and Linux packages (uploaded as artifacts; the release job below attaches them).
+  package-other:
+    uses: ./.github/workflows/desktop-package.yml
+    secrets: inherit
+
   package-mac:
     # macos-15 is the Apple silicon (arm64) image; the step below asserts it. macos-latest
     # is not used because its target OS moves (it switched to macOS 26 in 2026), and a
@@ -50,6 +55,21 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      # On a tag the version comes from the tag (v0.3.0 -> 0.3.0), not apps/desktop/package.json, so artifact names,
+      # app.getVersion(), app-update.yml and the channel ymls all carry it. Other runs keep package.json's version.
+      - name: Version from tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not a release version: expected vMAJOR.MINOR.PATCH with an optional -prerelease (for example v0.3.0 or v0.3.0-rc.1)."
+            exit 1
+          fi
+          echo "Building version $VERSION"
+          echo "PISTA_BUILD_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Assert Apple silicon runner
         shell: bash
@@ -124,8 +144,15 @@ jobs:
           APPLE_ID: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ env.NOTARIZE_REQUESTED == 'true' && secrets.APPLE_TEAM_ID || '' }}
+          SIGNING: ${{ steps.plan.outputs.signing }}
         run: |
           set -euo pipefail
+          # An absent secret is an empty string, not unset. electron-builder reads an empty CSC_LINK as a path
+          # (the cwd) and fails with "not a file", so drop every empty signing variable.
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then unset "$name"; fi
+          done
+          if [ "${SIGNING:-}" != on ]; then export CSC_IDENTITY_AUTO_DISCOVERY=false; fi
           pnpm --filter @pista/desktop package:dmg
 
       - name: Verify signature
@@ -158,34 +185,69 @@ jobs:
             echo "Notarization off: skipping stapler and Gatekeeper checks (spctl rejects a signed, un-notarized app)."
           fi
 
-      - name: Zip the app
-        id: zip
+      # electron-builder (--publish never) wrote the zip Squirrel.Mac updates from, the blockmaps and
+      # the channel yml (latest-mac.yml, or beta-mac.yml, rc-mac.yml for a prerelease version). Upload them next to the dmg.
+      - name: Collect updater files
+        id: feed
         shell: bash
+        env:
+          SIGNING: ${{ steps.plan.outputs.signing }}
+          NOTARIZE: ${{ steps.plan.outputs.notarize }}
         run: |
           set -euo pipefail
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          zip="apps/desktop/release/Pista-${version}-arm64-mac.zip"
-          ditto -c -k --keepParent apps/desktop/release/mac-arm64/Pista.app "$zip"
-          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          cd apps/desktop/release
+          # latest-mac.yml for a stable version, <channel>-mac.yml (beta, rc, alpha) for a prerelease: the channel is the
+          # first prerelease identifier. Take whatever *-mac.yml electron-builder wrote.
+          shopt -s nullglob
+          ymls=(./*-mac.yml)
+          zips=(./*-mac.zip)
+          dmgs=(./*.dmg)
+          [ "${#ymls[@]}" -gt 0 ] || { echo "::error::No *-mac.yml updater file was produced" >&2; exit 1; }
+          { [ "${#zips[@]}" -gt 0 ] && [ "${#dmgs[@]}" -gt 0 ]; } || { echo "::error::Missing dmg or update zip" >&2; exit 1; }
+          {
+            echo "files<<EOF"
+            ls ./*.dmg ./*.dmg.blockmap ./*-mac.zip ./*-mac.zip.blockmap "${ymls[@]}" | sed 's|^\./|apps/desktop/release/|'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Updater files"
+            echo '```'; ls -l ./*.dmg ./*.zip ./*.blockmap "${ymls[@]}"; echo '```'
+            if [ "$SIGNING" != on ]; then
+              echo "**UNSIGNED build (ad-hoc signature).** Not suitable for auto-update: Squirrel.Mac refuses unsigned apps. Do not publish this release to users."
+            elif [ "$NOTARIZE" != on ]; then
+              echo "Signed but **not notarized**: not suitable for auto-update on user machines."
+            else
+              echo "Signed and notarized. Stays a draft: publish it by hand, the updater only sees published releases."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pista-mac-arm64
-          path: |
-            ${{ steps.verify.outputs.dmg }}
-            ${{ steps.zip.outputs.zip }}
+          path: ${{ steps.feed.outputs.files }}
           if-no-files-found: error
 
-      # softprops/action-gh-release over `gh release create`: it is idempotent (a re-run
-      # updates the existing draft instead of failing on "release already exists") and takes
-      # a file list directly. The draft is published manually after a human check.
+  # One job owns the draft release, so the three packaging jobs cannot race into duplicate drafts.
+  # softprops/action-gh-release is idempotent (a re-run updates the existing draft). The draft is published
+  # by hand after a check; the auto-updater only sees published releases, so nothing reaches users until then.
+  release:
+    if: github.ref_type == 'tag'
+    needs: [package-mac, package-other]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: pista-*
+          path: artifacts
+          merge-multiple: true
+      - run: ls -l artifacts
       - name: Draft GitHub release
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: true
+          # A tag with a prerelease suffix (-rc.1, -beta.2) is marked as a prerelease.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: |
-            ${{ steps.verify.outputs.dmg }}
-            ${{ steps.zip.outputs.zip }}
+          files: artifacts/*
