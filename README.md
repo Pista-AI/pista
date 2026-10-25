@@ -1,6 +1,28 @@
 # Pista
 
-An open-source desktop agent app built on the [Pi](https://pi.dev) agent harness, with a UI modelled on the Codex app. Bring your own model (Claude, ChatGPT and other subscriptions or API keys, or local models via LM Studio, Ollama or llama.cpp), connect any MCP server, and let the agent work in a real built-in browser next to the chat.
+Pista is an open-source desktop agent app for people who want an AI agent that works on their own machine and with their own tools. It is local-first: threads, settings and credentials live on your computer, and you choose the model, whether that is a local one (a built-in llama.cpp runtime, or LM Studio and Ollama servers) or a cloud provider. It is service-agnostic: it reaches any backend through public channels only, namely MCP servers and a real built-in browser that the agent drives next to the chat. It is built on the [Pi](https://pi.dev) agent harness, with a UI inspired by agent apps such as OpenAI's Codex.
+
+**Status:** early (0.1). macOS is the primary platform. Windows and Linux builds exist but are untested on real hardware.
+
+<!-- screenshot: docs/screenshot.png -->
+
+## What is Pi?
+
+[Pi](https://pi.dev) ([source](https://github.com/earendil-works/pi)) is an open-source, extensible agent harness. Pista embeds its SDK (`@earendil-works/pi-coding-agent`) for sessions, model providers, tools and MCP support, and adds the desktop UI, the browser tools, approvals, the local runtime and the managed-policy layer on top. Pi sessions are plain JSONL files, so Pi CLI sessions in the same folders show up in Pista too.
+
+## Quickstart
+
+Requires Node 22+ and [pnpm](https://pnpm.io).
+
+```bash
+pnpm install
+pnpm dev
+```
+
+Open http://localhost:5317, then add a model under Settings (see [Model providers](#model-providers)).
+
+- Desktop app (Electron window with a native browser panel): `pnpm dev:desktop`
+- Headless, one process serving the built UI on http://127.0.0.1:4317: `pnpm build && pnpm start`
 
 ```
 ┌──────────────────────── UI (React, apps/ui) ────────────────────────┐
@@ -10,7 +32,7 @@ An open-source desktop agent app built on the [Pi](https://pi.dev) agent harness
 │ Pi SDK sessions (one per thread) + extensions:                      │
 │   Pi MCP ext  → servers from $PISTA_HOME/pi/mcp.json (Settings)     │
 │   browser     → browser_* tools, executed by the UI's browser pane  │
-│   approvals   → Codex-style permission modes (tool_call gate)       │
+│   approvals   → permission modes (tool_call gate)       │
 │   + Pi built-ins: read/edit/write/bash, MCP, codemode, tool_search  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -67,9 +89,19 @@ pnpm package:desktop
 
 The packaged app starts its own agent host on a free port (from 4417) with Electron's Node runtime, using your login shell's `PATH`. Host logs go to `~/.pista/host.log`. On macOS arm64 the build also ships the pinned llama.cpp `llama-server` in `Contents/Resources/llama` (about 31 MB; fetched once into `apps/desktop/.cache`, skip with `PISTA_BUNDLE_LLAMA=0`), see [docs/desktop-llama-bundling.md](docs/desktop-llama-bundling.md). The browser panel is a Chromium `WebContentsView`, so pages render even when they refuse iframes, and the agent can read, script and screenshot them. Add `--dmg` (`pnpm --filter @pista/desktop package:dmg`) for a disk image. Tagged releases (`v*`) are built, signed and notarized by CI, see [docs/release-signing.md](docs/release-signing.md#ci-release).
 
+## Model providers
+
+Providers are configured in the app under Settings, or from the environment on a server.
+
+- **Subscriptions and API keys**: sign in with OAuth or paste a key in Settings. Pi supplies the provider list (for example Claude and ChatGPT subscriptions, and API-key providers). Credentials are stored in `$PISTA_HOME/pi/auth.json`.
+- **Environment variables**: Pi reads provider keys from the environment, so a server needs no login: set for example `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` before starting the host. The full list is in Pi's `providers.md`, shipped in `@earendil-works/pi-coding-agent/docs`.
+- **Nebius Token Factory** is built in: set `NEBIUS_API_KEY`.
+- **Local models**: the built-in llama.cpp runtime (opt-in, see below), or an LM Studio or Ollama server that Pista detects on its default local port.
+- **Organisations** can add OpenAI-compatible gateways and restrict providers and models with a managed policy, see [docs/ENTERPRISE.md](docs/ENTERPRISE.md).
+
 ### First-time setup (in the app → Settings)
 
-1. **Model providers**: sign in (OAuth, e.g. Claude or ChatGPT subscriptions), paste an API key, or add a local model server. Credentials live in `$PISTA_HOME/pi/auth.json`. Pi's state (sessions, sign-ins, MCP) is kept under `$PISTA_HOME/pi` (override with `PI_CODING_AGENT_DIR`); on first start it is copied once from `~/.pi/agent`, which is left untouched. Agent memory (`MEMORY.md`, daily logs) lives in `$PISTA_HOME/pi/memory` (override with `PI_MEMORY_DIR`) and is likewise copied once from `~/.pi/agent/memory`.
+1. **Model providers**: see above. Pi's state (sessions, sign-ins, MCP) is kept under `$PISTA_HOME/pi` (override with `PI_CODING_AGENT_DIR`); on first start it is copied once from `~/.pi/agent`, which is left untouched. Agent memory (`MEMORY.md`, daily logs) lives in `$PISTA_HOME/pi/memory` (override with `PI_MEMORY_DIR`) and is likewise copied once from `~/.pi/agent/memory`.
 2. **MCP servers** (optional): add a streamable-HTTP or stdio MCP server. They are stored in `$PISTA_HOME/pi/mcp.json` in the standard `mcpServers` format, so entries copy across to and from Claude Code and Cursor. The file is the same `mcpServers` map those tools read, and `${VAR}` references are expanded from the environment when Pi connects. Reference tokens as `${ENV_VAR}` rather than writing them in the file; OAuth login from the UI is coming.
 3. **Projects**: add folders with the folder icon in the sidebar. A thread's tools run inside its project folder. A scratch workspace exists by default.
 
@@ -103,7 +135,11 @@ docs/                Architecture and packaging notes
 
 Deploying to a team? A managed policy file can preset and lock settings, see [docs/ENTERPRISE.md](docs/ENTERPRISE.md).
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the protocol, the browser bridge and the Electron/Tauri packaging plan.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the protocol, the browser bridge and the Electron/Tauri packaging plan, and [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for MCP and other integrations.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started and [SECURITY.md](SECURITY.md) to report a vulnerability. Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

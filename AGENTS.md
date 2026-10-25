@@ -10,7 +10,7 @@ Pista stays **service-agnostic**. It reaches any backend only through public cha
 ## Project facts
 
 - **What it is**: an open-source desktop agent app built on the Pi agent harness,
-  UI modelled on the Codex app. Details in `README.md` and
+  UI inspired by agent apps such as OpenAI's Codex. Details in `README.md` and
   `docs/ARCHITECTURE.md`.
 - **Monorepo**: pnpm workspaces, Node 22+, TypeScript, ESM (`"type": "module"`).
   - `apps/host` — Node sidecar: Pi SDK sessions, WebSocket server, `mcp-servers`/`browser`/
