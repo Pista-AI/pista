@@ -1,0 +1,74 @@
+name: Bug report
+description: Report something that is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please do not include API keys, tokens, or personal file paths in this issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you see?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence of steps that shows the problem.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Pista version or commit
+      description: A release tag, or the output of `git rev-parse --short HEAD` if you run from source.
+      placeholder: "v0.1.0 or abc1234"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.2 (arm64), Ubuntu 24.04, Windows 11"
+    validations:
+      required: true
+  - type: dropdown
+    id: run-mode
+    attributes:
+      label: How do you run Pista?
+      options:
+        - Desktop app
+        - "pnpm dev"
+        - "Headless (pnpm build && pnpm start)"
+        - Other (describe in the steps)
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Model provider
+      description: Optional. For example Anthropic, OpenAI, Nebius, or a local runtime such as llama.cpp or LM Studio. Do not paste keys.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant terminal or host output. Remove secrets and personal paths before pasting.
+      render: shell
+    validations:
+      required: false

@@ -3,6 +3,14 @@
   "private": true,
   "description": "Open-source desktop agent app built on the Pi agent harness.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pista-AI/pista.git"
+  },
+  "homepage": "https://github.com/Pista-AI/pista#readme",
+  "bugs": {
+    "url": "https://github.com/Pista-AI/pista/issues"
+  },
   "engines": {
     "node": ">=22"
   },

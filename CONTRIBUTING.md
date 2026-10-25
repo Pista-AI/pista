@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping with Pista.
+Thanks for helping with Pista. Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before taking part.
 
 ## Setup
 
