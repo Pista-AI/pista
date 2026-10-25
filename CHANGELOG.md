@@ -25,9 +25,13 @@ First public release.
 - Guards for small local models: pruning of past reasoning and bulky tool results, a loop guard, and temperature 0 on browsing turns.
 - Long-running work: goals with a checker, plans, sub-agent roles, a decisions log, and cross-thread memory.
 - Project trust: a project's own `.pi/` resources (MCP servers, extensions, skills) load only for trusted projects.
-- Managed policy file for organisations: locked and default settings, gateway providers, OIDC sign-in via the device flow, provider and model allowlists, MCP, extension and skill allowlists, and tool rules (see `docs/ENTERPRISE.md`).
+- Managed policy for organisations (`docs/ENTERPRISE.md`): locked and default settings, delivery by file, MDM (macOS managed preferences, Windows registry) or a signed policy URL, gateway providers, provider and model allowlists, MCP, extension and skill allowlists, tool rules, proxy and CA settings, and browser domain allow/deny lists.
+- Enterprise sign-in with an OIDC identity provider through the device authorization flow.
+- Audit export of agent activity over OTLP (admin-configured, off by default), and a retention setting that purges old threads.
+- Version gate and block screen: outside the policy's minimum/maximum version the host runs in blocked mode and the UI shows why. A desktop auto-updater (`electron-updater`) follows the policy's update channel and feed.
+- `pista policy check` (`pnpm policy:check`) to validate a deployed policy and report whether the host would start.
 - Headless server mode (`pnpm build && pnpm start`) with all state under `PISTA_HOME`, a Dockerfile, and CI that typechecks, tests and smoke-tests the headless host.
-- macOS packaging with ad-hoc signing by default, opt-in Developer ID signing and notarization, and a tagged-release CI workflow (see `docs/release-signing.md`).
+- macOS packaging with ad-hoc signing by default, opt-in Developer ID signing and notarization, a desktop packaging workflow, and a tagged-release CI workflow (see `docs/release-signing.md`).
 
 [Unreleased]: https://github.com/Pista-AI/pista/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Pista-AI/pista/releases/tag/v0.1.0

@@ -133,7 +133,7 @@ packages/pi-browser  The `browser_*` tools (also usable as a plain pi package)
 docs/                Architecture and packaging notes
 ```
 
-Deploying to a team? A managed policy file can preset and lock settings, see [docs/ENTERPRISE.md](docs/ENTERPRISE.md).
+Deploying to a team? A managed policy can preset and lock settings, restrict providers, MCP servers and browser domains, add OIDC sign-in, export an audit trail over OTLP and gate app versions. Validate a rollout with `pnpm policy:check`. See [docs/ENTERPRISE.md](docs/ENTERPRISE.md).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the protocol, the browser bridge and the Electron/Tauri packaging plan, and [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for MCP and other integrations.
 
