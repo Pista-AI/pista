@@ -4,6 +4,14 @@ Pista is an open-source desktop agent app for people who want an AI agent that w
 
 **Status:** early (0.1). macOS is the primary platform. Windows and Linux builds exist but are untested on real hardware.
 
+
+
+https://github.com/user-attachments/assets/511d843e-17e9-48e7-b136-4566c5b781fc
+
+
+
+
+
 <!-- screenshot: docs/screenshot.png -->
 
 ## What is Pi?
