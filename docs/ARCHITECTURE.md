@@ -70,6 +70,23 @@ Config is `<project>/.pista/verify.json`, read only while the project is trusted
 
 Every command must pass the managed policy's `tools.bash` rules before any of them runs; a denied one reports `skipped (blocked by policy)` and nothing runs. Commands run through the shell with the project as cwd and the timeout per command, in their own process group (killed whole on timeout or stop), one verify at a time per project. The config is read before the child runs; if it differs afterwards (the child rewrote `verify.json`), nothing runs and the line says `skipped (verify.json changed during run)`. The gate is skipped when no commands are configured, when the approval mode is read-only, and when the child made no file edits. Each run is logged as an `agent_result` decision; it is not emitted to the OTLP tool audit (the host, not the model, runs these commands, so they are not tool calls).
 
+
+## Model tiers
+
+`HostConfig.modelTiers` maps free-form tier names (a slug, `[a-z0-9][a-z0-9_-]*`, for example `local`, `cheap`, `standard`, `strong`) to concrete models. A role's `model` can then be `tier:<name>` instead of a model: in a role file (`model: tier:cheap`), in `agentOverrides` or in `agentRoles`. In config JSON the value is the string `"tier:cheap"` where a `{ provider, id }` object would go.
+
+Precedence is unchanged: `agentOverrides`, then `agentRoles`, then the file's model, then the parent's model. The first source that sets a model wins, and only then is a `tier:<name>` looked up (`resolveModelTier` in `roles.ts`). A tier that is not in `modelTiers` is not an error: the child uses the parent's model and the host logs a warning. It does not fall through to a lower-precedence source. The org model allowlist is checked on the resolved model exactly as for a concrete one, and a disallowed model falls back to the parent's. `modelTiers` and `tier:` values are shape-checked in managed policy `locked` and `defaults`; whether a tier exists is only checked when a child starts.
+
+```json
+{
+  "modelTiers": {
+    "cheap": { "provider": "anthropic", "id": "claude-haiku-4-5" },
+    "strong": { "provider": "anthropic", "id": "claude-opus-4-5" }
+  },
+  "agentOverrides": { "scout": { "model": "tier:cheap" }, "reviewer": { "model": "tier:strong" } }
+}
+```
+
 ## Source of truth for settings
 
 Pista's `config.json` owns the model and provider defaults, the approval mode and every other setting the UI shows. Pi's `$PISTA_HOME/pi/settings.json` is derived: `buildSession` rewrites its `defaultProvider` and `defaultModel` from `config.defaultModel` on every session build (when Pista has one), and the host never reads those two values back from Pi, so hand-editing them has no effect. `models.json` and `auth.json` are Pi-owned inputs that Pista only reads through Pi. A future managed-policy loader will generate the Pi files from policy rather than have users edit them.

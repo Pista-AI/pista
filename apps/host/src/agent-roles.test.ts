@@ -162,3 +162,10 @@ test("duplicate names in one folder warn", () => {
   assert.equal(roles.forProject(projectDir).dup!.description, "b");
   assert.ok(warnings.some((w) => /name "dup"/.test(w)));
 });
+
+test("a role file model may be tier:<name>; other shapes are rejected", () => {
+  const file = (model: string) => `---\nname: scout\ndescription: d\nmodel: ${model}\n---\n`;
+  assert.equal(parseAgentFile(file("tier:cheap")).model, "tier:cheap");
+  assert.deepEqual(parseAgentFile(file("p/m")).model, { provider: "p", id: "m" });
+  assert.throws(() => parseAgentFile(file("tier:Bad Name")), /tier:name/);
+});

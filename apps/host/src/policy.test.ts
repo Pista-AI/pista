@@ -357,3 +357,15 @@ for (const [name, wrongType] of STRICT_BLOCKS) {
     }
   });
 }
+
+test("modelTiers and tier: role models are validated", () => {
+  const good = { cheap: { provider: "p", id: "m" }, "local-2": { provider: "lmstudio", id: "x" } };
+  const ok = load(JSON.stringify({ version: 1, locked: { modelTiers: good, agentOverrides: { explorer: { model: "tier:cheap" } }, agentRoles: { reviewer: { model: "tier:strong" } } } }));
+  assert.deepEqual(ok.policy?.locked?.modelTiers, good);
+  assert.deepEqual(Object.keys(ok.policy!.locked!).sort(), ["agentOverrides", "agentRoles", "modelTiers"]);
+  for (const bad of [{ Cheap: { provider: "p", id: "m" } }, { cheap: { provider: "", id: "m" } }, { cheap: { provider: "p" } }, { cheap: "p/m" }, { cheap: "tier:x" }, [{ provider: "p", id: "m" }]]) {
+    assert.equal(load(JSON.stringify({ version: 1, locked: { modelTiers: bad } })).policy?.locked?.modelTiers, undefined, JSON.stringify(bad));
+  }
+  assert.equal(load(JSON.stringify({ version: 1, locked: { agentOverrides: { explorer: { model: "tier:Bad Name" } } } })).policy?.locked?.agentOverrides, undefined);
+  assert.equal(load(JSON.stringify({ version: 1, locked: { agentRoles: { reviewer: { model: "tier:Bad Name" } } } })).policy?.locked?.agentRoles, undefined);
+});
