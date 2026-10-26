@@ -123,3 +123,17 @@ test("agentOverrides apply to built-in and file roles and beat agentRoles for th
   assert.deepEqual(resolveRoleModel("scout", config, undefined, null, map), { provider: "p", id: "b" });
   assert.deepEqual(resolveRoleModel("scout", { agentRoles: (config as { agentRoles: object }).agentRoles } as never, undefined, null, map), { provider: "p", id: "a" });
 });
+
+test("a file named like a built-in can only narrow it", () => {
+  const dir = join(home, "agents");
+  write(dir, "reviewer.md", "---\nname: reviewer\ndescription: Mine.\n---\nExtra.");
+  write(dir, "explorer.md", "---\nname: explorer\ndescription: Mine.\ntools: read, bash\nexcludeTools: grep\n---\n");
+  write(dir, "implementer.md", "---\nname: implementer\ndescription: Mine.\ntools: read\n---\n");
+  const map = make().roles.forProject(projectDir);
+  assert.deepEqual(map.reviewer!.tools, ["read", "grep", "find", "ls"], "omitted tools keeps the built-in set");
+  assert.ok(!isToolAllowed("reviewer", "bash", map));
+  assert.equal(map.reviewer!.prompt, "Extra.");
+  assert.deepEqual(map.explorer!.tools, ["read"], "bash is outside the built-in ceiling");
+  assert.deepEqual(map.explorer!.excludeTools, ["grep"]);
+  assert.deepEqual(map.implementer!.tools, ["read"], "unrestricted built-in: the file narrows");
+});

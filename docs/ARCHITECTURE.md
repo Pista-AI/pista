@@ -56,7 +56,7 @@ Report at most ten paths, each with one line on why it matters.
 
 `name` (lowercase slug) and `description` (shown to the model) are required. `tools` is an allowlist (comma list or YAML list; omitted means everything the parent has, like the implementer), `excludeTools` a denylist, `model` is `provider/model`, `thinking` a Pi level, and the body is the role prompt: `append` follows the built-in role prompt, `replace` replaces it (Pista's own system prompt always stays). Unknown keys are ignored; nothing that loosens permissions is read. A malformed file is skipped with a logged warning.
 
-A custom role is an ordinary child thread: the role gate, approvals, org policy gate and audit extensions attach exactly as for built-in roles, so a file can only narrow what the parent could do. `HostConfig.agentOverrides` (`{ model, thinking, tools, excludeTools, disabled }` per role name) applies on top of built-in and file roles; its `tools` intersect with the role's, and its `model` wins over `agentRoles`, which stays for now.
+A file named like a built-in (`explorer`, `implementer`, `reviewer`) can only narrow it: the built-in tool set is the ceiling, and omitted `tools` keeps it. Custom roles are configured through `agentOverrides`, not `agentRoles` (which stays for the built-ins' models).\n\nA custom role is an ordinary child thread: the role gate, approvals, org policy gate and audit extensions attach exactly as for built-in roles, so a file can only narrow what the parent could do. `HostConfig.agentOverrides` (`{ model, thinking, tools, excludeTools, disabled }` per role name) applies on top of built-in and file roles; its `tools` intersect with the role's, and its `model` wins over `agentRoles`, which stays for now.
 
 ## Source of truth for settings
 

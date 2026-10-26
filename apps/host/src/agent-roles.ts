@@ -60,6 +60,16 @@ export function loadAgentDir(dir: string, warn: (message: string) => void): Agen
   return roles;
 }
 
+/** A file named like a built-in keeps the built-in's tool set as a ceiling: tools intersect, exclusions add up. */
+function narrowBuiltin(file: AgentRole): AgentRole {
+  const base = Object.hasOwn(ROLES, file.name) ? ROLES[file.name as keyof typeof ROLES] : undefined;
+  if (!base) return file;
+  const tools = !base.tools.length ? file.tools : !file.tools.length ? base.tools : file.tools.filter((t) => base.tools.includes(t));
+  // An allowlist that intersects to nothing would read as "unrestricted", so the role is switched off instead.
+  const empty = file.tools.length > 0 && base.tools.length > 0 && tools.length === 0;
+  return { ...file, tools, ...(empty ? { disabled: true } : {}) };
+}
+
 export interface AgentRolesOptions {
   /** `$PISTA_HOME/agents`. */
   userDir: string;
@@ -83,11 +93,11 @@ export class AgentRoles {
   }
 
   forProject(projectPath: string): RoleMap {
-    this.user ??= Object.fromEntries(loadAgentDir(this.opts.userDir, this.warn).map((r) => [r.name, r]));
+    this.user ??= Object.fromEntries(loadAgentDir(this.opts.userDir, this.warn).map((r) => [r.name, narrowBuiltin(r)]));
     let merged = this.projects.get(projectPath);
     if (!merged) {
       const own = this.opts.isTrusted(projectPath) ? loadAgentDir(join(projectPath, ".pista", "agents"), this.warn) : [];
-      merged = { ...ROLES, ...this.user, ...Object.fromEntries(own.map((r) => [r.name, r])) };
+      merged = { ...ROLES, ...this.user, ...Object.fromEntries(own.map((r) => [r.name, narrowBuiltin(r)])) };
       this.projects.set(projectPath, merged);
     }
     return applyOverrides(merged, this.opts.overrides());
