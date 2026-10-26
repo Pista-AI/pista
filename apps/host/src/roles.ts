@@ -104,7 +104,9 @@ export function resolveRoleModel(
   if (!spec) return parentModel;
   const { model: own, warning } = resolveModelTier(spec, config.modelTiers, parentModel);
   if (warning) warn(`${role}: ${warning}`);
-  return own && isModelAllowed(policy, own) ? own : parentModel;
+  if (own && isModelAllowed(policy, own)) return own;
+  if (own && typeof spec === "string") warn(`${role}: model tier "${spec.slice(5)}" resolves to ${own.provider}/${own.id}, which the policy disallows; using the parent's model`);
+  return parentModel;
 }
 
 export function isToolAllowed(role: AgentRoleName, toolName: string, roles: RoleMap = ROLES): boolean {

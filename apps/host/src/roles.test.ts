@@ -94,3 +94,37 @@ test("model tiers: the allowlist applies to the resolved model like a concrete o
   assert.deepEqual(run("cheap"), override);
   assert.deepEqual(run("strong"), parent);
 });
+
+test("model tiers: allowlist with overrides, role-file models, unmapped tiers and bad user tiers", () => {
+  const policy = { version: 1 as const, models: { allow: ["p/big", "p/small"] } };
+  const warnings: string[] = [];
+  const warn = (m: string) => warnings.push(m);
+  const run = (c: Partial<HostConfig>, pol: ManagedPolicy | undefined = policy) => resolveRoleModel("explorer", tcfg({ modelTiers: tiers, ...c }), parent, pol, ROLES, warn);
+  assert.deepEqual(run({ agentOverrides: { explorer: { model: "tier:cheap" } } }), override);
+  assert.equal(warnings.length, 0);
+  assert.deepEqual(run({ agentOverrides: { explorer: { model: "tier:strong" } } }), parent);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /explorer.*strong.*disallows/);
+  ROLES.explorer.model = "tier:strong";
+  try {
+    assert.deepEqual(run({}), parent);
+    assert.equal(warnings.length, 2);
+    ROLES.explorer.model = "tier:cheap";
+    assert.deepEqual(run({}), override);
+    assert.equal(warnings.length, 2);
+  } finally {
+    delete ROLES.explorer.model;
+  }
+  // Unmapped tier: the parent is used and is still checked against the allowlist.
+  assert.deepEqual(run({ agentRoles: { explorer: { model: "tier:nope" } } }), parent);
+  assert.equal(warnings.length, 3);
+  assert.match(warnings[2]!, /nope/);
+  assert.deepEqual(run({ agentRoles: { explorer: { model: "tier:nope" } } }, { version: 1, models: { allow: ["p/small"] } }), parent);
+  // A user-config tier with an empty provider or id is treated as unmapped.
+  const bad = (t: HostConfig["modelTiers"]) => run({ modelTiers: t, agentRoles: { explorer: { model: "tier:cheap" } } });
+  const before = warnings.length;
+  assert.deepEqual(bad({ cheap: { provider: "", id: "small" } }), parent);
+  assert.deepEqual(bad({ cheap: { provider: "p", id: "" } }), parent);
+  assert.equal(warnings.length, before + 2);
+  assert.match(warnings[before]!, /cheap/);
+});

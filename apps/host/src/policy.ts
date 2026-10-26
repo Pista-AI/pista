@@ -140,7 +140,7 @@ function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
   if (key === "localServers") return (value as unknown[]).every(isServer);
   if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelSpec(v.model));
-  if (key === "modelTiers") return Object.entries(value as Record<string, unknown>).every(([name, v]) => TIER_NAME.test(name) && isRecord(v) && isNonEmpty(v.provider) && isNonEmpty(v.id));
+  if (key === "modelTiers") return !Array.isArray(value) && Object.entries(value as Record<string, unknown>).every(([name, v]) => TIER_NAME.test(name) && isRecord(v) && isNonEmpty(v.provider) && isNonEmpty(v.id));
   if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(validOverride);
   return true;
 }
