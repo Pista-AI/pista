@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { HostConfig, ModelRef } from "@pista/protocol";
-import { isRestrictedRole, isToolAllowed, resolveRoleModel, ROLES, roleGateExtension } from "./roles.ts";
+import type { HostConfig, ManagedPolicy, ModelRef } from "@pista/protocol";
+import { isRestrictedRole, isToolAllowed, resolveModelTier, resolveRoleModel, ROLES, roleGateExtension } from "./roles.ts";
 
 const parent: ModelRef = { provider: "p", id: "big" };
 const override: ModelRef = { provider: "p", id: "small" };
@@ -53,4 +53,44 @@ test("model resolution: a role model the policy disallows falls back to the pare
   const policy = { version: 1 as const, models: { allow: ["p/big"] } };
   assert.deepEqual(resolveRoleModel("explorer", config({ explorer: { model: override } }), parent, policy), parent);
   assert.deepEqual(resolveRoleModel("explorer", config({ explorer: { model: parent } }), override, policy), parent);
+});
+
+const tiers: HostConfig["modelTiers"] = { cheap: { provider: "p", id: "small" }, strong: { provider: "q", id: "huge" } };
+const tcfg = (c: Partial<HostConfig>) => c as HostConfig;
+
+test("model tiers: resolveModelTier maps a tier, passes a concrete model, and falls back with a warning", () => {
+  assert.deepEqual(resolveModelTier("tier:cheap", tiers, parent), { model: override });
+  assert.deepEqual(resolveModelTier(override, tiers, parent), { model: override });
+  const missing = resolveModelTier("tier:nope", tiers, parent);
+  assert.deepEqual(missing.model, parent);
+  assert.match(missing.warning!, /nope/);
+  assert.deepEqual(resolveModelTier("tier:cheap", undefined, parent).model, parent);
+  assert.deepEqual(resolveModelTier("tier:toString", tiers, parent).model, parent);
+});
+
+test("model tiers: precedence is unchanged and an unmapped tier does not fall through", () => {
+  const warnings: string[] = [];
+  const warn = (m: string) => warnings.push(m);
+  const run = (c: Partial<HostConfig>, policy?: ManagedPolicy) => resolveRoleModel("explorer", tcfg({ modelTiers: tiers, ...c }), parent, policy, ROLES, warn);
+  assert.deepEqual(run({ agentOverrides: { explorer: { model: "tier:cheap" } }, agentRoles: { explorer: { model: { provider: "z", id: "c" } } } }), override);
+  assert.deepEqual(run({ agentOverrides: { explorer: { model: { provider: "z", id: "c" } } }, agentRoles: { explorer: { model: "tier:cheap" } } }), { provider: "z", id: "c" });
+  assert.deepEqual(run({ agentRoles: { explorer: { model: "tier:strong" } } }), tiers.strong);
+  assert.equal(warnings.length, 0);
+  ROLES.explorer.model = "tier:cheap";
+  try {
+    assert.deepEqual(run({}), override);
+    assert.deepEqual(run({ agentOverrides: { explorer: { model: { provider: "z", id: "c" } } } }), { provider: "z", id: "c" });
+    assert.deepEqual(run({ agentOverrides: { explorer: { model: "tier:nope" } } }), parent);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /explorer.*nope/);
+  } finally {
+    delete ROLES.explorer.model;
+  }
+});
+
+test("model tiers: the allowlist applies to the resolved model like a concrete one", () => {
+  const policy = { version: 1 as const, models: { allow: ["p/big", "p/small"] } };
+  const run = (tier: string) => resolveRoleModel("explorer", tcfg({ modelTiers: tiers, agentRoles: { explorer: { model: `tier:${tier}` } } }), parent, policy, ROLES, () => {});
+  assert.deepEqual(run("cheap"), override);
+  assert.deepEqual(run("strong"), parent);
 });

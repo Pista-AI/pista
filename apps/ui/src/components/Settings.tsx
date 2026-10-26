@@ -78,8 +78,8 @@ function AgentRoles() {
       </label>
       {(Object.keys(ROLE_DESCRIPTIONS) as BuiltinAgentRoleName[]).map((role) => {
         const model = roles[role]?.model;
-        const value = model ? `${model.provider}/${model.id}` : "";
-        const known = !model || models.some((m) => m.provider === model.provider && m.id === model.id);
+        const value = !model ? "" : typeof model === "string" ? model : `${model.provider}/${model.id}`;
+        const known = !model || (typeof model !== "string" && models.some((m) => m.provider === model.provider && m.id === model.id));
         return (
           <div key={role} className="field">
             <label htmlFor={`role-${role}`} style={{ textTransform: "capitalize" }}>
