@@ -6,7 +6,7 @@ import { fauxModels, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("verify-gate");
 const { createAgentRunner } = await import("./subagent.ts");
-const { parseVerifyConfig, runVerify } = await import("./verify.ts");
+const { parseVerifyConfig, runVerify, shellRunner, withProjectLock } = await import("./verify.ts");
 const { compileToolRules } = await import("./policy-tools.ts");
 
 const { piAi, faux, models, ref } = await fauxModels();
@@ -32,12 +32,12 @@ function writeConfig(config: unknown) {
 const writeCall = () => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(projectDir, "out.txt"), content: "x" }));
 const say = (text: string) => piAi.fauxAssistantMessage(text);
 
-async function dispatch(role: "implementer" | "explorer", run: ReturnType<typeof fakeRunner>["run"]) {
+async function dispatchFull(role: "implementer" | "explorer", run: ReturnType<typeof fakeRunner>["run"]) {
   const { summary } = await manager.create(project.id);
   const runAgent = createAgentRunner({ threads: manager, ref: { threadId: summary.id }, verify: { store, run } });
-  const result = await runAgent({ role, brief: "do it" });
-  return result.content[0]!.text;
+  return runAgent({ role, brief: "do it" });
 }
+const dispatch = async (role: "implementer" | "explorer", run: ReturnType<typeof fakeRunner>["run"]) => (await dispatchFull(role, run)).content[0]!.text;
 
 test("setup: the project is trusted with a verify.json", () => {
   store.setProjectTrusted(project.id, true);
@@ -141,4 +141,57 @@ test("parseVerifyConfig applies defaults and rejects malformed input", () => {
   assert.equal(parseVerifyConfig({ commands: [] }), undefined);
   assert.equal(parseVerifyConfig("nope"), undefined);
   assert.equal(parseVerifyConfig({ commands: ["a"], maxAttempts: -1 })?.maxAttempts, 2);
+});
+
+test("a timed-out command with a background child resolves quickly as timed out", { skip: process.platform === "win32" }, async () => {
+  const started = Date.now();
+  const result = await shellRunner('sh -c "sleep 30 & wait"', { cwd: projectDir, timeoutMs: 200 });
+  assert.equal(result.timedOut, true);
+  assert.ok(Date.now() - started < 3000, "does not wait for the background process");
+});
+
+test("a child that rewrites verify.json during its run gets no verify run", async () => {
+  writeConfig({ commands: ["pnpm test"] });
+  const runner = fakeRunner([{}]);
+  faux.setResponses([writeCall(), () => (writeConfig({ commands: ["evil"] }), say("report"))]);
+  const out = await dispatch("implementer", runner.run);
+  assert.match(out, /Verify: skipped \(verify.json changed during run\)/);
+  assert.equal(runner.calls.length, 0);
+  writeConfig({ commands: ["pnpm test"] });
+});
+
+test("tool calls are counted once across a verify retry", async () => {
+  const runner = fakeRunner([{ code: 1, output: "bad" }, { code: 0 }]);
+  faux.setResponses([writeCall(), say("first"), writeCall(), say("fixed")]);
+  const result = await dispatchFull("implementer", runner.run);
+  assert.equal(result.details.toolCalls, 2);
+  assert.match(result.content[0]!.text, /Verify: passed/);
+});
+
+test("a stop during verify ends the run without recording a failed verify", async () => {
+  const decisions: { summary: string }[] = [];
+  const { summary } = await manager.create(project.id);
+  const abort = new AbortController();
+  const run = async (_c: string, opts: { signal?: AbortSignal }) => {
+    abort.abort();
+    await new Promise((r) => opts.signal?.addEventListener("abort", r, { once: true }));
+    return { code: 1, output: "killed", timedOut: false };
+  };
+  const runAgent = createAgentRunner({ threads: manager, ref: { threadId: summary.id }, verify: { store, run }, record: (d) => void decisions.push(d) });
+  faux.setResponses([writeCall(), say("report")]);
+  const result = await runAgent({ role: "implementer", brief: "do it" }, abort.signal);
+  assert.match(result.content[0]!.text, /^Aborted/);
+  assert.ok(!decisions.some((d) => /^Verify/.test(d.summary)));
+});
+
+test("withProjectLock runs same-key jobs one at a time", async () => {
+  let running = 0;
+  let peak = 0;
+  const job = () => withProjectLock("p", async () => {
+    peak = Math.max(peak, ++running);
+    await new Promise((r) => setTimeout(r, 20));
+    running--;
+  });
+  await Promise.all([job(), job(), job()]);
+  assert.equal(peak, 1);
 });

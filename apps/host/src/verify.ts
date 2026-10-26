@@ -2,10 +2,9 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
-import type { ConfigStore } from "./config.ts";
+import { type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import type { ToolRules } from "./policy-tools.ts";
 import { resolveProjectTrust } from "./project-trust.ts";
-import { WORKSPACE_DIR } from "./config.ts";
 
 export const DEFAULT_VERIFY_TIMEOUT_SEC = 600;
 export const DEFAULT_VERIFY_ATTEMPTS = 2;
@@ -80,29 +79,67 @@ export async function runVerify(config: VerifyConfig, cwd: string, rules: ToolRu
   return { status: "passed" };
 }
 
-/** Shell command with the project as cwd; output is capped as it arrives. */
+/** Same string for the same effective config; compares the config before and after a child's run. */
+export const verifyKey = (config: VerifyConfig | undefined) => JSON.stringify(config ?? null);
+
+const locks = new Map<string, Promise<unknown>>();
+/** Runs `fn` after every earlier call for the same project finished, so concurrent children do not run checks at once. */
+export function withProjectLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const next = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+  const tail = next.catch(() => {});
+  locks.set(key, tail);
+  void tail.then(() => locks.get(key) === tail && locks.delete(key));
+  return next;
+}
+
+/** How long to wait for output streams after the shell exited or was killed. */
+const EXIT_GRACE_MS = 200;
+
+/** Shell command with the project as cwd, in its own process group so a timeout or stop kills what it started too. Output is capped as it arrives. */
 export const shellRunner: CommandRunner = (command, { cwd, timeoutMs, signal }) =>
   new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, signal, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, { cwd, shell: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let timedOut = false;
+    let done = false;
     const take = (chunk: Buffer) => {
       output = (output + chunk.toString()).slice(-VERIFY_OUTPUT_CHARS * 4);
     };
     child.stdout.on("data", take);
     child.stderr.on("data", take);
+    const kill = () => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    };
+    const finish = (code: number | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ code, output, timedOut });
+    };
+    // Do not wait for `close`: a background process holding the pipes open would hang it.
+    const settle = (code: number | null) => void setTimeout(() => finish(code), EXIT_GRACE_MS);
+    const onAbort = () => {
+      kill();
+      settle(null);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      kill();
+      settle(null);
     }, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: 1, output: output + String(error.message), timedOut });
+      output += String(error.message);
+      finish(1);
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, output, timedOut });
-    });
+    child.on("exit", (code) => settle(code));
+    child.on("close", (code) => finish(code));
   });
 
 export const feedbackPrompt = (output: string) => `Verification failed. Fix the problems below, then finish again with your report.\n\n${output}`;

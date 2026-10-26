@@ -6,7 +6,7 @@ import type { ThreadRef } from "./extensions.ts";
 import { usageTotals } from "./models.ts";
 import { availableRoles, isRestrictedRole, ROLES, type RoleMap } from "./roles.ts";
 import { clip } from "./text.ts";
-import { feedbackPrompt, resolveVerifyConfig, runVerify, shellRunner, type VerifyDeps } from "./verify.ts";
+import { feedbackPrompt, resolveVerifyConfig, runVerify, shellRunner, verifyKey, withProjectLock, type VerifyDeps } from "./verify.ts";
 import type { ThreadManager } from "./threads.ts";
 
 export const MAX_RUNNING_CHILDREN = 3;
@@ -167,18 +167,31 @@ export function createAgentRunner(opts: AgentToolOptions) {
             if (signal?.aborted) onAbort();
             timer = setTimeout(() => resolve("timeout"), opts.timeoutMs ?? DEFAULT_CHILD_TIMEOUT_MS);
           });
+          let stopReason: "aborted" | "timeout" | undefined;
+          // Verify commands are bounded by the same stop as the child.
+          const verifyAbort = new AbortController();
+          void stopped.then((reason) => {
+            stopReason = reason;
+            verifyAbort.abort();
+          });
+          // The config as it was before the child ran: a child that rewrites verify.json must not choose what the host runs.
+          const cwd = child.session.sessionManager.getCwd();
+          const before = opts.verify ? resolveVerifyConfig(opts.verify.store, cwd) : undefined;
           /** One prompt and the wait for the run to settle, racing the abort and the timeout. */
-          const turn = (prompt: string) => {
+          const turn = async (prompt: string) => {
             // Subscribe before prompting so a fast run cannot finish unobserved.
             const waiter = runWaiter(child.session, (toolName, isError) => {
               if (!isError && (toolName === "edit" || toolName === "write")) edited = true;
               update(`${who} working: ${++toolCalls} tool calls.`);
             });
-            unsubscribe = waiter.unsubscribe;
             // startPrompt's run rejects when Pi cannot start the run (no model, auth, ...): no agent_settled would follow.
             const finished = threads.startPrompt(childId, prompt, undefined).then(({ run }) => run).then(() => waiter.runDone.then(() => "finished" as const));
             finished.catch(() => {}); // an abort or timeout can win the race; do not leave a late rejection unhandled
-            return Promise.race([stopped, finished]);
+            try {
+              return await Promise.race([stopped, finished]);
+            } finally {
+              waiter.unsubscribe();
+            }
           };
           let outcome = await turn(brief);
 
@@ -186,15 +199,19 @@ export function createAgentRunner(opts: AgentToolOptions) {
           let verifyLine = "";
           const verify = opts.verify;
           if (outcome === "finished" && verify && edited) {
-            const cwd = child.session.sessionManager.getCwd();
-            const config = resolveVerifyConfig(verify.store, cwd);
+            const config = before;
             const skip = (reason: string) => `Verify: skipped (${reason})`;
-            if (!config) verifyLine = "";
+            if (verifyKey(resolveVerifyConfig(verify.store, cwd)) !== verifyKey(before)) verifyLine = skip("verify.json changed during run");
+            else if (!config) verifyLine = "";
             else if (verify.store.config.approvalMode === "read-only") verifyLine = skip("read-only approval mode");
             else if (role && isRestrictedRole(role, opts.roles)) verifyLine = skip("read-only role");
             else {
               for (let attempt = 1; ; attempt++) {
-                const result = await runVerify(config, cwd, verify.store.toolRules, verify.run ?? shellRunner, signal);
+                const result = await withProjectLock(cwd, () => runVerify(config, cwd, verify.store.toolRules, verify.run ?? shellRunner, verifyAbort.signal));
+                if (stopReason || signal?.aborted) {
+                  outcome = stopReason ?? "aborted";
+                  break;
+                }
                 opts.record?.({
                   kind: "agent_result",
                   summary: `Verify ${result.status}${result.status === "failed" ? ` (attempt ${attempt}/${config.maxAttempts})` : ""}`,
@@ -206,7 +223,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
                 else if (attempt >= config.maxAttempts) verifyLine = `Verify: failed after ${attempt} attempts (${result.command})`;
                 else {
                   outcome = await turn(feedbackPrompt(result.output));
-                  if (outcome === "finished") continue;
+                  if (outcome === "finished" && !stopReason) continue;
                 }
                 break;
               }
