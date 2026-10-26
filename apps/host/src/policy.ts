@@ -8,6 +8,7 @@ import { parseMcpRule } from "./policy-tools.ts";
 import { compareVersions, parseVersion } from "./semver.ts";
 import { normalizeDomainPattern } from "@pista/pi-browser/domains";
 import { auditSection } from "./audit-policy.ts";
+import { isTierRef, TIER_NAME } from "./roles.ts";
 import { isRecord, looksLikeSecret } from "./secrets.ts";
 import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
 
@@ -98,6 +99,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   defaultModel: "object",
   agentRoles: "object",
   agentOverrides: "object",
+  modelTiers: "object",
   defaultThinkingMode: "enum",
   instructions: "string",
   linkTarget: "enum",
@@ -118,13 +120,16 @@ const ROLES = ["explorer", "implementer", "reviewer"];
 const SERVER_KINDS = ["lmstudio", "ollama", "llamacpp", "openai"];
 
 const isModelRef = (value: unknown): boolean => isRecord(value) && typeof value.provider === "string" && typeof value.id === "string";
+/** A concrete model or a `tier:<name>` reference (a role's model). */
+const isModelSpec = (value: unknown): boolean => isModelRef(value) || isTierRef(value);
 const isServer = (value: unknown): boolean =>
   isRecord(value) && typeof value.id === "string" && typeof value.name === "string" && typeof value.baseUrl === "string" && SERVER_KINDS.includes(value.kind as string);
 
+const isNonEmpty = (v: unknown) => typeof v === "string" && v.trim() !== "";
 const isStrings = (v: unknown) => Array.isArray(v) && v.every((s) => typeof s === "string");
 const validOverride = (v: unknown): boolean =>
   isRecord(v) &&
-  (v.model === undefined || isModelRef(v.model)) &&
+  (v.model === undefined || isModelSpec(v.model)) &&
   (v.thinking === undefined || (typeof v.thinking === "string" && ENUMS.defaultThinkingMode!.includes(v.thinking) && v.thinking !== "auto")) &&
   (v.tools === undefined || isStrings(v.tools)) &&
   (v.excludeTools === undefined || isStrings(v.excludeTools)) &&
@@ -134,7 +139,8 @@ const validOverride = (v: unknown): boolean =>
 function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
   if (key === "localServers") return (value as unknown[]).every(isServer);
-  if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelRef(v.model));
+  if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelSpec(v.model));
+  if (key === "modelTiers") return !Array.isArray(value) && Object.entries(value as Record<string, unknown>).every(([name, v]) => TIER_NAME.test(name) && isRecord(v) && isNonEmpty(v.provider) && isNonEmpty(v.id));
   if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(validOverride);
   return true;
 }

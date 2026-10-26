@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentRole, HostConfig, ThinkingLevel } from "@pista/protocol";
-import { applyOverrides, ROLES, type RoleMap } from "./roles.ts";
+import { applyOverrides, isTierRef, ROLES, type RoleMap } from "./roles.ts";
 
 const LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const NAME = /^[a-z][a-z0-9-]{0,63}$/;
@@ -26,9 +26,10 @@ export function parseAgentFile(text: string): AgentRole {
   const role: AgentRole = { name: f.name, description: f.description.trim(), tools: list(f.tools, "tools") ?? [] };
   const exclude = list(f.excludeTools, "excludeTools");
   if (exclude?.length) role.excludeTools = exclude;
-  if (f.model !== undefined) {
+  if (isTierRef(f.model)) role.model = f.model;
+  else if (f.model !== undefined) {
     const [provider, ...rest] = String(f.model).split("/");
-    if (!provider || !rest.join("/")) throw new Error('model must look like "provider/model"');
+    if (!provider || !rest.join("/")) throw new Error('model must look like "provider/model" or "tier:name"');
     role.model = { provider, id: rest.join("/") };
   }
   if (f.thinking !== undefined) {

@@ -58,6 +58,22 @@ Report at most ten paths, each with one line on why it matters.
 
 A file named like a built-in (`explorer`, `implementer`, `reviewer`) can only narrow it: the built-in tool set is the ceiling, and omitted `tools` keeps it. Custom roles are configured through `agentOverrides`, not `agentRoles` (which stays for the built-ins' models).\n\nA custom role is an ordinary child thread: the role gate, approvals, org policy gate and audit extensions attach exactly as for built-in roles, so a file can only narrow what the parent could do. `HostConfig.agentOverrides` (`{ model, thinking, tools, excludeTools, disabled }` per role name) applies on top of built-in and file roles; its `tools` intersect with the role's, and its `model` wins over `agentRoles`, which stays for now.
 
+## Model tiers
+
+`HostConfig.modelTiers` maps free-form tier names (a slug, `[a-z0-9][a-z0-9_-]*`, for example `local`, `cheap`, `standard`, `strong`) to concrete models. A role's `model` can then be `tier:<name>` instead of a model: in a role file (`model: tier:cheap`), in `agentOverrides` or in `agentRoles`. In config JSON the value is the string `"tier:cheap"` where a `{ provider, id }` object would go.
+
+Precedence is unchanged: `agentOverrides`, then `agentRoles`, then the file's model, then the parent's model. The first source that sets a model wins, and only then is a `tier:<name>` looked up (`resolveModelTier` in `roles.ts`). A tier that is not in `modelTiers` is not an error: the child uses the parent's model and the host logs a warning. It does not fall through to a lower-precedence source. The org model allowlist is checked on the resolved model exactly as for a concrete one, and a disallowed model falls back to the parent's. `modelTiers` and `tier:` values are shape-checked in managed policy `locked` and `defaults`; whether a tier exists is only checked when a child starts.
+
+```json
+{
+  "modelTiers": {
+    "cheap": { "provider": "anthropic", "id": "claude-haiku-4-5" },
+    "strong": { "provider": "anthropic", "id": "claude-opus-4-5" }
+  },
+  "agentOverrides": { "scout": { "model": "tier:cheap" }, "reviewer": { "model": "tier:strong" } }
+}
+```
+
 ## Source of truth for settings
 
 Pista's `config.json` owns the model and provider defaults, the approval mode and every other setting the UI shows. Pi's `$PISTA_HOME/pi/settings.json` is derived: `buildSession` rewrites its `defaultProvider` and `defaultModel` from `config.defaultModel` on every session build (when Pista has one), and the host never reads those two values back from Pi, so hand-editing them has no effect. `models.json` and `auth.json` are Pi-owned inputs that Pista only reads through Pi. A future managed-policy loader will generate the Pi files from policy rather than have users edit them.

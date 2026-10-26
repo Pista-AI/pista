@@ -147,7 +147,7 @@ export type AgentRoleName = string;
 /** A sub-agent role: its default model, tool allowlist (empty = everything the parent has) and a short description. Files can only narrow tools. */
 export interface AgentRole {
   name: AgentRoleName;
-  model?: ModelRef;
+  model?: ModelSpec;
   tools: string[];
   /** Tools the role may not use, on top of `tools`. */
   excludeTools?: string[];
@@ -162,7 +162,7 @@ export interface AgentRole {
 
 /** Per-role settings on top of a built-in or file role. Can only narrow tools, never widen them. */
 export interface AgentOverride {
-  model?: ModelRef;
+  model?: ModelSpec;
   thinking?: ThinkingLevel;
   tools?: string[];
   excludeTools?: string[];
@@ -232,6 +232,9 @@ export interface ModelRef {
   provider: string;
   id: string;
 }
+
+/** A role's model: a concrete model, or `tier:<name>` resolved through `HostConfig.modelTiers` when the child starts. */
+export type ModelSpec = ModelRef | `tier:${string}`;
 
 export interface ModelInfo extends ModelRef {
   name: string;
@@ -381,6 +384,12 @@ export interface HostConfig {
   agentRoles?: Partial<Record<AgentRoleName, Pick<AgentRole, "model">>>;
   /** Per-role overrides applied on top of built-in and file roles. */
   agentOverrides?: Record<AgentRoleName, AgentOverride>;
+  /**
+   * Named model slots (`local`, `cheap`, `standard`, `strong`; any `[a-z0-9][a-z0-9_-]*`) that a role's `model` can
+   * point at as `tier:<name>`. An unmapped tier falls back to the parent's model. The org model allowlist applies
+   * to the resolved model.
+   */
+  modelTiers?: Record<string, ModelRef>;
   defaultThinkingMode: ThinkingMode;
   /** Extra system-prompt text appended for every thread. */
   instructions: string;
