@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { ManagedPolicy } from "@pista/protocol";
 import { AgentRoles, parseAgentFile } from "./agent-roles.ts";
-import { availableRoles, isToolAllowed, resolveRoleModel, rolePrompt, roleGateExtension } from "./roles.ts";
+import { availableRoles, isToolAllowed, resolveRoleModel, roleOf, rolePrompt, roleGateExtension } from "./roles.ts";
 import { agentToolExtension } from "./subagent.ts";
 import { makeManager, setupHome } from "./test-helpers.ts";
 
@@ -136,4 +136,29 @@ test("a file named like a built-in can only narrow it", () => {
   assert.deepEqual(map.explorer!.tools, ["read"], "bash is outside the built-in ceiling");
   assert.deepEqual(map.explorer!.excludeTools, ["grep"]);
   assert.deepEqual(map.implementer!.tools, ["read"], "unrestricted built-in: the file narrows");
+});
+
+test("revoked trust drops project roles on the next call", () => {
+  let trusted = true;
+  const roles = new AgentRoles({ userDir: join(home, "agents"), isTrusted: () => trusted, overrides: () => undefined, warn: () => {} });
+  assert.ok(roles.forProject(projectDir).local);
+  trusted = false;
+  assert.equal(roles.forProject(projectDir).local, undefined);
+});
+
+test("prototype names fail closed and a deleted role falls back to read-only", () => {
+  const map = make({ overrides: { constructor: { disabled: true }, toString: { tools: ["write"] } } }).roles.forProject(projectDir);
+  assert.deepEqual(roleOf("constructor", map).tools, ["read", "grep", "find", "ls"]);
+  assert.ok(!isToolAllowed("constructor", "write", map));
+  assert.ok(!isToolAllowed("deleted-role", "bash", map));
+  assert.throws(() => assert.ok(availableRoles(map).some((r) => r.name === "constructor")));
+});
+
+test("duplicate names in one folder warn", () => {
+  const dir = join(home, "agents");
+  write(dir, "dup-a.md", "---\nname: dup\ndescription: a\n---\n");
+  write(dir, "dup-b.md", "---\nname: dup\ndescription: b\n---\n");
+  const { roles, warnings } = make();
+  assert.equal(roles.forProject(projectDir).dup!.description, "b");
+  assert.ok(warnings.some((w) => /name "dup"/.test(w)));
 });

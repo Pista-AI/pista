@@ -52,7 +52,9 @@ export function loadAgentDir(dir: string, warn: (message: string) => void): Agen
   const roles: AgentRole[] = [];
   for (const file of files) {
     try {
-      roles.push(parseAgentFile(readFileSync(join(dir, file), "utf8")));
+      const role = parseAgentFile(readFileSync(join(dir, file), "utf8"));
+      if (roles.some((r) => r.name === role.name)) warn(`${join(dir, file)}: name "${role.name}" is also used by an earlier file in this folder; the later file wins`);
+      roles.push(role);
     } catch (error) {
       warn(`skipped agent file ${join(dir, file)}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -85,7 +87,7 @@ export interface AgentRolesOptions {
  */
 export class AgentRoles {
   private user: RoleMap | undefined;
-  private projects = new Map<string, RoleMap>();
+  private projects = new Map<string, AgentRole[]>();
   private warn: (message: string) => void;
 
   constructor(private opts: AgentRolesOptions) {
@@ -94,12 +96,13 @@ export class AgentRoles {
 
   forProject(projectPath: string): RoleMap {
     this.user ??= Object.fromEntries(loadAgentDir(this.opts.userDir, this.warn).map((r) => [r.name, narrowBuiltin(r)]));
-    let merged = this.projects.get(projectPath);
-    if (!merged) {
-      const own = this.opts.isTrusted(projectPath) ? loadAgentDir(join(projectPath, ".pista", "agents"), this.warn) : [];
-      merged = { ...ROLES, ...this.user, ...Object.fromEntries(own.map((r) => [r.name, narrowBuiltin(r)])) };
-      this.projects.set(projectPath, merged);
+    // Trust is checked on every call so revoking it drops project roles at once; only the parsed files are cached.
+    let own: AgentRole[] = [];
+    if (this.opts.isTrusted(projectPath)) {
+      own = this.projects.get(projectPath) ?? loadAgentDir(join(projectPath, ".pista", "agents"), this.warn);
+      this.projects.set(projectPath, own);
     }
+    const merged: RoleMap = { ...ROLES, ...this.user, ...Object.fromEntries(own.map((r) => [r.name, narrowBuiltin(r)])) };
     return applyOverrides(merged, this.opts.overrides());
   }
 }

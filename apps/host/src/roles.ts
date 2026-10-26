@@ -32,7 +32,7 @@ export const ROLES: Record<BuiltinAgentRoleName, AgentRole> & RoleMap = {
 
 /** A role by name. A name no longer defined (its file was removed) falls back to read-only, so a stale child thread never gains tools. */
 export function roleOf(role: AgentRoleName, roles: RoleMap = ROLES): AgentRole {
-  return roles[role] ?? { name: role, tools: READ_ONLY_TOOLS, description: "Unknown role: read-only." };
+  return (Object.hasOwn(roles, role) ? roles[role] : undefined) ?? { name: role, tools: READ_ONLY_TOOLS, description: "Unknown role: read-only." };
 }
 
 /** The roles the agent tool offers and `spawn` accepts. */
@@ -53,8 +53,8 @@ export function applyOverrides(roles: RoleMap, overrides: Record<string, AgentOv
   if (!overrides) return roles;
   const out = { ...roles };
   for (const [name, o] of Object.entries(overrides)) {
-    const role = out[name];
-    if (!role) continue;
+    const role = Object.hasOwn(out, name) ? out[name] : undefined;
+    if (!role || !o || typeof o !== "object") continue;
     const tools = o.tools ? (role.tools.length ? role.tools.filter((t) => o.tools!.includes(t)) : o.tools) : role.tools;
     out[name] = {
       ...role,

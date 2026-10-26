@@ -1,5 +1,5 @@
 import { defineTool, type AgentSession, type ExtensionAPI, type InlineExtension } from "@earendil-works/pi-coding-agent";
-import type { AgentRoleName } from "@pista/protocol";
+import type { AgentRole, AgentRoleName } from "@pista/protocol";
 import { Type } from "typebox";
 import type { RecordDecision } from "./decisions.ts";
 import type { ThreadRef } from "./extensions.ts";
@@ -202,9 +202,9 @@ export function createAgentRunner(opts: AgentToolOptions) {
   };
 }
 
-const describe = (roles: RoleMap) => [
+const describe = (roles: AgentRole[]) => [
   "Delegate a scoped task to a sub-agent that runs in its own thread and returns only its final message.",
-  `Roles: ${availableRoles(roles)
+  `Roles: ${roles
     .map((r) => `${r.name} (${r.description})`)
     .join(" ")}`,
   "The sub-agent sees nothing of this conversation, only the brief: state the goal, the scope (files or areas, and what is off limits), the facts it needs, how to tell it is done, and ask for a short report.",
@@ -224,8 +224,8 @@ export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
         defineTool({
           name: "agent",
           label: "Sub-agent",
-          description: describe(opts.roles ?? ROLES),
-          promptSnippet: "agent: delegate a scoped task to an sub-agent (explorer, implementer, reviewer or a custom role); returns its final report",
+          description: describe(roles),
+          promptSnippet: "agent: delegate a scoped task to a sub-agent (explorer, implementer, reviewer or a custom role); returns its final report",
           parameters: Type.Object({
             role: Type.Optional(
               Type.Union(
