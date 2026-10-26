@@ -1,0 +1,5 @@
+{
+  "description": "Cheaper, lower-thinking explorer plus a verify gate (fragments are passed through to HostConfig; add modelTiers / model refs for real runs).",
+  "config": { "agentOverrides": { "explorer": { "thinking": "low" } } },
+  "verify": { "commands": ["node --test"] }
+}
