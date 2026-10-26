@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { setupHome } from "../test-helpers.ts";
-
-setupHome("eval");
-const { runEval, summarize, tally, toMarkdown, loadTasks } = await import("./presets.ts");
+import { failed, loadTasks, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -27,11 +24,7 @@ test("a real run needs --max-usd and --model", async () => {
   await assert.rejects(runEval({ ...base, presets: ["solo"], tasks: "*", runs: 1, maxUsd: 1 }), /--model/);
 });
 
-test("the cap aborts remaining runs, and cost, tokens, sub-agent calls and verify lines are tallied", async () => {
-  // Fake runs report zero cost, so any cap below zero is already exceeded.
-  const capped = await runEval({ ...base, presets: ["solo"], tasks: "*", runs: 1, fake: true, maxUsd: -1 });
-  assert.equal(capped.results.length, 0);
-  assert.match(capped.aborted ?? "", /exceeded --max-usd/);
+test("cost, tokens, sub-agent calls and verify lines are tallied", async () => {
   const usage = { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 18, cost: { total: 0.25 } };
   const msg = (u = usage) => ({ role: "assistant", content: [{ type: "toolCall", id: "1", name: "agent", arguments: {} }], provider: "p", model: "m", usage: u, stopReason: "stop", timestamp: 0 });
   const t = tally([msg(), { role: "toolResult", toolName: "agent", content: [{ type: "text", text: "ok\nverify: passed" }] }] as never, [[msg()] as never]);
@@ -47,4 +40,25 @@ test("task patterns select by name, comma list or prefix", () => {
   assert.equal(loadTasks(base.tasksDir, "fix-*").length, 1);
   assert.equal(loadTasks(base.tasksDir, "fix-slugify,add-chunk").length, 2);
   assert.throws(() => loadTasks(base.tasksDir, "nope"), /No task matches/);
+});
+
+test("a hung run is recorded as a timeout, and the report counts as failed", async () => {
+  const report = await runEval({ ...base, presets: ["solo"], tasks: "fix-*", runs: 1, fake: true, fakeHang: true, runTimeoutSec: 2 });
+  assert.equal(report.results[0]!.error, "timeout");
+  assert.equal(report.results[0]!.pass, false);
+  assert.ok(failed(report));
+});
+
+test("usage is tallied from a run that errored", () => {
+  const usage = { input: 3, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 4, cost: { total: 0.1 } };
+  const failedMsg = { role: "assistant", content: [], provider: "p", model: "m", usage, stopReason: "error", timestamp: 0 };
+  assert.equal(tally([failedMsg] as never, []).costUsd, 0.1);
+});
+
+test("NaN and non-positive numeric options are rejected", async () => {
+  const o = { ...base, presets: ["solo"], tasks: "*", fake: true };
+  await assert.rejects(runEval({ ...o, runs: NaN }), /--runs/);
+  await assert.rejects(runEval({ ...o, runs: 1, maxUsd: NaN }), /--max-usd/);
+  await assert.rejects(runEval({ ...o, runs: 1, runTimeoutSec: NaN }), /--run-timeout/);
+  await assert.rejects(runEval({ ...o, runs: 0 }), /--runs/);
 });

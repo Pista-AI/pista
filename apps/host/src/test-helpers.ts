@@ -1,11 +1,10 @@
 // Shared setup for host tests. Not imported from production code, so the esbuild bundle (from index.ts) excludes it.
 // Pi reads its agent dir and Pista its home dir at import time, so everything that touches them is imported
 // dynamically here and callers must run setupHome() before the first makeManager()/fauxModels().
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { after } from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ManagedPolicy } from "@pista/protocol";
 import type { Hub } from "./hub.ts";
@@ -62,23 +61,7 @@ export async function makeManager(opts: ManagerOptions = {}) {
   return { manager, store, hub, models, project: project! };
 }
 
-/**
- * Registers pi-ai's faux provider on `models` (a fresh offline runtime by default).
- * pnpm keeps pi-ai next to pi-coding-agent but not in the host's own node_modules; it is not a declared
- * dependency, so it is loaded untyped through the real path.
- */
-export async function fauxModels(models?: ModelRuntime, opts: { contextWindow?: number } = {}) {
-  const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
-  const piAgentEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-  const piAiEntry = join(dirname(dirname(dirname(realpathSync(piAgentEntry)))), "pi-ai/dist/index.js");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const piAi: any = await import(pathToFileURL(piAiEntry).href);
-  const faux = piAi.fauxProvider(opts.contextWindow ? { models: [{ id: "faux-model", contextWindow: opts.contextWindow }] } : {});
-  const runtime = models ?? (await ModelRuntime.create({ allowModelNetwork: false }));
-  runtime.registerNativeProvider(faux.provider);
-  const model = faux.getModel();
-  return { piAi, faux, models: runtime, ref: { provider: model.provider as string, id: model.id as string } };
-}
+export { fauxModels } from "./eval/faux-models.ts";
 
 /** The manager's private map of loaded threads; `T` narrows it to what a test reads. */
 export function liveOf<T = unknown>(manager: ThreadManager): Map<string, T> {

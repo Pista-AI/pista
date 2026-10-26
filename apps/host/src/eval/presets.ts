@@ -1,13 +1,13 @@
 // Harness-preset evaluation: runs fixed coding tasks through a real ThreadManager under different HostConfig
 // fragments ("presets") and reports pass rate, cost, tokens and time. Everything happens in temp copies.
-// Importing this file does not touch PISTA_HOME or the Pi agent dir; `runEval` imports the host lazily, so the
-// caller (cli.ts, tests) must set those env vars first.
+// This file never imports the host. Each run executes in its own child process (run-one.ts) with a fresh
+// PISTA_HOME, Pi agent dir and memory dir, because the host reads those at import time.
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import type { ChatMessage, HostConfig } from "@pista/protocol";
-import { fauxModels } from "../test-helpers.ts";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { ChatMessage } from "@pista/protocol";
 
 export interface Preset {
   name: string;
@@ -78,15 +78,7 @@ export function loadTasks(root: string, pattern: string): Task[] {
   });
 }
 
-function sh(command: string, cwd: string, timeoutMs: number): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, stdio: "ignore", timeout: timeoutMs });
-    child.on("error", () => resolve(1));
-    child.on("close", (code) => resolve(code ?? 1));
-  });
-}
-
-type Msg = ChatMessage & { toolName?: string };
+export type Msg = ChatMessage & { toolName?: string };
 
 /** Token, cost, sub-agent and verify figures for one parent thread and its children. */
 export function tally(parent: Msg[], children: Msg[][]): Pick<RunResult, "input" | "output" | "cacheRead" | "cacheWrite" | "costUsd" | "subAgentCalls" | "verifyLines"> {
@@ -116,11 +108,15 @@ export interface EvalOptions {
   presets: string[];
   tasks: string;
   runs: number;
-  /** Real runs only: "provider/id". */
+  /** Real runs only: "provider/id", checked against the model registry before the first run. */
   model?: string;
   /** Abort the remaining runs once the reported cost exceeds this. Required unless `fake`. */
   maxUsd?: number;
+  /** Per-run wall-clock limit (default 10 min). The thread is aborted and the run recorded with error "timeout". */
+  runTimeoutSec?: number;
   fake?: boolean;
+  /** Test only: the fake model never answers, so the run must time out. */
+  fakeHang?: boolean;
   /** Called after each run (progress output). */
   onRun?: (r: RunResult) => void;
 }
@@ -134,6 +130,23 @@ export interface EvalReport {
   results: RunResult[];
   summary: Summary[];
 }
+
+/** What run-one.ts receives (JSON in argv[2]). Paths point into the scratch dir, never into the repo. */
+export interface ChildJob {
+  mode: "run" | "check-model";
+  preset: Pick<Preset, "name" | "config" | "verify"> & { agentsDir?: string };
+  task: string;
+  prompt: string;
+  check: string;
+  stageDir: string;
+  workDir: string;
+  model?: { provider: string; id: string };
+  fake: boolean;
+  fakeHang: boolean;
+  timeoutMs: number;
+}
+
+export const RESULT_MARK = "__EVAL_RESULT__ ";
 
 export function summarize(results: RunResult[], presets: string[]): Summary[] {
   return presets.map((preset) => {
@@ -160,87 +173,138 @@ export function toMarkdown(report: EvalReport): string {
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,
   ];
+  const errors = report.results.filter((r) => r.error);
+  if (errors.length) lines.push("", `Runs with errors: ${errors.length} of ${report.results.length} (${[...new Set(errors.map((r) => r.error))].join("; ")})`);
   if (report.aborted) lines.push("", `Aborted: ${report.aborted}`);
   return lines.join("\n") + "\n";
 }
 
-/** Runs every preset x task x run sequentially. PISTA_HOME / PI_CODING_AGENT_DIR must already be set by the caller. */
+/** True when the report should make the CLI exit nonzero: it was aborted, or every run errored. */
+export function failed(report: EvalReport): boolean {
+  return !!report.aborted || (report.results.length > 0 && report.results.every((r) => r.error));
+}
+
+const needNumber = (name: string, v: number | undefined, opts: { int?: boolean } = {}) => {
+  if (v === undefined) return;
+  if (!Number.isFinite(v) || v <= 0 || (opts.int && !Number.isInteger(v))) throw new Error(`${name} must be a positive${opts.int ? " integer" : " number"}`);
+};
+
+/** The user's Pi agent dir, resolved like Pista does (PI_CODING_AGENT_DIR, else $PISTA_HOME/pi, else ~/.pista/pi). */
+export function realAgentDir(env: NodeJS.ProcessEnv = process.env): string {
+  return (env.PI_CODING_AGENT_DIR ?? join(env.PISTA_HOME ?? join(homedir(), ".pista"), "pi")).replace(/^~(?=$|\/)/, homedir());
+}
+
+/** Starts the child detached (own process group) and kills the whole group on timeout; the group kill is skipped on Windows. */
+function spawnChild(job: ChildJob, env: NodeJS.ProcessEnv, killAfterMs: number): Promise<{ code: number | null; out: string; timedOut: boolean }> {
+  const hostDir = fileURLToPath(new URL("../..", import.meta.url));
+  const entry = fileURLToPath(new URL("./run-one.ts", import.meta.url));
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--import", "tsx", entry, JSON.stringify(job)], { cwd: hostDir, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    let timedOut = false;
+    child.stdout.on("data", (d) => (out += d));
+    const kill = () => {
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else process.kill(-child.pid!, "SIGKILL");
+      } catch {}
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, killAfterMs);
+    child.on("error", () => resolve({ code: 1, out, timedOut }));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      kill(); // stragglers of the agent's own shell commands
+      resolve({ code, out, timedOut });
+    });
+  });
+}
+
+const parseResult = (out: string): RunResult | undefined => {
+  const line = out.split("\n").reverse().find((l) => l.startsWith(RESULT_MARK));
+  return line ? (JSON.parse(line.slice(RESULT_MARK.length)) as RunResult) : undefined;
+};
+
+/** Runs every preset x task x run sequentially, each in a child process with fresh state. Never reads the user's PISTA_HOME. */
 export async function runEval(opts: EvalOptions): Promise<EvalReport> {
-  if (!opts.fake && !(opts.maxUsd !== undefined && opts.maxUsd > 0)) throw new Error("--max-usd is required (and must be positive) for real runs");
+  needNumber("--runs", opts.runs, { int: true });
+  needNumber("--max-usd", opts.maxUsd);
+  needNumber("--run-timeout", opts.runTimeoutSec);
+  if (!opts.fake && opts.maxUsd === undefined) throw new Error("--max-usd is required (and must be positive) for real runs");
   if (!opts.fake && !opts.model) throw new Error("--model provider/id is required for real runs");
   const presets = opts.presets.map((p) => loadPreset(opts.presetsDir, p));
   const tasks = loadTasks(opts.tasksDir, opts.tasks);
-  const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
-  const { ConfigStore } = await import("../config.ts");
-  const { Hub } = await import("../hub.ts");
-  const { ThreadManager } = await import("../threads.ts");
-  const fauxHandle = opts.fake ? await fauxModels() : undefined;
-  const models = fauxHandle?.models ?? (await ModelRuntime.create({ allowModelNetwork: true }));
-  let ref = fauxHandle?.ref;
-  if (!ref) {
+  const timeoutMs = (opts.runTimeoutSec ?? 600) * 1000;
+  let ref: ChildJob["model"];
+  if (!opts.fake) {
     const [provider, ...rest] = opts.model!.split("/");
     ref = { provider: provider!, id: rest.join("/") };
   }
+  const realDir = opts.fake ? undefined : realAgentDir();
+  const scratch = mkdtempSync(join(tmpdir(), "pista-eval-"));
+
+  // Fresh state per run: own PISTA_HOME, agent dir and memory dir. Only auth (and the model store) is copied in for real runs.
+  const freshEnv = (dir: string): NodeJS.ProcessEnv => {
+    const agent = join(dir, "agent");
+    mkdirSync(agent, { recursive: true });
+    if (realDir) for (const f of ["auth.json", "models-store.json"]) if (existsSync(join(realDir, f))) cpSync(join(realDir, f), join(agent, f));
+    return { ...process.env, PISTA_HOME: join(dir, "home"), PI_CODING_AGENT_DIR: agent, PI_MEMORY_DIR: join(dir, "memory") };
+  };
+  const base = (preset: Preset, task: Task, dir: string): ChildJob => ({
+    mode: "run",
+    preset: { name: preset.name, config: preset.config, verify: preset.verify, agentsDir: preset.agentsDir ? join(dir, "agents") : undefined },
+    task: task.name,
+    prompt: task.prompt,
+    check: task.check,
+    stageDir: join(dir, "stage"),
+    workDir: join(dir, "work"),
+    model: ref,
+    fake: !!opts.fake,
+    fakeHang: !!opts.fakeHang,
+    timeoutMs,
+  });
 
   const report: EvalReport = { generatedAt: new Date().toISOString(), fake: !!opts.fake, maxUsd: opts.maxUsd, totalCostUsd: 0, results: [], summary: [] };
-  outer: for (const preset of presets) {
-    for (const task of tasks) {
-      for (let run = 1; run <= opts.runs; run++) {
-        if (opts.maxUsd !== undefined && report.totalCostUsd > opts.maxUsd) {
-          report.aborted = `cumulative cost ${report.totalCostUsd.toFixed(4)} USD exceeded --max-usd ${opts.maxUsd}; remaining runs skipped`;
-          break outer;
-        }
-        // The workspace is a throwaway copy of the fixture; full-access and trust apply to this folder only.
-        const work = mkdtempSync(join(tmpdir(), `pista-eval-${basename(task.name)}-`));
-        const result: RunResult = { preset: preset.name, task: task.name, run, pass: false, seconds: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] };
-        const started = Date.now();
-        const store = new ConfigStore();
-        const hub = new Hub();
-        const manager = new ThreadManager(store, hub, models);
-        try {
-          cpSync(join(task.dir, "fixture"), work, { recursive: true });
-          if (preset.verify !== undefined) {
-            mkdirSync(join(work, ".pista"), { recursive: true });
-            writeFileSync(join(work, ".pista", "verify.json"), JSON.stringify(preset.verify));
+  try {
+    if (!opts.fake) {
+      const dir = join(scratch, "preflight");
+      const job = { ...base(presets[0]!, tasks[0]!, dir), mode: "check-model" as const };
+      const res = await spawnChild(job, freshEnv(dir), 60_000);
+      if (res.code !== 0) throw new Error(`Model ${opts.model} is not in the model registry (or no credentials were found in ${realDir}); nothing was run`);
+    }
+    outer: for (const preset of presets) {
+      for (const task of tasks) {
+        for (let run = 1; run <= opts.runs; run++) {
+          if (opts.maxUsd !== undefined && report.totalCostUsd > opts.maxUsd) {
+            report.aborted = `cumulative cost ${report.totalCostUsd.toFixed(4)} USD exceeded --max-usd ${opts.maxUsd}; remaining runs skipped`;
+            break outer;
           }
-          if (preset.agentsDir) cpSync(preset.agentsDir, join(work, ".pista", "agents"), { recursive: true });
-          const project = store.addProject(work);
-          store.setProjectTrusted(project.id, true);
-          // Reset every key a preset may set so one run cannot leak into the next.
-          store.patchConfig({ agentOverrides: undefined, agentRoles: undefined, modelTiers: undefined, ...preset.config, approvalMode: "full-access", defaultModel: ref } as Partial<HostConfig>);
-          const { summary } = await manager.create(project.id);
-          if (fauxHandle) scriptFake(fauxHandle, task, work);
-          const { run: done } = await manager.startPrompt(summary.id, task.prompt, undefined);
-          await done;
-          // Hidden check files are copied in only now, so the agent never sees them.
-          for (const f of readdirSync(task.dir)) if (f.startsWith("check.")) cpSync(join(task.dir, f), join(work, f));
-          result.pass = (await sh(task.check, work, 120_000)) === 0;
-          const parentMsgs = (await manager.open(summary.id)).messages as Msg[];
-          const kids = (await manager.list()).filter((t) => t.parentId === summary.id);
-          const childMsgs = await Promise.all(kids.map(async (k) => (await manager.continueChild(k.id)).session.messages as unknown as Msg[]));
-          Object.assign(result, tally(parentMsgs, childMsgs));
-        } catch (error) {
-          result.error = error instanceof Error ? error.message : String(error);
-        } finally {
-          result.seconds = (Date.now() - started) / 1000;
-          manager.dispose();
-          rmSync(work, { recursive: true, force: true });
+          const dir = mkdtempSync(join(scratch, "run-"));
+          // Stage fixture, hidden check files and fake solution outside the repo so the workspace never advertises repo paths.
+          cpSync(join(task.dir, "fixture"), join(dir, "stage", "fixture"), { recursive: true });
+          for (const f of readdirSync(task.dir)) if (f.startsWith("check.")) cpSync(join(task.dir, f), join(dir, "stage", f));
+          if (existsSync(join(task.dir, "fake"))) cpSync(join(task.dir, "fake"), join(dir, "stage", "fake"), { recursive: true });
+          if (preset.agentsDir) cpSync(preset.agentsDir, join(dir, "agents"), { recursive: true });
+          const started = Date.now();
+          const res = await spawnChild(base(preset, task, dir), freshEnv(dir), timeoutMs + 60_000);
+          const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] };
+          const result: RunResult = parseResult(res.out) ?? {
+            preset: preset.name, task: task.name, run, pass: false, seconds: (Date.now() - started) / 1000, ...empty,
+            error: res.timedOut ? "timeout" : `run process exited with code ${res.code} and no result`,
+          };
+          result.run = run;
+          report.results.push(result);
+          report.totalCostUsd += result.costUsd;
+          opts.onRun?.(result);
+          rmSync(dir, { recursive: true, force: true });
         }
-        report.results.push(result);
-        report.totalCostUsd += result.costUsd;
-        opts.onRun?.(result);
       }
     }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
   report.summary = summarize(report.results, opts.presets);
   return report;
-}
-
-/** Scripts the faux model to write the task's `fake/` solution files, then finish. */
-function scriptFake(handle: NonNullable<Awaited<ReturnType<typeof fauxModels>>> , task: Task, work: string) {
-  const { piAi, faux } = handle;
-  const dir = join(task.dir, "fake");
-  const files = existsSync(dir) ? readdirSync(dir) : [];
-  const steps = files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(work, f), content: readFileSync(join(dir, f), "utf8") })));
-  faux.setResponses([...steps, piAi.fauxAssistantMessage("Done.")]);
 }
