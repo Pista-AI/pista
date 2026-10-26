@@ -16,7 +16,7 @@ Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd 
 
 ## Cost cap
 
-Cost is the sum of Pi's per-message `usage.cost.total` over the parent thread and its sub-agent threads (also counted when a run errors or times out); nothing is priced by Pista. Before each run the runner checks the cumulative cost and, once it exceeds `--max-usd`, skips every remaining run, records `aborted` in the report and exits 1. A single run is not interrupted by the cap, so the total can overshoot by up to one run. If the provider reports no cost the figure is 0 and the cap cannot trip, so keep `--runs` and the task count small there. `--run-timeout SEC` (default 600) aborts one run, records error `timeout` and moves on. `--runs`, `--max-usd` and `--run-timeout` must be positive numbers; `--model` is checked against the model registry before anything runs. The CLI exits 1 when the run was aborted or every run errored.
+Cost is the sum of Pi's per-message `usage.cost.total` over the parent thread and its sub-agent threads (also counted when a run errors or times out); nothing is priced by Pista. Before each run the runner checks the cumulative cost and, once it reaches `--max-usd` (`>=`), skips every remaining run, records `aborted` in the report and exits 1. The cap is checked between runs only, so the total can overshoot by up to one run. It is ineffective when the provider reports $0 (local models): keep `--runs` and the task count small there. `--run-timeout SEC` (default 600) aborts one run, records error `timeout` and moves on. `--runs`, `--max-usd` and `--run-timeout` must be positive numbers; `--model` is checked against the model registry before anything runs. The CLI exits 1 when the run was aborted or every run errored.
 
 ## Isolation and safety
 
@@ -24,7 +24,9 @@ Full-access approval is not a sandbox. The agent runs with your OS user's permis
 
 - Every run is its own process with a fresh `PISTA_HOME`, Pi agent dir (`PI_CODING_AGENT_DIR`) and memory dir (`PI_MEMORY_DIR`), all under a scratch temp dir that is deleted at the end (also in `--fake` mode). Your settings, `mcp.json`, sessions, memory and projects are never loaded.
 - Real runs copy only `auth.json` and `models-store.json` from your Pi agent dir (`PI_CODING_AGENT_DIR`, else `$PISTA_HOME/pi`, else `~/.pista/pi`) into the scratch agent dir. The originals are never opened for writing; token refreshes land in the copy.
-- The workspace is a copy of the task's `fixture/`, trusted and set to full-access for that folder only. Fixtures, hidden check files and the fake solution are first staged in the scratch dir, so the workspace and prompt never mention repo paths. They are still readable by absolute path (the staging dir sits next to the workspace), so a determined agent could find the hidden checks; this eval measures cooperative runs, not adversarial ones.
+- The child process gets an allowlisted environment: PATH, HOME, TMPDIR, SHELL, LANG/LC_*, USER, TERM, provider keys (`*_API_KEY`, AWS_*, AZURE_*, GOOGLE_CLOUD_*, GOOGLE_APPLICATION_CREDENTIALS) and the three scratch overrides. All other `PISTA_*` / `PI_*` variables (policy URLs, tokens) and `NODE_OPTIONS` are dropped. `HOME` still points at your real home, so tools the agent runs can still read it.
+- Ctrl-C / SIGTERM kills the running child's process group, deletes the scratch dir and exits 130. A run's check has its own 120 s limit (error `check timeout`).
+- The workspace is a copy of the task's `fixture/`, trusted and set to full-access for that folder only. Fixtures are first staged in the scratch dir, so the workspace and prompt never mention repo paths. Real runs never stage `fake/`, and the hidden check files are copied into the staging dir only after the agent has finished, so they do not exist while it runs; this eval measures cooperative runs, not adversarial ones.
 - Use real runs only on a machine where a full-access agent is acceptable.
 
 ## Add a task

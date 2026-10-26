@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { failed, runEval, toMarkdown } from "./presets.ts";
+import { abortEval, failed, runEval, toMarkdown } from "./presets.ts";
 
 const { values } = parseArgs({
   options: {
@@ -20,6 +20,12 @@ const { values } = parseArgs({
     out: { type: "string" },
   },
 });
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    abortEval();
+    process.exit(130);
+  });
+}
 const num = (v: string | undefined) => (v === undefined ? undefined : Number(v));
 const root = resolve(fileURLToPath(new URL("../../../../evals/presets", import.meta.url)));
 const report = await runEval({

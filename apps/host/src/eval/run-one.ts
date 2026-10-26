@@ -7,12 +7,12 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
 import { fauxModels } from "./faux-models.ts";
-import { type ChildJob, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
+import { AGENT_DONE, CHECK_TIMEOUT_MS, type ChildJob, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
 const job = JSON.parse(process.argv[2]!) as ChildJob;
 
 /** Runs the check in its own process group and kills the group on timeout (group kill skipped on Windows). */
-function sh(command: string, cwd: string, timeoutMs: number): Promise<number> {
+function sh(command: string, cwd: string, timeoutMs: number): Promise<number | "timeout"> {
   return new Promise((resolve) => {
     const child = spawn(command, { cwd, shell: true, stdio: "ignore", detached: process.platform !== "win32" });
     const kill = () => {
@@ -21,12 +21,16 @@ function sh(command: string, cwd: string, timeoutMs: number): Promise<number> {
         else process.kill(-child.pid!, "SIGKILL");
       } catch {}
     };
-    const timer = setTimeout(kill, timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
     child.on("error", () => resolve(1));
     child.on("close", (code) => {
       clearTimeout(timer);
       kill();
-      resolve(code ?? 1);
+      resolve(timedOut ? "timeout" : (code ?? 1));
     });
   });
 }
@@ -84,8 +88,13 @@ try {
     await manager.abort(threadId).catch(() => {});
     run.catch(() => {});
   } else {
-    for (const f of readdirSync(job.stageDir)) if (f.startsWith("check.")) cpSync(join(job.stageDir, f), join(job.workDir, f)); // hidden until now
-    result.pass = (await sh(job.check, job.workDir, 120_000)) === 0;
+    // Hidden until now: tell the parent, which stages the check files and then drops .ready.
+    console.log(AGENT_DONE);
+    for (let i = 0; i < 600 && !existsSync(join(job.stageDir, ".ready")); i++) await new Promise((r) => setTimeout(r, 50));
+    for (const f of readdirSync(job.stageDir)) if (f.startsWith("check.")) cpSync(join(job.stageDir, f), join(job.workDir, f));
+    const code = await sh(job.check, job.workDir, CHECK_TIMEOUT_MS);
+    if (code === "timeout") result.error = "check timeout";
+    result.pass = code === 0;
   }
 } catch (error) {
   result.error = error instanceof Error ? error.message : String(error);

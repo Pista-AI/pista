@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { failed, loadTasks, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { childEnv, failed, loadTasks, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -61,4 +61,20 @@ test("NaN and non-positive numeric options are rejected", async () => {
   await assert.rejects(runEval({ ...o, runs: 1, maxUsd: NaN }), /--max-usd/);
   await assert.rejects(runEval({ ...o, runs: 1, runTimeoutSec: NaN }), /--run-timeout/);
   await assert.rejects(runEval({ ...o, runs: 0 }), /--runs/);
+});
+
+test("the child env keeps PATH and API keys and drops PISTA_*, PI_* and NODE_OPTIONS", () => {
+  const env = childEnv(
+    { PATH: "/bin", HOME: "/h", OPENAI_API_KEY: "k", PISTA_POLICY_URL: "https://x", PI_SOMETHING: "1", NODE_OPTIONS: "--inspect", PISTA_HOME: "/real" },
+    { home: "/s/home", agent: "/s/agent", memory: "/s/mem" },
+  );
+  assert.deepEqual(Object.keys(env).sort(), ["HOME", "OPENAI_API_KEY", "PATH", "PISTA_HOME", "PI_CODING_AGENT_DIR", "PI_MEMORY_DIR"]);
+  assert.equal(env.PISTA_HOME, "/s/home");
+});
+
+test("garbage child output yields no result instead of throwing", () => {
+  assert.equal(parseResult("__EVAL_RESULT__ {not json"), undefined);
+  assert.equal(parseResult("__EVAL_RESULT__ 5"), undefined);
+  assert.equal(parseResult(""), undefined);
+  assert.equal(parseResult('__EVAL_RESULT__ {"pass":true}')?.pass, true);
 });

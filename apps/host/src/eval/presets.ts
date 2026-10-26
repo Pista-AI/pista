@@ -144,6 +144,8 @@ export interface ChildJob {
   fake: boolean;
   fakeHang: boolean;
   timeoutMs: number;
+  /** Where the parent reports the scratch dir for signal cleanup. */
+  scratch: string;
 }
 
 export const RESULT_MARK = "__EVAL_RESULT__ ";
@@ -194,37 +196,73 @@ export function realAgentDir(env: NodeJS.ProcessEnv = process.env): string {
   return (env.PI_CODING_AGENT_DIR ?? join(env.PISTA_HOME ?? join(homedir(), ".pista"), "pi")).replace(/^~(?=$|\/)/, homedir());
 }
 
+/** Env vars the child may inherit: basics plus provider API keys. Everything else (PISTA_*, PI_*, NODE_OPTIONS, ...) is dropped. */
+const ENV_KEEP = /^(PATH|HOME|TMPDIR|SHELL|LANG|LC_[A-Z_]+|USER|LOGNAME|TERM|[A-Z0-9_]+_API_KEY|AWS_[A-Z_]+|GOOGLE_APPLICATION_CREDENTIALS|AZURE_[A-Z_]+|GOOGLE_CLOUD_[A-Z_]+)$/;
+export function childEnv(base: NodeJS.ProcessEnv, over: { home: string; agent: string; memory: string }): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (v !== undefined && ENV_KEEP.test(k)) env[k] = v;
+  return { ...env, PISTA_HOME: over.home, PI_CODING_AGENT_DIR: over.agent, PI_MEMORY_DIR: over.memory };
+}
+
+/** The child currently running and the scratch dir, so a signal handler can clean up. */
+let active: { kill(): void; scratch: string } | undefined;
+export function abortEval(): void {
+  active?.kill();
+  if (active) rmSync(active.scratch, { recursive: true, force: true });
+}
+
+/** Child budget: run timeout + the check's 120 s; the parent kills only after that plus slack. */
+export const CHECK_TIMEOUT_MS = 120_000;
+export const KILL_SLACK_MS = 30_000;
+export const AGENT_DONE = "__AGENT_DONE__";
+
 /** Starts the child detached (own process group) and kills the whole group on timeout; the group kill is skipped on Windows. */
-function spawnChild(job: ChildJob, env: NodeJS.ProcessEnv, killAfterMs: number): Promise<{ code: number | null; out: string; timedOut: boolean }> {
+function spawnChild(job: ChildJob, env: NodeJS.ProcessEnv, killAfterMs: number, onAgentDone?: () => void): Promise<{ code: number | null; out: string; err: string; timedOut: boolean }> {
   const hostDir = fileURLToPath(new URL("../..", import.meta.url));
   const entry = fileURLToPath(new URL("./run-one.ts", import.meta.url));
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["--import", "tsx", entry, JSON.stringify(job)], { cwd: hostDir, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(process.execPath, ["--import", "tsx", entry, JSON.stringify(job)], { cwd: hostDir, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
+    let err = "";
+    let signalled = false;
     let timedOut = false;
-    child.stdout.on("data", (d) => (out += d));
+    child.stdout.on("data", (d) => {
+      out += d;
+      if (!signalled && out.includes(AGENT_DONE)) {
+        signalled = true;
+        onAgentDone?.();
+      }
+    });
+    child.stderr.on("data", (d) => (err = (err + d).slice(-2048)));
     const kill = () => {
       try {
         if (process.platform === "win32") child.kill("SIGKILL");
         else process.kill(-child.pid!, "SIGKILL");
       } catch {}
     };
+    active = { kill, scratch: job.scratch };
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
     }, killAfterMs);
-    child.on("error", () => resolve({ code: 1, out, timedOut }));
+    child.on("error", () => resolve({ code: 1, out, err, timedOut }));
     child.on("close", (code) => {
       clearTimeout(timer);
       kill(); // stragglers of the agent's own shell commands
-      resolve({ code, out, timedOut });
+      active = undefined;
+      resolve({ code, out, err, timedOut });
     });
   });
 }
 
-const parseResult = (out: string): RunResult | undefined => {
-  const line = out.split("\n").reverse().find((l) => l.startsWith(RESULT_MARK));
-  return line ? (JSON.parse(line.slice(RESULT_MARK.length)) as RunResult) : undefined;
+export const parseResult = (out: string): RunResult | undefined => {
+  try {
+    const line = out.split("\n").reverse().find((l) => l.startsWith(RESULT_MARK));
+    const r = line ? (JSON.parse(line.slice(RESULT_MARK.length)) as RunResult) : undefined;
+    return r && typeof r === "object" && typeof r.pass === "boolean" ? r : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 /** Runs every preset x task x run sequentially, each in a child process with fresh state. Never reads the user's PISTA_HOME. */
@@ -250,7 +288,7 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
     const agent = join(dir, "agent");
     mkdirSync(agent, { recursive: true });
     if (realDir) for (const f of ["auth.json", "models-store.json"]) if (existsSync(join(realDir, f))) cpSync(join(realDir, f), join(agent, f));
-    return { ...process.env, PISTA_HOME: join(dir, "home"), PI_CODING_AGENT_DIR: agent, PI_MEMORY_DIR: join(dir, "memory") };
+    return childEnv(process.env, { home: join(dir, "home"), agent, memory: join(dir, "memory") });
   };
   const base = (preset: Preset, task: Task, dir: string): ChildJob => ({
     mode: "run",
@@ -264,6 +302,7 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
     fake: !!opts.fake,
     fakeHang: !!opts.fakeHang,
     timeoutMs,
+    scratch,
   });
 
   const report: EvalReport = { generatedAt: new Date().toISOString(), fake: !!opts.fake, maxUsd: opts.maxUsd, totalCostUsd: 0, results: [], summary: [] };
@@ -277,22 +316,26 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
     outer: for (const preset of presets) {
       for (const task of tasks) {
         for (let run = 1; run <= opts.runs; run++) {
-          if (opts.maxUsd !== undefined && report.totalCostUsd > opts.maxUsd) {
-            report.aborted = `cumulative cost ${report.totalCostUsd.toFixed(4)} USD exceeded --max-usd ${opts.maxUsd}; remaining runs skipped`;
+          if (opts.maxUsd !== undefined && report.totalCostUsd >= opts.maxUsd) {
+            report.aborted = `cumulative cost ${report.totalCostUsd.toFixed(4)} USD reached --max-usd ${opts.maxUsd}; remaining runs skipped`;
             break outer;
           }
           const dir = mkdtempSync(join(scratch, "run-"));
           // Stage fixture, hidden check files and fake solution outside the repo so the workspace never advertises repo paths.
           cpSync(join(task.dir, "fixture"), join(dir, "stage", "fixture"), { recursive: true });
-          for (const f of readdirSync(task.dir)) if (f.startsWith("check.")) cpSync(join(task.dir, f), join(dir, "stage", f));
-          if (existsSync(join(task.dir, "fake"))) cpSync(join(task.dir, "fake"), join(dir, "stage", "fake"), { recursive: true });
+          // Hidden check files are copied in only after the child reports the agent finished (see onAgentDone below).
+          if (opts.fake && existsSync(join(task.dir, "fake"))) cpSync(join(task.dir, "fake"), join(dir, "stage", "fake"), { recursive: true });
           if (preset.agentsDir) cpSync(preset.agentsDir, join(dir, "agents"), { recursive: true });
           const started = Date.now();
-          const res = await spawnChild(base(preset, task, dir), freshEnv(dir), timeoutMs + 60_000);
+          const stageChecks = () => {
+            for (const f of readdirSync(task.dir)) if (f.startsWith("check.")) cpSync(join(task.dir, f), join(dir, "stage", f));
+            writeFileSync(join(dir, "stage", ".ready"), "");
+          };
+          const res = await spawnChild(base(preset, task, dir), freshEnv(dir), timeoutMs + CHECK_TIMEOUT_MS + KILL_SLACK_MS, stageChecks);
           const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] };
           const result: RunResult = parseResult(res.out) ?? {
             preset: preset.name, task: task.name, run, pass: false, seconds: (Date.now() - started) / 1000, ...empty,
-            error: res.timedOut ? "timeout" : `run process exited with code ${res.code} and no result`,
+            error: res.timedOut ? "timeout" : `run process exited with code ${res.code} and no result${res.err ? `: ${res.err}` : ""}`,
           };
           result.run = run;
           report.results.push(result);
