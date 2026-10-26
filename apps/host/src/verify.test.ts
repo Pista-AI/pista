@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fauxModels, makeManager, setupHome } from "./test-helpers.ts";
 
-const { projectDir } = setupHome("verify-gate");
+const { home, projectDir } = setupHome("verify-gate");
+mkdirSync(join(home, "agents"), { recursive: true });
+writeFileSync(join(home, "agents", "editor.md"), "---\nname: editor\ndescription: Edits one file.\ntools: read, edit\n---\n");
 const { createAgentRunner } = await import("./subagent.ts");
 const { parseVerifyConfig, runVerify, shellRunner, withProjectLock } = await import("./verify.ts");
 const { compileToolRules } = await import("./policy-tools.ts");
@@ -32,12 +34,12 @@ function writeConfig(config: unknown) {
 const writeCall = () => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(projectDir, "out.txt"), content: "x" }));
 const say = (text: string) => piAi.fauxAssistantMessage(text);
 
-async function dispatchFull(role: "implementer" | "explorer", run: ReturnType<typeof fakeRunner>["run"]) {
+async function dispatchFull(role: string, run: ReturnType<typeof fakeRunner>["run"]) {
   const { summary } = await manager.create(project.id);
   const runAgent = createAgentRunner({ threads: manager, ref: { threadId: summary.id }, verify: { store, run } });
-  return runAgent({ role, brief: "do it" });
+  return runAgent({ role: role as never, brief: "do it" });
 }
-const dispatch = async (role: "implementer" | "explorer", run: ReturnType<typeof fakeRunner>["run"]) => (await dispatchFull(role, run)).content[0]!.text;
+const dispatch = async (role: string, run: ReturnType<typeof fakeRunner>["run"]) => (await dispatchFull(role, run)).content[0]!.text;
 
 test("setup: the project is trusted with a verify.json", () => {
   store.setProjectTrusted(project.id, true);
@@ -194,4 +196,14 @@ test("withProjectLock runs same-key jobs one at a time", async () => {
   });
   await Promise.all([job(), job(), job()]);
   assert.equal(peak, 1);
+});
+
+test("a custom role with an allowlist that includes edit still runs verify", async () => {
+  const file = join(projectDir, "editme.txt");
+  writeFileSync(file, "one");
+  const runner = fakeRunner([{}]);
+  faux.setResponses([piAi.fauxAssistantMessage(piAi.fauxToolCall("edit", { path: file, edits: [{ oldText: "one", newText: "two" }] })), say("report")]);
+  const out = await dispatch("editor", runner.run);
+  assert.match(out, /Verify: passed/);
+  assert.equal(runner.calls.length, 1);
 });

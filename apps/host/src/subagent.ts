@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import type { RecordDecision } from "./decisions.ts";
 import type { ThreadRef } from "./extensions.ts";
 import { usageTotals } from "./models.ts";
-import { availableRoles, isRestrictedRole, ROLES, type RoleMap } from "./roles.ts";
+import { availableRoles, ROLES, type RoleMap } from "./roles.ts";
 import { clip } from "./text.ts";
 import { feedbackPrompt, resolveVerifyConfig, runVerify, shellRunner, verifyKey, withProjectLock, type VerifyDeps } from "./verify.ts";
 import type { ThreadManager } from "./threads.ts";
@@ -204,7 +204,6 @@ export function createAgentRunner(opts: AgentToolOptions) {
             if (verifyKey(resolveVerifyConfig(verify.store, cwd)) !== verifyKey(before)) verifyLine = skip("verify.json changed during run");
             else if (!config) verifyLine = "";
             else if (verify.store.config.approvalMode === "read-only") verifyLine = skip("read-only approval mode");
-            else if (role && isRestrictedRole(role, opts.roles)) verifyLine = skip("read-only role");
             else {
               for (let attempt = 1; ; attempt++) {
                 const result = await withProjectLock(cwd, () => runVerify(config, cwd, verify.store.toolRules, verify.run ?? shellRunner, verifyAbort.signal));
