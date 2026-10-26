@@ -37,6 +37,27 @@ Each thread is one Pi `AgentSession` with a `SessionManager` stored under `$PIST
 
 Pi loads a project's `.pi/` folder (settings, `mcp.json`, extensions, skills, prompts, packages, `SYSTEM.md`, `APPEND_SYSTEM.md`) and the `.agents/skills` folders of the project and its ancestors only for a trusted project, but the SDK trusts every project unless told otherwise, so a cloned repo could register its own MCP servers and extensions silently. The host decides trust itself in `apps/host/src/project-trust.ts`: a cwd is trusted only if it is the default workspace (`$PISTA_HOME/workspace`) or its project entry in config.json has `"trusted": true`. There is no prompt, and Pi's `trust.json` and `defaultProjectTrust` are not consulted. `buildSession` passes the result as `projectTrusted` to the one `SettingsManager` shared by the resource loader and the session (default: untrusted), and `ThreadManager.load` logs a line when it skips an existing `.pi/` folder. Trust is decided per cwd, so a child thread whose cwd is a subdirectory of a trusted project is untrusted unless that directory is itself registered. Untrusted projects lose only those project-level resources; the agent-dir config, Pista's own extensions and `AGENTS.md` / `CLAUDE.md` load as before. Nothing sets the flag over RPC yet, so a project is marked trusted by editing config.json.
 
+## Custom sub-agent roles
+
+Besides `explorer`, `implementer` and `reviewer`, the `agent` tool offers roles defined as markdown files with YAML frontmatter (a subset of the Pi / pi-subagents agent format), read from `$PISTA_HOME/agents/*.md` and, for a trusted project only (see Project trust), `<project>/.pista/agents/*.md`. Precedence by `name`: project, then user, then built-in. Files are read when a project is first used after the host starts; there is no watcher.
+
+```markdown
+---
+name: scout
+description: Finds where a feature lives and reports file paths.
+tools: read, grep, find, ls
+excludeTools: bash
+model: anthropic/claude-haiku-4-5
+thinking: low
+systemPromptMode: append
+---
+Report at most ten paths, each with one line on why it matters.
+```
+
+`name` (lowercase slug) and `description` (shown to the model) are required. `tools` is an allowlist (comma list or YAML list; omitted means everything the parent has, like the implementer), `excludeTools` a denylist, `model` is `provider/model`, `thinking` a Pi level, and the body is the role prompt: `append` follows the built-in role prompt, `replace` replaces it (Pista's own system prompt always stays). Unknown keys are ignored; nothing that loosens permissions is read. A malformed file is skipped with a logged warning.
+
+A custom role is an ordinary child thread: the role gate, approvals, org policy gate and audit extensions attach exactly as for built-in roles, so a file can only narrow what the parent could do. `HostConfig.agentOverrides` (`{ model, thinking, tools, excludeTools, disabled }` per role name) applies on top of built-in and file roles; its `tools` intersect with the role's, and its `model` wins over `agentRoles`, which stays for now.
+
 ## Source of truth for settings
 
 Pista's `config.json` owns the model and provider defaults, the approval mode and every other setting the UI shows. Pi's `$PISTA_HOME/pi/settings.json` is derived: `buildSession` rewrites its `defaultProvider` and `defaultModel` from `config.defaultModel` on every session build (when Pista has one), and the host never reads those two values back from Pi, so hand-editing them has no effect. `models.json` and `auth.json` are Pi-owned inputs that Pista only reads through Pi. A future managed-policy loader will generate the Pi files from policy rather than have users edit them.

@@ -97,6 +97,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   approvalMode: "enum",
   defaultModel: "object",
   agentRoles: "object",
+  agentOverrides: "object",
   defaultThinkingMode: "enum",
   instructions: "string",
   linkTarget: "enum",
@@ -125,6 +126,7 @@ function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
   if (key === "localServers") return (value as unknown[]).every(isServer);
   if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelRef(v.model));
+  if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(isRecord);
   return true;
 }
 
