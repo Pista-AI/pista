@@ -605,10 +605,10 @@ Set `PISTA_REQUIRE_POLICY=1` in the launcher environment if the app must not run
 
 ### Windows
 
-Installers come from the release workflow (artifact `pista-windows-x64`): an NSIS `Pista-Setup-<version>-x64.exe`. It can install per machine.
+Installers come from the release workflow (artifact `pista-windows-x64`): an NSIS `Pista-Setup-<version>-x64.exe` and a `.msi`. The NSIS installer can install per machine.
 
 - Silent install (NSIS): `Pista-Setup-<version>-x64.exe /S /allusers` (installs to `%ProgramFiles%\Pista`; add `/D=C:\Path` last to change the folder). Uninstall: `"%ProgramFiles%\Pista\Uninstall Pista.exe" /S /allusers`.
-- MSI is not built (it needs an application icon, see the comment in `electron-builder.config.cjs`). For Intune use a Win32 app with the NSIS command above; for GPO use a startup script running it.
+- MSI: the release also carries a `.msi` built by electron-builder (WiX). It has not been tested on real hardware; for Intune you can use it as a line-of-business app, or a Win32 app with the NSIS command above.
 - Policy: deploy `%ProgramData%\Pista\managed-policy.json` (administrator-writable only) or set `PolicyJSON` / `PolicyJSONBase64` under `HKLM\SOFTWARE\Policies\Pista` through an ADMX-less registry policy or Intune custom settings. See [Where the policy lives](#where-the-policy-lives).
 - Per-user state stays under `%USERPROFILE%\.pista`.
 - Unsigned builds trigger SmartScreen; sign the installers (see [release-signing.md](release-signing.md)) before a wide rollout.
@@ -625,7 +625,7 @@ Gaps that are still true. Enforcement limits specific to one area (tool rules, M
 **Platforms and release**
 
 - There are no in-app updates on Windows and Linux: the updater is macOS only (`updater-core.ts` turns it off elsewhere). Redeploy the installer or package.
-- The Windows and Linux packages are built in CI only. First launch, the host spawn and the bundled llama.cpp download have not been tested on real hardware. MSI is not built.
+- The Windows and Linux packages are built in CI only. First launch, the host spawn and the bundled llama.cpp download have not been tested on real hardware, including the MSI.
 - MDM delivery (macOS managed preferences, Windows HKLM) is covered by unit tests; it has not been tried on real managed machines.
 - The update install (Squirrel.Mac signature check and relaunch), notarization and the Windows signing paths are unverified without real credentials (see [release-signing.md](release-signing.md)).
 - The updater downloads through the OS network stack, so `network` proxy and CA settings do not apply to updates, and they do not apply to the Electron browser pane either.
