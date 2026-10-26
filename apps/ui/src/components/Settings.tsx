@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, CircleCheck, Cpu, HardDrive, KeyRound, Plug, RotateCw, Settings as Gear } from "lucide-react";
 import { LOGIN_CANCELLED } from "@pista/protocol";
-import type { AgentRoleName, LocalServerStatus, McpExposure, McpServerConfig, McpServerStatus, MemorySnapshot } from "@pista/protocol";
+import type { AgentRoleName, BuiltinAgentRoleName, LocalServerStatus, McpExposure, McpServerConfig, McpServerStatus, MemorySnapshot } from "@pista/protocol";
 import { Markdown } from "./Transcript.tsx";
 import { LlamaRuntimeCard } from "./LlamaRuntimeCard.tsx";
 import { actions, toast, useApp, type AuthNotice } from "../lib/store.ts";
@@ -49,7 +49,7 @@ function useDraft<T>(value: T | undefined) {
 }
 
 // Mirrors ROLES in apps/host/src/roles.ts (descriptions only; the host owns tools and defaults).
-const ROLE_DESCRIPTIONS: Record<AgentRoleName, string> = {
+const ROLE_DESCRIPTIONS: Record<BuiltinAgentRoleName, string> = {
   explorer: "Read-only research: reads, greps and lists files, then reports what it found.",
   implementer: "Makes changes: full tool set, same approvals as the parent.",
   reviewer: "Read-only review of files and changes, reports findings.",
@@ -76,7 +76,7 @@ function AgentRoles() {
       <label>
         Sub-agent roles <ManagedBadge field={field} />
       </label>
-      {(Object.keys(ROLE_DESCRIPTIONS) as AgentRoleName[]).map((role) => {
+      {(Object.keys(ROLE_DESCRIPTIONS) as BuiltinAgentRoleName[]).map((role) => {
         const model = roles[role]?.model;
         const value = model ? `${model.provider}/${model.id}` : "";
         const known = !model || models.some((m) => m.provider === model.provider && m.id === model.id);

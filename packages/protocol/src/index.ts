@@ -140,15 +140,33 @@ export interface Project {
 
 export type ThreadStatus = "idle" | "running" | "error";
 
-/** Built-in sub-agent roles. Tool sets are host-defined; users may only override the model. */
-export type AgentRoleName = "explorer" | "implementer" | "reviewer";
+/** Built-in sub-agent roles; custom roles come from markdown files (`$PISTA_HOME/agents`, `<project>/.pista/agents`). */
+export type BuiltinAgentRoleName = "explorer" | "implementer" | "reviewer";
+export type AgentRoleName = string;
 
-/** A sub-agent role: its default model, host-defined tool allowlist and a short description. */
+/** A sub-agent role: its default model, tool allowlist (empty = everything the parent has) and a short description. Files can only narrow tools. */
 export interface AgentRole {
   name: AgentRoleName;
   model?: ModelRef;
   tools: string[];
+  /** Tools the role may not use, on top of `tools`. */
+  excludeTools?: string[];
+  thinking?: ThinkingLevel;
   description: string;
+  /** Prompt text from a role file; `promptMode` says whether it follows or replaces the built-in role prompt. */
+  prompt?: string;
+  promptMode?: "append" | "replace";
+  /** Hidden from the agent tool and refused for new children by `HostConfig.agentOverrides`. */
+  disabled?: boolean;
+}
+
+/** Per-role settings on top of a built-in or file role. Can only narrow tools, never widen them. */
+export interface AgentOverride {
+  model?: ModelRef;
+  thinking?: ThinkingLevel;
+  tools?: string[];
+  excludeTools?: string[];
+  disabled?: boolean;
 }
 
 export type PlanStepStatus = "pending" | "in_progress" | "done" | "blocked";
@@ -359,8 +377,10 @@ export interface HostConfig {
   mcpServers: McpServerConfig[];
   approvalMode: ApprovalMode;
   defaultModel?: ModelRef;
-  /** Per-role model override for sub-agents; tool sets are fixed by the host. */
+  /** Per-role model override for sub-agents. Superseded by `agentOverrides`, which wins where both set a model. */
   agentRoles?: Partial<Record<AgentRoleName, Pick<AgentRole, "model">>>;
+  /** Per-role overrides applied on top of built-in and file roles. */
+  agentOverrides?: Record<AgentRoleName, AgentOverride>;
   defaultThinkingMode: ThinkingMode;
   /** Extra system-prompt text appended for every thread. */
   instructions: string;

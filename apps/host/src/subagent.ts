@@ -1,10 +1,10 @@
 import { defineTool, type AgentSession, type ExtensionAPI, type InlineExtension } from "@earendil-works/pi-coding-agent";
-import type { AgentRoleName } from "@pista/protocol";
+import type { AgentRole, AgentRoleName } from "@pista/protocol";
 import { Type } from "typebox";
 import type { RecordDecision } from "./decisions.ts";
 import type { ThreadRef } from "./extensions.ts";
 import { usageTotals } from "./models.ts";
-import { ROLES } from "./roles.ts";
+import { availableRoles, ROLES, type RoleMap } from "./roles.ts";
 import { clip } from "./text.ts";
 import type { ThreadManager } from "./threads.ts";
 
@@ -20,6 +20,8 @@ export interface AgentToolOptions {
   ref: ThreadRef;
   /** Safety net for a child that never finishes (default 30 minutes). */
   timeoutMs?: number;
+  /** Roles on offer; defaults to the built-ins. */
+  roles?: RoleMap;
   /** Logs `agent_dispatch` and `agent_result` decisions. */
   record?: RecordDecision;
 }
@@ -200,9 +202,9 @@ export function createAgentRunner(opts: AgentToolOptions) {
   };
 }
 
-const description = [
+const describe = (roles: AgentRole[]) => [
   "Delegate a scoped task to a sub-agent that runs in its own thread and returns only its final message.",
-  `Roles: ${Object.values(ROLES)
+  `Roles: ${roles
     .map((r) => `${r.name} (${r.description})`)
     .join(" ")}`,
   "The sub-agent sees nothing of this conversation, only the brief: state the goal, the scope (files or areas, and what is off limits), the facts it needs, how to tell it is done, and ask for a short report.",
@@ -214,6 +216,7 @@ const description = [
 
 export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
   const run = createAgentRunner(opts);
+  const roles = availableRoles(opts.roles ?? ROLES);
   return {
     name: "agent-tool",
     factory: (pi: ExtensionAPI) => {
@@ -221,12 +224,12 @@ export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
         defineTool({
           name: "agent",
           label: "Sub-agent",
-          description,
-          promptSnippet: "agent: delegate a scoped task to an explorer, implementer or reviewer sub-agent; returns its final report",
+          description: describe(roles),
+          promptSnippet: "agent: delegate a scoped task to a sub-agent (explorer, implementer, reviewer or a custom role); returns its final report",
           parameters: Type.Object({
             role: Type.Optional(
               Type.Union(
-                Object.keys(ROLES).map((name) => Type.Literal(name)),
+                roles.map((r) => Type.Literal(r.name)),
                 { description: "Required for a new sub-agent (ignored with continueId, which keeps its own role). explorer and reviewer are read-only; implementer can change files" },
               ),
             ),

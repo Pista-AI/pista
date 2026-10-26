@@ -97,6 +97,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   approvalMode: "enum",
   defaultModel: "object",
   agentRoles: "object",
+  agentOverrides: "object",
   defaultThinkingMode: "enum",
   instructions: "string",
   linkTarget: "enum",
@@ -120,11 +121,21 @@ const isModelRef = (value: unknown): boolean => isRecord(value) && typeof value.
 const isServer = (value: unknown): boolean =>
   isRecord(value) && typeof value.id === "string" && typeof value.name === "string" && typeof value.baseUrl === "string" && SERVER_KINDS.includes(value.kind as string);
 
+const isStrings = (v: unknown) => Array.isArray(v) && v.every((s) => typeof s === "string");
+const validOverride = (v: unknown): boolean =>
+  isRecord(v) &&
+  (v.model === undefined || isModelRef(v.model)) &&
+  (v.thinking === undefined || (typeof v.thinking === "string" && ENUMS.defaultThinkingMode!.includes(v.thinking) && v.thinking !== "auto")) &&
+  (v.tools === undefined || isStrings(v.tools)) &&
+  (v.excludeTools === undefined || isStrings(v.excludeTools)) &&
+  (v.disabled === undefined || typeof v.disabled === "boolean");
+
 /** Checks the shape of the nested settings; the top-level kind has been checked already. */
 function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
   if (key === "localServers") return (value as unknown[]).every(isServer);
   if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelRef(v.model));
+  if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(validOverride);
   return true;
 }
 

@@ -22,7 +22,8 @@ import type {
 } from "@pista/protocol";
 import { type AuditSink, auditHash, noopAudit } from "./audit.ts";
 import { emitPrompt, emitUsage, scopeAudit, ToolAudit } from "./audit-events.ts";
-import { type ConfigStore, WORKSPACE_DIR } from "./config.ts";
+import { AgentRoles } from "./agent-roles.ts";
+import { CLIENT_DIR, type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import { DecisionLog } from "./decisions.ts";
 import { Children, extensionsFor } from "./children.ts";
 import { systemPrompt, type ThreadRef } from "./extensions.ts";
@@ -34,7 +35,7 @@ import { resolveProjectTrust } from "./project-trust.ts";
 import { capModel, modelRef, usableModel } from "./models.ts";
 import { buildSession, ENTRY, readCustomEntry, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
 import { clip, type TextContent } from "./text.ts";
-import { ROLES, rolePrompt } from "./roles.ts";
+import { roleOf, rolePrompt } from "./roles.ts";
 import { describeDenied, isModelAllowed, pickAllowedModel, restrictsModels } from "./policy-access.ts";
 import { isLocalProvider } from "./local.ts";
 import { deleteFile } from "./retention.ts";
@@ -155,13 +156,24 @@ export class ThreadManager {
       goalJudge ?? ((goal, tail, id) => this.judgeGoal(goal, tail, id)),
       (id, command, isStale) => this.runGoalCheck(id, command, isStale),
     );
-    this.children = new Children(store, {
-      ensure: (id) => this.ensure(id),
-      load: (projectId, sessionManager, model) => this.load(projectId, sessionManager, model),
-      summary: (id) => this.live.get(id)?.summary ?? this.index.get(id),
-      summaries: () => this.summaries(),
+    this.agentRoles = new AgentRoles({
+      userDir: join(CLIENT_DIR, "agents"),
+      isTrusted: (path) => resolveProjectTrust(path, this.store.projects, WORKSPACE_DIR).trusted,
+      overrides: () => this.store.config.agentOverrides,
     });
+    this.children = new Children(
+      store,
+      {
+        ensure: (id) => this.ensure(id),
+        load: (projectId, sessionManager, model) => this.load(projectId, sessionManager, model),
+        summary: (id) => this.live.get(id)?.summary ?? this.index.get(id),
+        summaries: () => this.summaries(),
+      },
+      (projectId) => this.agentRoles.forProject(this.store.project(projectId).path),
+    );
   }
+
+  private agentRoles: AgentRoles;
 
   private goals: GoalRunner;
   private children: Children;
@@ -244,7 +256,8 @@ export class ThreadManager {
     const decisions = new DecisionLog(sessionManager, (decision) => this.emitEvent(ref.threadId, { type: "decision_logged", decision }));
     decisions.restore();
     const alwaysAllowed = new Set<string>();
-    const kind = this.children.kindOf(ref.threadId);
+    const roles = this.agentRoles.forProject(project.path);
+    const kind = this.children.kindOf(ref.threadId, roles);
     const { role, restricted } = kind;
     const cwd = role ? sessionManager.getCwd() : project.path;
     const trust = resolveProjectTrust(cwd, this.store.projects, WORKSPACE_DIR);
@@ -265,8 +278,8 @@ export class ThreadManager {
       packages: this.store.packageSync(),
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
-      ...(role && ROLES[role].tools.length ? { tools: ROLES[role].tools } : {}),
-      appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role)] : [])],
+      ...(role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
+      appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {
         store: this.store,
@@ -276,6 +289,7 @@ export class ThreadManager {
         plan: { getPlan: () => thread?.plan, setPlan: (plan) => thread && this.setPlan(thread, plan) },
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
+        roles,
         thinkingMode: () => thread?.thinkingMode,
         ...(toolAudit ? { toolAudit } : {}),
       }),
@@ -304,7 +318,7 @@ export class ThreadManager {
     const firstUser = session.messages.find((m) => m.role === "user") as Extract<ChatMessage, { role: "user" }> | undefined;
     thread = {
       guard: { lastError: "", streak: 0, toolCalls: 0, stopped: false },
-      thinkingMode: readCustomEntry<{ mode?: ThinkingMode }>(sessionManager, ENTRY.thinkingMode)?.mode ?? defaults.defaultThinkingMode ?? "auto",
+      thinkingMode: readCustomEntry<{ mode?: ThinkingMode }>(sessionManager, ENTRY.thinkingMode)?.mode ?? (role ? roleOf(role, roles).thinking : undefined) ?? defaults.defaultThinkingMode ?? "auto",
       lastTurnThought: false,
       plan: readCustomEntry<Plan>(sessionManager, ENTRY.plan),
       decisions,

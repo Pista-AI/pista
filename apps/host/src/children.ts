@@ -13,7 +13,7 @@ import { approvalExtension, browserExtension, loopGuardExtension, policyGateExte
 import type { Hub } from "./hub.ts";
 import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
-import { isRestrictedRole, resolveRoleModel, ROLES, roleGateExtension } from "./roles.ts";
+import { availableRoles, isRestrictedRole, resolveRoleModel, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, type ChildThreads } from "./subagent.ts";
@@ -41,6 +41,8 @@ export interface ExtensionDeps {
   alwaysAllowed?: Set<string>;
   /** The thread's thinking mode, read per request; without it browsing turns keep the thinking level they were given. */
   thinkingMode?: () => ThinkingMode | undefined;
+  /** Roles of this thread's project (built-in plus files); defaults to the built-ins. */
+  roles?: RoleMap;
   /** Tool audit for this thread; absent when the policy has no `audit` block. */
   toolAudit?: ToolAudit;
 }
@@ -63,9 +65,9 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),
     // Depth is 1: a child never gets the agent tool.
-    ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record })]),
+    ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record, ...(deps.roles ? { roles: deps.roles } : {}) })]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
-    ...(role ? [watch(roleGateExtension(role), "policy")] : []),
+    ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),
     stateExtension(),
     contextPruneExtension(store),
@@ -94,6 +96,8 @@ export class Children {
   constructor(
     private store: ConfigStore,
     private host: ChildrenHost,
+    /** Roles of a project's threads; defaults to the built-ins. */
+    private rolesFor: (projectId: string) => RoleMap = () => ROLES,
   ) {}
 
   /** A child's parent: recorded in threadMeta before its first load, or taken from the session file's parent link. */
@@ -107,9 +111,9 @@ export class Children {
   }
 
   /** Child threads keep their role across restarts: it is recorded in threadMeta before the first load. */
-  kindOf(threadId: string): ThreadKind {
+  kindOf(threadId: string, roles?: RoleMap): ThreadKind {
     const role = this.store.getThreadMeta(threadId)?.role;
-    return { role, restricted: role !== undefined && isRestrictedRole(role), isChild: this.isChildThread(threadId) };
+    return { role, restricted: role !== undefined && isRestrictedRole(role, roles), isChild: this.isChildThread(threadId) };
   }
 
   childIds(parentId: string): string[] {
@@ -121,8 +125,9 @@ export class Children {
    * prompted; the caller does that (see `prompt`, then `getLastAssistantText()` on the child).
    */
   async spawn(parentId: string, opts: { role: AgentRoleName }): Promise<string> {
-    if (typeof opts.role !== "string" || !Object.hasOwn(ROLES, opts.role)) throw new Error(`Unknown agent role: ${String(opts.role)}`);
     const parent = await this.host.ensure(parentId);
+    const roles = this.rolesFor(parent.summary.projectId);
+    if (typeof opts.role !== "string" || !availableRoles(roles).some((r) => r.name === opts.role)) throw new Error(`Unknown agent role: ${String(opts.role)}`);
     if (this.isChildThread(parentId)) throw new Error("Child threads cannot spawn children.");
     // The project path exactly as the parent uses it (no realpath), so Pi's session listing finds the child.
     const cwd = this.store.project(parent.summary.projectId).path;
@@ -133,7 +138,7 @@ export class Children {
     this.store.setThreadMeta(id, { parentId, role: opts.role });
     try {
       const parentModel = modelRef(parent.session.model) ?? this.store.config.defaultModel;
-      await this.host.load(parent.summary.projectId, sessionManager, resolveRoleModel(opts.role, this.store.config, parentModel, this.store.managedPolicy));
+      await this.host.load(parent.summary.projectId, sessionManager, resolveRoleModel(opts.role, this.store.config, parentModel, this.store.managedPolicy, roles));
     } catch (error) {
       this.store.deleteThreadMeta(id);
       throw error;
