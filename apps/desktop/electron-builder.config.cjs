@@ -53,7 +53,8 @@ function buildConfig(env = process.env) {
     appId: "app.pista.desktop",
     productName: "Pista",
     copyright: "Copyright © 2026 Pista contributors",
-    directories: { output: "release" },
+    // build/ is generated (gitignored staging for the UI and llama.cpp), so the committed icons live in build-resources/.
+    directories: { output: "release", buildResources: "build-resources" },
     files: ["dist/**/*", "package.json"],
     // build/llama exists only when scripts/fetch-llama.mjs staged it (macOS arm64, not opted out). It is signed with the
     // app: @electron/osx-sign signs every binary under Contents/, so llama-server and its dylibs need no `binaries` entry.
@@ -63,12 +64,17 @@ function buildConfig(env = process.env) {
     ],
     asar: true,
     npmRebuild: false,
-    mac: { category: "public.app-category.developer-tools", target: ["dir", "zip"], ...mac },
+    mac: {
+      category: "public.app-category.developer-tools",
+      icon: "icon.icns",
+      target: ["dir", "zip"],
+      ...mac,
+    },
     dmg: { title: "Pista", ...(plan.sign ? { sign: true } : {}) },
     win: {
-      // MSI is not built: electron-builder's WiX template fails without an application icon (LGHT0094 Icon:PistaIcon.exe)
-      // and the repo has none yet. Add build-resources/icon.ico and re-add { target: "msi", arch: ["x64"] } then.
-      target: [{ target: "nsis", arch: ["x64"] }],
+      icon: "icon.ico",
+      // MSI needs an application icon (the WiX template fails with LGHT0094 without one), hence build-resources/icon.ico.
+      target: [{ target: "nsis", arch: ["x64"] }, { target: "msi", arch: ["x64"] }],
       ...(win.method === "pfx" ? { forceCodeSigning: true } : {}),
       ...(win.method === "azure"
         ? {
@@ -84,7 +90,7 @@ function buildConfig(env = process.env) {
     },
     // oneClick off shows the per-user / per-machine choice; /S /allusers installs silently for all users.
     nsis: { oneClick: false, perMachine: false, allowElevation: true, allowToChangeInstallationDirectory: true, artifactName: "Pista-Setup-${version}-${arch}.${ext}" },
-    linux: { executableName: "pista", category: "Development", maintainer: "Pista <noreply@pista.app>", target: ["AppImage", "deb"], artifactName: "Pista-${version}-${arch}.${ext}" },
+    linux: { icon: "icons", executableName: "pista", category: "Development", maintainer: "Pista <noreply@pista.app>", target: ["AppImage", "deb"], artifactName: "Pista-${version}-${arch}.${ext}" },
     afterPack: "scripts/after-pack.cjs",
     // Generates latest-mac.yml (beta-mac.yml when the version has a "-beta.N" prerelease tag; electron-builder
     // derives the channel from it) and app-update.yml, the default feed baked into the app. The package script runs

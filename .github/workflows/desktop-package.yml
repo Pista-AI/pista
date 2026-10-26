@@ -1,6 +1,6 @@
 name: Desktop packages
 
-# Builds the Windows (NSIS) and Linux (AppImage + deb) desktop packages.
+# Builds the Windows (NSIS and MSI) and Linux (AppImage + deb) desktop packages.
 # Runs on pull requests that touch the desktop shell or workflows, and is called from release.yml
 # on v* tags. Signing is opt-in: Windows signs only when WIN_CSC_LINK (or the AZURE_TRUSTED_SIGNING_*
 # values) are available, see docs/release-signing.md. Same-repo pull requests DO receive secrets, so every
@@ -65,7 +65,7 @@ jobs:
             echo "::error::Tagged releases must be signed: configure WIN_CSC_LINK or the Azure Trusted Signing secrets, or set the repository variable ALLOW_UNSIGNED_RELEASE=1."
             exit 1
           fi
-      - name: Package (NSIS)
+      - name: Package (NSIS and MSI)
         shell: bash
         env:
           WIN_CSC_LINK: ${{ github.ref_type == 'tag' && secrets.WIN_CSC_LINK || '' }}
@@ -92,6 +92,7 @@ jobs:
           path: |
             apps/desktop/release/*.exe
             apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/*.msi
             apps/desktop/release/*.yml
             !apps/desktop/release/builder-*.yml
           if-no-files-found: error
