@@ -2,7 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentRole, HostConfig, ThinkingLevel } from "@pista/protocol";
-import { applyOverrides, isTierRef, ROLES, type RoleMap } from "./roles.ts";
+import { isTierRef } from "./model-tiers.ts";
+import { applyOverrides, ROLES, type RoleMap } from "./roles.ts";
 
 const LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const NAME = /^[a-z][a-z0-9-]{0,63}$/;
@@ -57,7 +58,7 @@ export function loadAgentDir(dir: string, warn: (message: string) => void): Agen
       if (roles.some((r) => r.name === role.name)) warn(`${join(dir, file)}: name "${role.name}" is also used by an earlier file in this folder; the later file wins`);
       roles.push(role);
     } catch (error) {
-      warn(`skipped agent file ${join(dir, file)}: ${error instanceof Error ? error.message : String(error)}`);
+      warn(`${join(dir, file)}: skipped, ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return roles;

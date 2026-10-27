@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { HostConfig, ManagedPolicy, ModelRef } from "@pista/protocol";
-import { isRestrictedRole, isToolAllowed, resolveModelTier, resolveRoleModel, ROLES, roleGateExtension } from "./roles.ts";
+import { resolveModelTier, resolveRoleModel } from "./model-tiers.ts";
+import { isRestrictedRole, isToolAllowed, ROLES, roleGateExtension } from "./roles.ts";
 
 const parent: ModelRef = { provider: "p", id: "big" };
 const override: ModelRef = { provider: "p", id: "small" };

@@ -22,7 +22,7 @@ import type {
 } from "@pista/protocol";
 import { type AuditSink, auditHash, noopAudit } from "./audit.ts";
 import { emitPrompt, emitUsage, scopeAudit, ToolAudit } from "./audit-events.ts";
-import { AgentRoles } from "./agent-roles.ts";
+import { AgentRoles } from "./role-files.ts";
 import { CLIENT_DIR, type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import { DecisionLog } from "./decisions.ts";
 import { Children, extensionsFor } from "./children.ts";

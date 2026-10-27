@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
 import { type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import type { ToolRules } from "./policy-tools.ts";
+import { spawnGroup } from "./process-group.ts";
 import { resolveProjectTrust } from "./project-trust.ts";
 
 export const DEFAULT_VERIFY_TIMEOUT_SEC = 600;
@@ -98,23 +98,15 @@ const EXIT_GRACE_MS = 200;
 /** Shell command with the project as cwd, in its own process group so a timeout or stop kills what it started too. Output is capped as it arrives. */
 export const shellRunner: CommandRunner = (command, { cwd, timeoutMs, signal }) =>
   new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const { child, kill } = spawnGroup(command, [], { cwd, shell: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let timedOut = false;
     let done = false;
     const take = (chunk: Buffer) => {
       output = (output + chunk.toString()).slice(-VERIFY_OUTPUT_CHARS * 4);
     };
-    child.stdout.on("data", take);
-    child.stderr.on("data", take);
-    const kill = () => {
-      try {
-        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
-      } catch {
-        // Already gone.
-      }
-    };
+    child.stdout!.on("data", take);
+    child.stderr!.on("data", take);
     const finish = (code: number | null) => {
       if (done) return;
       done = true;
