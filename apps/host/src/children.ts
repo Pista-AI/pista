@@ -13,7 +13,8 @@ import { approvalExtension, browserExtension, loopGuardExtension, policyGateExte
 import type { Hub } from "./hub.ts";
 import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
-import { availableRoles, isRestrictedRole, resolveRoleModel, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
+import { resolveRoleModel } from "./model-tiers.ts";
+import { availableRoles, isRestrictedRole, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, type ChildThreads } from "./subagent.ts";

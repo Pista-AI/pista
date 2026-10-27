@@ -4,12 +4,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { ManagedPolicy } from "@pista/protocol";
-import { AgentRoles, parseAgentFile } from "./agent-roles.ts";
-import { availableRoles, isToolAllowed, resolveRoleModel, roleOf, rolePrompt, roleGateExtension } from "./roles.ts";
+import { AgentRoles, parseAgentFile } from "./role-files.ts";
+import { resolveRoleModel } from "./model-tiers.ts";
+import { availableRoles, isToolAllowed, roleOf, rolePrompt, roleGateExtension } from "./roles.ts";
 import { agentToolExtension } from "./subagent.ts";
 import { makeManager, setupHome } from "./test-helpers.ts";
 
-const { home, projectDir } = setupHome("agent-roles");
+const { home, projectDir } = setupHome("role-files");
 const { extensionsFor } = await import("./children.ts");
 
 const scout = `---
@@ -100,7 +101,7 @@ test("malformed files are skipped with a warning", () => {
   const map = roles.forProject(projectDir);
   assert.ok(map.good && map.scout);
   for (const name of ["x", "m"]) assert.equal(map[name], undefined);
-  assert.equal(warnings.filter((w) => /skipped agent file/.test(w)).length, 5);
+  assert.equal(warnings.filter((w) => /: skipped, /.test(w)).length, 5);
 });
 
 test("project-level files load only for a trusted project and win over user files", () => {

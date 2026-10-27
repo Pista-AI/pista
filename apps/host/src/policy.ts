@@ -8,7 +8,7 @@ import { parseMcpRule } from "./policy-tools.ts";
 import { compareVersions, parseVersion } from "./semver.ts";
 import { normalizeDomainPattern } from "@pista/pi-browser/domains";
 import { auditSection } from "./audit-policy.ts";
-import { isTierRef, TIER_NAME } from "./roles.ts";
+import { isTierRef, TIER_NAME } from "./model-tiers.ts";
 import { isRecord, looksLikeSecret } from "./secrets.ts";
 import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
 
