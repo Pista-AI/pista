@@ -75,7 +75,7 @@ Every command must pass the managed policy's `tools.bash` rules before any of th
 
 `HostConfig.modelTiers` maps free-form tier names (a slug, `[a-z0-9][a-z0-9_-]*`, for example `local`, `cheap`, `standard`, `strong`) to concrete models. A role's `model` can then be `tier:<name>` instead of a model: in a role file (`model: tier:cheap`), in `agentOverrides` or in `agentRoles`. In config JSON the value is the string `"tier:cheap"` where a `{ provider, id }` object would go.
 
-Precedence is unchanged: `agentOverrides`, then `agentRoles`, then the file's model, then the parent's model. The first source that sets a model wins, and only then is a `tier:<name>` looked up (`resolveModelTier` in `roles.ts`). A tier that is not in `modelTiers` is not an error: the child uses the parent's model and the host logs a warning. It does not fall through to a lower-precedence source. The org model allowlist is checked on the resolved model exactly as for a concrete one, and a disallowed model falls back to the parent's. `modelTiers` and `tier:` values are shape-checked in managed policy `locked` and `defaults`; whether a tier exists is only checked when a child starts.
+Precedence is unchanged: `agentOverrides`, then `agentRoles`, then the file's model, then the parent's model. The first source that sets a model wins, and only then is a `tier:<name>` looked up (`resolveModelTier` in `model-tiers.ts`). A tier that is not in `modelTiers` is not an error: the child uses the parent's model and the host logs a warning. It does not fall through to a lower-precedence source. The org model allowlist is checked on the resolved model exactly as for a concrete one, and a disallowed model falls back to the parent's. `modelTiers` and `tier:` values are shape-checked in managed policy `locked` and `defaults`; whether a tier exists is only checked when a child starts.
 
 ```json
 {
@@ -86,6 +86,14 @@ Precedence is unchanged: `agentOverrides`, then `agentRoles`, then the file's mo
   "agentOverrides": { "scout": { "model": "tier:cheap" }, "reviewer": { "model": "tier:strong" } }
 }
 ```
+
+## Preset evals
+
+`pnpm eval:presets` compares harness presets (a `HostConfig` fragment such as `agentOverrides` and `modelTiers`, plus optional role files and `verify.json`) on fixed coding tasks and reports pass rate, cost, tokens and time. The fixtures live in `evals/presets/` (`presets/<name>/preset.json`, `tasks/<name>/`; see its README); the runner is `apps/host/src/eval/` (`cli.ts` parses flags, `presets.ts` orchestrates and reports, `run-one.ts` executes one run through a real `ThreadManager`).
+
+Isolation: every run is its own child process (the host reads `PISTA_HOME` and the Pi dirs at import time), in its own process group that is killed whole on timeout. The child gets a fresh `PISTA_HOME`, `PI_CODING_AGENT_DIR` and `PI_MEMORY_DIR` under a scratch directory; real runs copy only `auth.json` and `models-store.json` from the user's Pi agent dir. The environment is an allowlist (basics and provider credentials; no `PISTA_*`, `PI_*` or `NODE_OPTIONS` from the parent). The workspace is a copy of the task fixture; the hidden check files are staged into it only after the agent reports done, and the check command must exit 0. This is not a sandbox: the agent runs with the user's OS permissions. Real runs need `--model provider/id` and `--max-usd`, a cumulative cost cap after which the remaining runs are skipped.
+
+`pnpm eval:presets --fake --presets solo,routed` uses a scripted model (no API calls, no credentials) and is the quick check that the runner and both presets still work.
 
 ## Source of truth for settings
 
