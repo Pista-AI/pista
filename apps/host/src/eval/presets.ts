@@ -2,12 +2,12 @@
 // fragments ("presets") and reports pass rate, cost, tokens and time. Everything happens in temp copies.
 // This file never imports the host. Each run executes in its own child process (run-one.ts) with a fresh
 // PISTA_HOME, Pi agent dir and memory dir, because the host reads those at import time.
-import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChatMessage } from "@pista/protocol";
+import { spawnGroup } from "../process-group.ts";
 
 export interface Preset {
   name: string;
@@ -221,25 +221,19 @@ function spawnChild(job: ChildJob, env: NodeJS.ProcessEnv, killAfterMs: number, 
   const hostDir = fileURLToPath(new URL("../..", import.meta.url));
   const entry = fileURLToPath(new URL("./run-one.ts", import.meta.url));
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["--import", "tsx", entry, JSON.stringify(job)], { cwd: hostDir, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const { child, kill } = spawnGroup(process.execPath, ["--import", "tsx", entry, JSON.stringify(job)], { cwd: hostDir, env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     let signalled = false;
     let timedOut = false;
-    child.stdout.on("data", (d) => {
+    child.stdout!.on("data", (d) => {
       out += d;
       if (!signalled && out.includes(AGENT_DONE)) {
         signalled = true;
         onAgentDone?.();
       }
     });
-    child.stderr.on("data", (d) => (err = (err + d).slice(-2048)));
-    const kill = () => {
-      try {
-        if (process.platform === "win32") child.kill("SIGKILL");
-        else process.kill(-child.pid!, "SIGKILL");
-      } catch {}
-    };
+    child.stderr!.on("data", (d) => (err = (err + d).slice(-2048)));
     active = { kill, scratch: job.scratch };
     const timer = setTimeout(() => {
       timedOut = true;

@@ -2,10 +2,10 @@
 // to throwaway dirs before this starts, so importing the host here cannot touch the user's state.
 // The workspace (job.workDir) is a copy of the fixture; full-access and trust apply to that folder only. This is not
 // a sandbox: the agent runs with the user's OS permissions.
-import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
+import { spawnGroup } from "../process-group.ts";
 import { fauxModels } from "./faux-models.ts";
 import { AGENT_DONE, CHECK_TIMEOUT_MS, type ChildJob, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
@@ -14,13 +14,7 @@ const job = JSON.parse(process.argv[2]!) as ChildJob;
 /** Runs the check in its own process group and kills the group on timeout (group kill skipped on Windows). */
 function sh(command: string, cwd: string, timeoutMs: number): Promise<number | "timeout"> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, stdio: "ignore", detached: process.platform !== "win32" });
-    const kill = () => {
-      try {
-        if (process.platform === "win32") child.kill("SIGKILL");
-        else process.kill(-child.pid!, "SIGKILL");
-      } catch {}
-    };
+    const { child, kill } = spawnGroup(command, [], { cwd, shell: true, stdio: "ignore" });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
