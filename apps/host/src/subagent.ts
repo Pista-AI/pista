@@ -6,6 +6,7 @@ import type { ThreadRef } from "./extensions.ts";
 import { usageTotals } from "./models.ts";
 import { availableRoles, ROLES, type RoleMap } from "./roles.ts";
 import { clip } from "./text.ts";
+import { feedbackPrompt, resolveVerifyConfig, runVerify, shellRunner, verifyKey, withProjectLock, type VerifyDeps } from "./verify.ts";
 import type { ThreadManager } from "./threads.ts";
 
 export const MAX_RUNNING_CHILDREN = 3;
@@ -24,6 +25,8 @@ export interface AgentToolOptions {
   roles?: RoleMap;
   /** Logs `agent_dispatch` and `agent_result` decisions. */
   record?: RecordDecision;
+  /** Verify gate: when set, an implementer that changed files must pass the configured checks before its report is returned. */
+  verify?: VerifyDeps;
 }
 
 export interface AgentToolParams {
@@ -59,11 +62,11 @@ const EXPLORER_RUNNING_NOTE = "Note: an explorer is still running; do not repeat
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
 /** `runDone` resolves when the child's run is over: Pi's `agent_settled` fires once retries and compaction are done. */
-function runWaiter(session: AgentSession, onToolEnd: () => void) {
+function runWaiter(session: AgentSession, onToolEnd: (toolName: string, isError: boolean) => void) {
   let finish!: () => void;
   const runDone = new Promise<void>((resolve) => (finish = resolve));
   const unsubscribe = session.subscribe((event) => {
-    if (event.type === "tool_execution_end") onToolEnd();
+    if (event.type === "tool_execution_end") onToolEnd(event.toolName, event.isError);
     if (event.type === "agent_settled") finish();
   });
   return { runDone, unsubscribe };
@@ -156,19 +159,75 @@ export function createAgentRunner(opts: AgentToolOptions) {
           });
         };
         try {
-          // Subscribe before prompting so a fast run cannot finish unobserved.
-          const waiter = runWaiter(child.session, () => update(`${who} working: ${++toolCalls} tool calls.`));
-          unsubscribe = waiter.unsubscribe;
+          // `edit` and `write` are the tools that reliably mean "files changed"; a file changed through bash is not detected.
+          let edited = false;
           const stopped = new Promise<"aborted" | "timeout">((resolve) => {
             onAbort = () => resolve("aborted");
             signal?.addEventListener("abort", onAbort, { once: true });
             if (signal?.aborted) onAbort();
             timer = setTimeout(() => resolve("timeout"), opts.timeoutMs ?? DEFAULT_CHILD_TIMEOUT_MS);
           });
-          // startPrompt's run rejects when Pi cannot start the run (no model, auth, ...): no agent_settled would follow.
-          const finished = threads.startPrompt(childId, brief, undefined).then(({ run }) => run).then(() => waiter.runDone.then(() => "finished" as const));
-          finished.catch(() => {}); // an abort or timeout can win the race; do not leave a late rejection unhandled
-          const outcome = await Promise.race([stopped, finished]);
+          let stopReason: "aborted" | "timeout" | undefined;
+          // Verify commands are bounded by the same stop as the child.
+          const verifyAbort = new AbortController();
+          void stopped.then((reason) => {
+            stopReason = reason;
+            verifyAbort.abort();
+          });
+          // The config as it was before the child ran: a child that rewrites verify.json must not choose what the host runs.
+          const cwd = child.session.sessionManager.getCwd();
+          const before = opts.verify ? resolveVerifyConfig(opts.verify.store, cwd) : undefined;
+          /** One prompt and the wait for the run to settle, racing the abort and the timeout. */
+          const turn = async (prompt: string) => {
+            // Subscribe before prompting so a fast run cannot finish unobserved.
+            const waiter = runWaiter(child.session, (toolName, isError) => {
+              if (!isError && (toolName === "edit" || toolName === "write")) edited = true;
+              update(`${who} working: ${++toolCalls} tool calls.`);
+            });
+            // startPrompt's run rejects when Pi cannot start the run (no model, auth, ...): no agent_settled would follow.
+            const finished = threads.startPrompt(childId, prompt, undefined).then(({ run }) => run).then(() => waiter.runDone.then(() => "finished" as const));
+            finished.catch(() => {}); // an abort or timeout can win the race; do not leave a late rejection unhandled
+            try {
+              return await Promise.race([stopped, finished]);
+            } finally {
+              waiter.unsubscribe();
+            }
+          };
+          let outcome = await turn(brief);
+
+          // Verify gate: the host runs the configured checks instead of trusting the child's "done".
+          let verifyLine = "";
+          const verify = opts.verify;
+          if (outcome === "finished" && verify && edited) {
+            const config = before;
+            const skip = (reason: string) => `Verify: skipped (${reason})`;
+            if (verifyKey(resolveVerifyConfig(verify.store, cwd)) !== verifyKey(before)) verifyLine = skip("verify.json changed during run");
+            else if (!config) verifyLine = "";
+            else if (verify.store.config.approvalMode === "read-only") verifyLine = skip("read-only approval mode");
+            else {
+              for (let attempt = 1; ; attempt++) {
+                const result = await withProjectLock(cwd, () => runVerify(config, cwd, verify.store.toolRules, verify.run ?? shellRunner, verifyAbort.signal));
+                if (stopReason || signal?.aborted) {
+                  outcome = stopReason ?? "aborted";
+                  break;
+                }
+                opts.record?.({
+                  kind: "agent_result",
+                  summary: `Verify ${result.status}${result.status === "failed" ? ` (attempt ${attempt}/${config.maxAttempts})` : ""}`,
+                  ...(result.status === "failed" ? { evidence: result.output.slice(0, 300) } : result.status === "skipped" ? { evidence: result.reason } : {}),
+                  data: { childThreadId: childId, verify: result.status, attempt },
+                });
+                if (result.status === "passed") verifyLine = "Verify: passed";
+                else if (result.status === "skipped") verifyLine = skip(result.reason);
+                else if (attempt >= config.maxAttempts) verifyLine = `Verify: failed after ${attempt} attempts (${result.command})`;
+                else {
+                  outcome = await turn(feedbackPrompt(result.output));
+                  if (outcome === "finished" && !stopReason) continue;
+                }
+                break;
+              }
+            }
+          }
 
           if (outcome !== "finished") {
             await threads.abort(childId);
@@ -184,7 +243,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
           const { billed: tokens, cacheRead } = usageTotals(child.session.getSessionStats().tokens);
           const footer = `[sub-agent thread ${childId}${tokens ? `, ${tokenLabel(tokens)}` : ""}]`;
           logResult("done", final);
-          return { content: text(`${final}\n\n${footer}`), details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead } as AgentToolDetails };
+          return { content: text(`${final}${verifyLine ? `\n\n${verifyLine}` : ""}\n\n${footer}`), details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead } as AgentToolDetails };
         } catch (error) {
           if (!logged) logResult("error", error instanceof Error ? error.message : String(error));
           throw error;

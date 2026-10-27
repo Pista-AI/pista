@@ -65,7 +65,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),
     // Depth is 1: a child never gets the agent tool.
-    ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record, ...(deps.roles ? { roles: deps.roles } : {}) })]),
+    ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record, verify: { store }, ...(deps.roles ? { roles: deps.roles } : {}) })]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
     ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),

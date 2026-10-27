@@ -108,6 +108,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   localServers: "array",
   llamaEnabled: "boolean",
   maxOutputTokens: "number",
+  verify: "object",
 };
 
 // Keep in step with the protocol unions ApprovalMode, LinkTarget, ThinkingMode, AgentRoleName and LocalServerKind (none is exported as an array).
