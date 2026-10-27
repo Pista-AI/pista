@@ -24,6 +24,7 @@
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "package:desktop": "pnpm --filter @pista/desktop package",
     "policy:check": "pnpm --filter @pista/host policy:check",
+    "eval:presets": "pnpm --filter @pista/host eval:presets",
     "analyze:session": "node scripts/analyze-session.mjs"
   },
   "devDependencies": {

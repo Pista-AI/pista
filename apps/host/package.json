@@ -10,6 +10,7 @@
     "start": "node dist/host.mjs",
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/host.mjs --external:@earendil-works/* --external:ws --external:undici --external:typebox --external:pi-memory --external:pi-web-access",
     "policy:check": "tsx src/index.ts policy check",
+    "eval:presets": "tsx src/eval/cli.ts",
     "typecheck": "tsc -p .",
     "test": "tsx --test \"src/**/*.test.ts\""
   },
