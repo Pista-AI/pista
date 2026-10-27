@@ -5,6 +5,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
+import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
 import { fauxModels } from "./faux-models.ts";
 import { AGENT_DONE, CHECK_TIMEOUT_MS, type ChildJob, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
@@ -32,6 +33,7 @@ function sh(command: string, cwd: string, timeoutMs: number): Promise<number | "
 if (job.mode === "check-model") {
   const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
   const models = await ModelRuntime.create({ allowModelNetwork: false });
+  registerNebiusProvider(models);
   process.exit(models.getModel(job.model!.provider, job.model!.id) ? 0 : 1);
 }
 
@@ -43,7 +45,9 @@ const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 const result: RunResult = { preset: job.preset.name, task: job.task, run: 1, pass: false, seconds: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] };
 const started = Date.now();
 const faux = job.fake ? await fauxModels() : undefined;
+// Built-in providers are registered by the host at startup (index.ts), not by ModelRuntime itself.
 const models = faux?.models ?? (await ModelRuntime.create({ allowModelNetwork: true }));
+if (!faux) registerNebiusProvider(models);
 const store = new ConfigStore();
 const manager = new ThreadManager(store, new Hub(), models);
 let threadId: string | undefined;
