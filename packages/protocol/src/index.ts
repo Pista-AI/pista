@@ -404,6 +404,8 @@ export interface HostConfig {
   llamaEnabled: boolean;
   /** Upper clamp on each model's per-response output cap, in tokens; undefined keeps the model's default. */
   maxOutputTokens?: number;
+  /** Default verify gate for sub-agents that change files; a trusted project's `.pista/verify.json` wins. */
+  verify?: { commands: string[]; timeoutSec?: number; maxAttempts?: number };
 }
 
 /** Which settings an organisation policy has locked. Locked keys are read-only for the user; the host rejects `config.set` patches that touch them. */

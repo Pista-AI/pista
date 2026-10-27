@@ -58,6 +58,19 @@ Report at most ten paths, each with one line on why it matters.
 
 A file named like a built-in (`explorer`, `implementer`, `reviewer`) can only narrow it: the built-in tool set is the ceiling, and omitted `tools` keeps it. Custom roles are configured through `agentOverrides`, not `agentRoles` (which stays for the built-ins' models).\n\nA custom role is an ordinary child thread: the role gate, approvals, org policy gate and audit extensions attach exactly as for built-in roles, so a file can only narrow what the parent could do. `HostConfig.agentOverrides` (`{ model, thinking, tools, excludeTools, disabled }` per role name) applies on top of built-in and file roles; its `tools` intersect with the role's, and its `model` wins over `agentRoles`, which stays for now.
 
+## Verify gate
+
+When a sub-agent child that changed files (a successful `edit` or `write` tool call; files changed through bash are not detected) finishes its run, the host runs the project's check commands before the parent gets the report (`apps/host/src/verify.ts`, wired into the `agent` tool in `subagent.ts`). If a command fails, its last ~4000 characters of output go back to the child as a follow-up message, up to `maxAttempts` runs in total. The parent's result then ends with one status line: `Verify: passed`, `Verify: failed after N attempts (<command>)` or `Verify: skipped (<reason>)`.
+
+Config is `<project>/.pista/verify.json`, read only while the project is trusted (checked on every use), over an optional user-level `verify` in config.json with the same shape. There is no auto-detection.
+
+```json
+{ "commands": ["pnpm typecheck", "pnpm test"], "timeoutSec": 600, "maxAttempts": 2 }
+```
+
+Every command must pass the managed policy's `tools.bash` rules before any of them runs; a denied one reports `skipped (blocked by policy)` and nothing runs. Commands run through the shell with the project as cwd and the timeout per command, in their own process group (killed whole on timeout or stop), one verify at a time per project. The config is read before the child runs; if it differs afterwards (the child rewrote `verify.json`), nothing runs and the line says `skipped (verify.json changed during run)`. The gate is skipped when no commands are configured, when the approval mode is read-only, and when the child made no file edits. Each run is logged as an `agent_result` decision; it is not emitted to the OTLP tool audit (the host, not the model, runs these commands, so they are not tool calls).
+
+
 ## Model tiers
 
 `HostConfig.modelTiers` maps free-form tier names (a slug, `[a-z0-9][a-z0-9_-]*`, for example `local`, `cheap`, `standard`, `strong`) to concrete models. A role's `model` can then be `tier:<name>` instead of a model: in a role file (`model: tier:cheap`), in `agentOverrides` or in `agentRoles`. In config JSON the value is the string `"tier:cheap"` where a `{ provider, id }` object would go.
