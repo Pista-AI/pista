@@ -2,7 +2,7 @@
 // to throwaway dirs before this starts, so importing the host here cannot touch the user's state.
 // The workspace (job.workDir) is a copy of the fixture; full-access and trust apply to that folder only. This is not
 // a sandbox: the agent runs with the user's OS permissions.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
@@ -72,7 +72,8 @@ try {
       }]);
     } else {
       const dir = join(job.stageDir, "fake");
-      const files = existsSync(dir) ? readdirSync(dir) : [];
+      // Recursive, so a reference solution can touch nested files (paths stay relative to fake/).
+      const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => statSync(join(dir, f)).isFile()) : [];
       handle.setResponses([...files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f), content: readFileSync(join(dir, f), "utf8") }))), piAi.fauxAssistantMessage("Done.")]);
     }
   }

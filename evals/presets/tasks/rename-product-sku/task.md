@@ -1,0 +1,2 @@
+This repo is a small web-shop backend (`src/`, tests in `test/`). Rename the product identifier from `id` to `sku` across the codebase: the `Product` type and catalog data, `findProduct`, and cart lines (`CartLine.productId` becomes `CartLine.sku`), plus everything that reads them, including the tests in `test/`.
+Order ids and customer ids keep their `id` field, and `Order.customerId` stays as it is. Behaviour must not change, and the tests in `test/` must pass.

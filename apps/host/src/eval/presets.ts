@@ -52,6 +52,10 @@ export interface Summary {
   meanCostUsd: number;
   meanTokens: number;
   meanSeconds: number;
+  /** Mean `agent` tool calls per run (parent and children). */
+  meanSubAgentCalls: number;
+  /** Verify-gate outcomes summed over all runs (from the sub-agent results' "Verify: ..." lines). */
+  verify: { passed: number; failed: number; skipped: number };
 }
 
 export function loadPreset(root: string, name: string): Preset {
@@ -150,6 +154,10 @@ export interface ChildJob {
 
 export const RESULT_MARK = "__EVAL_RESULT__ ";
 
+function count(rs: RunResult[], re: RegExp): number {
+  return rs.reduce((n, r) => n + r.verifyLines.filter((l) => re.test(l)).length, 0);
+}
+
 export function summarize(results: RunResult[], presets: string[]): Summary[] {
   return presets.map((preset) => {
     const rs = results.filter((r) => r.preset === preset);
@@ -161,6 +169,12 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
       meanCostUsd: mean((r) => r.costUsd),
       meanTokens: mean((r) => r.input + r.output + r.cacheRead + r.cacheWrite),
       meanSeconds: mean((r) => r.seconds),
+      meanSubAgentCalls: mean((r) => r.subAgentCalls),
+      verify: {
+        passed: count(rs, /verify: passed/i),
+        failed: count(rs, /verify: failed/i),
+        skipped: count(rs, /verify: skipped/i),
+      },
     };
   });
 }
@@ -169,9 +183,12 @@ export function toMarkdown(report: EvalReport): string {
   const lines = [
     `# Preset eval${report.fake ? " (fake model)" : ""}`,
     "",
-    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) |",
-    "|---|---|---|---|---|---|",
-    ...report.summary.map((s) => `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} |`),
+    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | verify pass/fail/skip |",
+    "|---|---|---|---|---|---|---|---|",
+    ...report.summary.map(
+      (s) =>
+        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
+    ),
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,
   ];
