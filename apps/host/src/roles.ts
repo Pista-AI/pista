@@ -44,6 +44,15 @@ export function isRestrictedRole(role: AgentRoleName, roles: RoleMap = ROLES): b
   return roleOf(role, roles).tools.length > 0;
 }
 
+/** Default and upper bound of the loop guard's per-run tool-call cap. */
+export const DEFAULT_MAX_TOOL_CALLS = 60;
+const MAX_TOOL_CALLS_LIMIT = 1000;
+
+/** A usable tool-call cap (positive integer, at most 1000), or undefined so the caller keeps its default. */
+export function validToolCallLimit(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_TOOL_CALLS_LIMIT ? (value as number) : undefined;
+}
+
 /**
  * Applies `HostConfig.agentOverrides` to a role map. Tools can only narrow: an allowlist is intersected with the
  * role's own (an unrestricted role takes the override's list), and exclusions add up. Model is resolved separately.
@@ -60,6 +69,7 @@ export function applyOverrides(roles: RoleMap, overrides: Record<string, AgentOv
       tools,
       excludeTools: [...(role.excludeTools ?? []), ...(o.excludeTools ?? [])],
       ...(o.thinking ? { thinking: o.thinking } : {}),
+      ...(validToolCallLimit(o.maxToolCalls) ? { maxToolCalls: o.maxToolCalls } : {}),
       // An allowlist that intersects to nothing would read as "unrestricted", so the role is switched off instead.
       ...(o.disabled || (o.tools && tools.length === 0) ? { disabled: true } : {}),
     };

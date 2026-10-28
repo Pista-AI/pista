@@ -1,10 +1,11 @@
 {
-  "description": "Orchestrator mode on Nebius: the parent may delegate (agent), plan and read (to spot-check results), but not edit; explorer and implementer run on the cheap tier (DeepSeek V4 Flash, low thinking); verify gate after edits. Needs HostConfig.orchestratorMode (host PR orchestrator-mode).",
+  "description": "Orchestrator mode on Nebius: the parent may delegate (agent), plan and read (to spot-check results), but not edit; explorer and implementer run on the cheap tier (DeepSeek V4 Flash, low thinking); 150-call loop-guard cap for the parent and explorers (the default 60 stopped them on explore-large); verify gate after edits. Needs HostConfig.orchestratorMode (host PR orchestrator-mode).",
   "config": {
+    "maxToolCalls": 150,
     "orchestratorMode": "delegate-read",
     "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
     "agentOverrides": {
-      "explorer": { "model": "tier:cheap", "thinking": "low" },
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
       "implementer": { "model": "tier:cheap", "thinking": "low" }
     }
   },

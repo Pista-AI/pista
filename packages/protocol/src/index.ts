@@ -152,6 +152,8 @@ export interface AgentRole {
   /** Tools the role may not use, on top of `tools`. */
   excludeTools?: string[];
   thinking?: ThinkingLevel;
+  /** Tool-call cap of the loop guard for this role's threads. Absent is the default. */
+  maxToolCalls?: number;
   description: string;
   /** Prompt text from a role file; `promptMode` says whether it follows or replaces the built-in role prompt. */
   prompt?: string;
@@ -166,6 +168,8 @@ export interface AgentOverride {
   thinking?: ThinkingLevel;
   tools?: string[];
   excludeTools?: string[];
+  /** Tool calls one run of this role's sub-agent threads may make before the loop guard stops it (positive integer up to 1000; default 60). */
+  maxToolCalls?: number;
   disabled?: boolean;
 }
 
@@ -405,6 +409,8 @@ export interface HostConfig {
   webSearchEnabled: boolean;
   /** The built-in browser tools (`browser_*`). Absent is on; `false` leaves them, and the Browser section of the system prompt, out. */
   browserEnabled?: boolean;
+  /** Tool calls one run of a top-level thread may make before the loop guard stops it (positive integer up to 1000; default 60). Sub-agents use `agentOverrides[role].maxToolCalls`. */
+  maxToolCalls?: number;
   /** Local model servers (LM Studio, Ollama, llama.cpp) added as providers. */
   localServers: LocalServer[];
   /** Built-in llama.cpp runtime (`llama-server` in router mode). Downloaded only once the user enables it. */
