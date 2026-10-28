@@ -42,6 +42,8 @@ export interface RunResult {
   costUsd: number;
   subAgentCalls: number;
   verifyLines: string[];
+  /** Tail of the check's output, kept only when the check failed. */
+  checkOutput?: string;
   error?: string;
 }
 
@@ -230,6 +232,8 @@ export function abortEval(): void {
 
 /** Child budget: run timeout + the check's 120 s; the parent kills only after that plus slack. */
 export const CHECK_TIMEOUT_MS = 120_000;
+/** How much of a failed check's output the report keeps. */
+export const CHECK_OUTPUT_CHARS = 2000;
 export const KILL_SLACK_MS = 30_000;
 export const AGENT_DONE = "__AGENT_DONE__";
 
