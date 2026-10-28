@@ -8,7 +8,7 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": []
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "types"]
 }
