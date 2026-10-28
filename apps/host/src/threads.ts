@@ -35,7 +35,7 @@ import { resolveProjectTrust } from "./project-trust.ts";
 import { capModel, modelRef, usableModel } from "./models.ts";
 import { buildSession, ENTRY, readCustomEntry, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
 import { clip, type TextContent } from "./text.ts";
-import { roleOf, rolePrompt } from "./roles.ts";
+import { orchestratorPrompt, roleOf, rolePrompt } from "./roles.ts";
 import { describeDenied, isModelAllowed, pickAllowedModel, restrictsModels } from "./policy-access.ts";
 import { isLocalProvider } from "./local.ts";
 import { deleteFile } from "./retention.ts";
@@ -278,8 +278,9 @@ export class ThreadManager {
       packages: this.store.packageSync(),
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
-      ...(role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
-      appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : [])],
+      // The orchestrator allowlist is only ever set for top-level threads, so it takes precedence over any role.
+      ...(kind.orchestratorTools ? { tools: kind.orchestratorTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
+      appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : []), ...(kind.orchestratorTools ? [orchestratorPrompt(this.store.config.orchestratorMode)] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {
         store: this.store,
