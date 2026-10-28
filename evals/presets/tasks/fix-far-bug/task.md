@@ -1,0 +1,1 @@
+This repo is a small invoicing backend (`src/`, tests in `test/`). Support reports that invoices for some customers in Norway show the wrong total: the VAT looks missing. Find the cause and fix it, so that Norwegian customers are invoiced correctly however their country is written in the CRM. Keep the tests in `test/` passing and do not change the exports of `src/index.ts`.
