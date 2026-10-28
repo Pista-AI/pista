@@ -125,7 +125,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     store.assertUnlocked(patch);
     const config = store.patchConfig(patch, { userSet: true });
     hub.emit({ type: "config.changed", config, configSources: store.sources() });
-    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined) await threads.reloadIdle();
+    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
     return config;
   },
 

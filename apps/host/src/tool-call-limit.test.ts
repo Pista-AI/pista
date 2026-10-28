@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { isLocalProvider } from "./local.ts";
 import { fauxModels, liveOf, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("tool-call-limit");
@@ -12,6 +13,7 @@ const fauxModel = models.getModel(ref.provider, ref.id) as { baseUrl?: string };
 fauxModel.baseUrl = "https://faux.example.invalid/v1";
 const { manager, store, hub, project } = await makeManager({ projectDir, models });
 store.patchConfig({ defaultModel: ref });
+assert.equal(isLocalProvider(ref.provider, fauxModel.baseUrl, store.config), false, "the faux model must not count as local, or the 40-call local pause fires first");
 
 const toasts: string[] = [];
 const emit = hub.emit.bind(hub);
