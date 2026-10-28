@@ -278,7 +278,8 @@ export class ThreadManager {
       packages: this.store.packageSync(),
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
-      ...(role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : kind.orchestratorTools ? { tools: kind.orchestratorTools } : {}),
+      // The orchestrator allowlist is only ever set for top-level threads, so it takes precedence over any role.
+      ...(kind.orchestratorTools ? { tools: kind.orchestratorTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
       appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {

@@ -40,6 +40,7 @@ test("delegate: the model is sent only agent and plan, and a read call is refuse
   assert.deepEqual(sent, ["agent", "plan"]);
   // Pi itself rejects a tool that is not active; the gate (next test) covers a call that reaches the extension runner.
   assert.match(results(id)[0]!, /not found|Blocked/i);
+  assert.doesNotMatch(results(id)[0]!, /export|import/, "no file content came back");
 });
 
 test("delegate: a bash call is blocked by the gate even though the tool is not advertised", async () => {
@@ -69,10 +70,12 @@ test("delegate-read: read-only tools are present, edit, write and bash are not",
 test("a child of an orchestrator keeps its role's tools", async () => {
   const id = await newThread("delegate");
   const childId = await manager.spawnChild(id, { role: "implementer" });
-  const child = (await manager.continueChild(childId)).session;
+  const child = (await manager.continueChild(childId)).session as unknown as { getActiveToolNames(): string[]; extensionRunner: { emitToolCall(e: never): Promise<{ block?: boolean } | undefined> } };
   const active = child.getActiveToolNames();
   assert.ok(active.includes("edit") && active.includes("bash"));
   assert.ok(!active.includes("agent"));
+  const gate = await child.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "b", toolName: "bash", input: {} } as never);
+  assert.doesNotMatch(String((gate as { reason?: string } | undefined)?.reason ?? ""), /orchestrator/, "the orchestrator gate is absent for children");
 });
 
 test("off and absent leave the full tool list", async () => {
@@ -81,4 +84,15 @@ test("off and absent leave the full tool list", async () => {
     const sent = await sentTools(id, [piAi.fauxAssistantMessage("done")]);
     for (const tool of ["agent", "bash", "edit", "plan", "read", "write"]) assert.ok(sent.includes(tool), `${mode}: ${tool}`);
   }
+});
+
+test("switching the mode on and reloading idle threads restricts the reopened parent", async () => {
+  const id = await newThread("off");
+  faux.setResponses([piAi.fauxAssistantMessage("hi")]);
+  await liveOf().get(id)!.session.prompt("go");
+  assert.ok(liveOf().get(id)!.session.getActiveToolNames().includes("bash"));
+  store.patchConfig({ orchestratorMode: "delegate" });
+  await manager.reloadIdle();
+  await manager.open(id);
+  assert.deepEqual([...liveOf().get(id)!.session.getActiveToolNames()].sort(), ["agent", "plan"]);
 });

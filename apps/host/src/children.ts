@@ -24,7 +24,7 @@ import { auditToolsExtension, type DecisionSource, observeBlocks, type ToolAudit
 /** What decides a thread's tools and extensions: its role (children only) and whether it is a child at all. */
 export interface ThreadKind {
   role: AgentRoleName | undefined;
-  /** The role has a tool allowlist. */
+  /** The role has a tool allowlist, or the thread is an orchestrator (`orchestratorTools`). */
   restricted: boolean;
   isChild: boolean;
   /** Tools of an orchestrator top-level thread (see `HostConfig.orchestratorMode`); absent otherwise. */

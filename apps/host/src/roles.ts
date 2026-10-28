@@ -1,5 +1,5 @@
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
-import type { AgentOverride, AgentRole, HostConfig, AgentRoleName, BuiltinAgentRoleName } from "@pista/protocol";
+import type { AgentOverride, AgentRole, AgentRoleName, BuiltinAgentRoleName, HostConfig } from "@pista/protocol";
 
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
