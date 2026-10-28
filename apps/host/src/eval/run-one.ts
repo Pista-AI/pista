@@ -2,13 +2,14 @@
 // to throwaway dirs before this starts, so importing the host here cannot touch the user's state.
 // The workspace (job.workDir) is a copy of the fixture; full-access and trust apply to that folder only. This is not
 // a sandbox: the agent runs with the user's OS permissions.
+import { execFile } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
 import { fauxModels } from "./faux-models.ts";
-import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
+import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, DIFF_CHARS, type DiffStats, finalText, JUDGE_SYSTEM, JUDGE_TIMEOUT_MS, type Msg, parseJudge, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
 const job = JSON.parse(process.argv[2]!) as ChildJob;
 
@@ -35,6 +36,44 @@ function sh(command: string, cwd: string, timeoutMs: number): Promise<{ code: nu
   });
 }
 
+/** Workspace vs fixture as a unified diff without `.pista/` (harness files). `git diff --no-index` exits 1 when files differ. */
+function workspaceDiff(): Promise<{ diff: string; stats: DiffStats }> {
+  const from = join(job.stageDir, "fixture");
+  return new Promise((resolve) => {
+    execFile("git", ["-c", "core.quotepath=false", "diff", "--no-index", "--no-color", "--", from, job.workDir], { maxBuffer: 64 * 1024 * 1024 }, (_e, stdout) => {
+      const sections = stdout.split(/^(?=diff --git )/m).filter((s) => s.startsWith("diff --git ") && !s.split("\n", 1)[0]!.includes("/.pista/"));
+      const diff = sections.join("").replaceAll(`a${from}/`, "a/").replaceAll(`b${job.workDir}/`, "b/");
+      const stats = { files: sections.length, added: 0, removed: 0 };
+      for (const line of diff.split("\n")) {
+        if (line.startsWith("+") && !line.startsWith("+++")) stats.added++;
+        else if (line.startsWith("-") && !line.startsWith("---")) stats.removed++;
+      }
+      resolve({ diff: diff.slice(0, DIFF_CHARS), stats });
+    });
+  });
+}
+
+/** One blind reviewer call: the task and the diff only. Records `quality` or `judgeError`, and the call's cost. */
+async function review(runtime: typeof models, ref: { provider: string; id: string }): Promise<void> {
+  const model = runtime.getModel(ref.provider, ref.id);
+  if (!model) return void (result.judgeError = `reviewer model ${ref.provider}/${ref.id} not found`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
+  try {
+    const content = `Task:\n${job.prompt}\n\nDiff:\n${result.diff || "(no changes)"}`;
+    const reply = await runtime.completeSimple(model, { systemPrompt: JUDGE_SYSTEM, messages: [{ role: "user", content, timestamp: Date.now() }] }, { maxTokens: 1000, signal: controller.signal });
+    result.judgeCostUsd += reply.usage?.cost?.total || 0;
+    if (reply.stopReason === "aborted") throw new Error("reviewer timed out");
+    const parsed = parseJudge(reply.content.map((b) => (b.type === "text" ? b.text : "")).join(""));
+    if ("quality" in parsed) result.quality = parsed.quality;
+    else result.judgeError = parsed.error;
+  } catch (error) {
+    result.judgeError = error instanceof Error ? error.message : String(error);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 if (job.mode === "check-model") {
   const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
   const models = await ModelRuntime.create({ allowModelNetwork: false });
@@ -47,7 +86,7 @@ const { Hub } = await import("../hub.ts");
 const { ThreadManager } = await import("../threads.ts");
 const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
 
-const result: RunResult = { preset: job.preset.name, task: job.task, run: 1, pass: false, seconds: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] };
+const result: RunResult = { preset: job.preset.name, task: job.task, run: 1, pass: false, seconds: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0 };
 const started = Date.now();
 const faux = job.fake ? await fauxModels() : undefined;
 // Built-in providers are registered by the host at startup (index.ts), not by ModelRuntime itself.
@@ -79,7 +118,13 @@ try {
       const dir = join(job.stageDir, "fake");
       // Recursive, so a reference solution can touch nested files (paths stay relative to fake/).
       const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => statSync(join(dir, f)).isFile()) : [];
-      handle.setResponses([...files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f), content: readFileSync(join(dir, f), "utf8") }))), piAi.fauxAssistantMessage("Done.")]);
+      // The reviewer call (after the agent) takes the last response.
+      const verdict = (s: number) => ({ spec: { score: s, reason: "fake" }, minimal: { score: s, reason: "fake" }, readable: { score: s, reason: "fake" }, safe: { score: s, reason: "fake" } });
+      handle.setResponses([
+        ...files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f), content: readFileSync(join(dir, f), "utf8") }))),
+        piAi.fauxAssistantMessage("Done."),
+        ...(job.judge ? [piAi.fauxAssistantMessage(`Review:\n${JSON.stringify(verdict(4))}`)] : []),
+      ]);
     }
   }
   const { run } = await manager.startPrompt(threadId, job.prompt, undefined);
@@ -91,8 +136,11 @@ try {
     result.error = "timeout";
     await manager.abort(threadId).catch(() => {});
     run.catch(() => {});
+    await workspaceDiff().then((d) => Object.assign(result, { diff: d.diff, diffStats: d.stats }), () => {});
   } else {
     // Hidden until now: tell the parent, which stages the check files and then drops .ready.
+    const d = await workspaceDiff().catch(() => undefined);
+    if (d) Object.assign(result, { diff: d.diff, diffStats: d.stats });
     console.log(AGENT_DONE);
     for (let i = 0; i < 600 && !existsSync(join(job.stageDir, ".ready")); i++) await new Promise((r) => setTimeout(r, 50));
     for (const f of readdirSync(job.stageDir)) if (f.startsWith("check.")) cpSync(join(job.stageDir, f), join(job.workDir, f));
@@ -100,6 +148,7 @@ try {
     if (code === "timeout") result.error = "check timeout";
     result.pass = code === 0;
     if (!result.pass) result.checkOutput = out;
+    if (job.judge) await review(models, faux ? faux.ref : job.judge);
   }
 } catch (error) {
   result.error = error instanceof Error ? error.message : String(error);

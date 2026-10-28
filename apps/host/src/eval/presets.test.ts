@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { childEnv, failed, finalText, loadTasks, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { childEnv, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -16,7 +16,7 @@ test("fake run over every task and both presets passes and produces the report s
   assert.ok(Array.isArray(first.verifyLines));
   assert.equal(first.finalText, "Done.");
   const md = toMarkdown(report);
-  assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| verify pass\/fail\/skip \|/);
+  assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| mean quality \(1-5\) \| mean diff lines \| verify pass\/fail\/skip \|/);
   assert.match(md, new RegExp(`\\| solo \\| ${n} \\| 100% \\|`));
   assert.match(md, new RegExp(`\\| routed \\| ${n} \\| 100% \\|`));
 });
@@ -34,7 +34,7 @@ test("cost, tokens, sub-agent calls and verify lines are tallied", async () => {
   assert.equal(t.input, 20);
   assert.equal(t.subAgentCalls, 1);
   assert.deepEqual(t.verifyLines, ["verify: passed"]);
-  const s = summarize([{ preset: "a", task: "t", run: 1, pass: true, seconds: 2, ...t }], ["a"]);
+  const s = summarize([{ preset: "a", task: "t", run: 1, pass: true, seconds: 2, diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0, ...t }], ["a"]);
   assert.equal(s[0]!.meanCostUsd, 0.5);
   assert.equal(s[0]!.meanSubAgentCalls, 1);
   assert.deepEqual(s[0]!.verify, { passed: 1, failed: 0, skipped: 0 });
@@ -88,4 +88,28 @@ test("finalText keeps the last assistant text or its provider error", () => {
   assert.equal(finalText([a("first"), { role: "user", content: "x", timestamp: 0 }, a("last")] as never), "last");
   assert.equal(finalText([a("", { stopReason: "error", errorMessage: "429" })] as never), "[error] 429");
   assert.equal(finalText([] as never), undefined);
+});
+
+test("a fake run records the diff, and a judged one records the reviewer score and its cost line", async () => {
+  const plain = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true });
+  const r = plain.results[0]!;
+  assert.ok(r.diff && r.diff.includes("diff --git") && !r.diff.includes(".pista"), "diff recorded without harness files");
+  assert.ok(r.diffStats.files >= 1 && r.diffStats.added >= 1);
+  assert.equal(r.quality, undefined);
+  assert.match(toMarkdown(plain), /\| – \|/);
+  const judged = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true, judge: "fake" });
+  assert.equal(judged.results[0]!.quality?.mean, 4);
+  assert.equal(judged.summary[0]!.meanQuality, 4);
+  assert.ok(judged.results[0]!.pass);
+  assert.match(toMarkdown(judged), /\| 4\.00 \|[^\n]*\n[\s\S]*Reviewer cost/);
+});
+
+test("the reviewer reply is parsed from plain JSON or JSON inside prose; anything else is an error", () => {
+  const body = { spec: { score: 5, reason: "a" }, minimal: { score: 4, reason: "b" }, readable: { score: 3, reason: "c" }, safe: { score: 4, reason: "d" } };
+  const ok = parseJudge(JSON.stringify(body));
+  assert.ok("quality" in ok && ok.quality.mean === 4 && ok.quality.notes.includes("spec: a"));
+  const wrapped = parseJudge(`Sure! Here is my review:\n\`\`\`json\n${JSON.stringify(body)}\n\`\`\`\nHope that helps {really}.`);
+  assert.ok("quality" in wrapped && wrapped.quality.safe === 4);
+  assert.ok("error" in parseJudge("no json here"));
+  assert.ok("error" in parseJudge('{"spec":{"score":9,"reason":"x"}}'));
 });

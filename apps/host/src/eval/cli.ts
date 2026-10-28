@@ -1,4 +1,4 @@
-// `pnpm eval:presets --presets solo,routed --tasks '*' --runs 3 --max-usd 2 --model provider/id`
+// `pnpm eval:presets --presets solo,routed --tasks '*' --runs 3 --max-usd 2 --model provider/id [--judge provider/id]`
 // `--fake` swaps in a scripted model (no API calls). Each run happens in a child process with its own throwaway
 // PISTA_HOME, agent dir and memory dir (see presets.ts); real runs copy only auth.json and models-store.json
 // from your Pi agent dir. Exits nonzero when aborted by the cost cap or when every run errored.
@@ -16,6 +16,7 @@ const { values } = parseArgs({
     "max-usd": { type: "string" },
     "run-timeout": { type: "string" },
     model: { type: "string" },
+    judge: { type: "string" },
     fake: { type: "boolean", default: false },
     out: { type: "string" },
   },
@@ -35,6 +36,7 @@ const report = await runEval({
   tasks: values.tasks!,
   runs: Number(values.runs),
   model: values.model,
+  judge: values.judge,
   maxUsd: num(values["max-usd"]),
   runTimeoutSec: num(values["run-timeout"]),
   fake: values.fake,

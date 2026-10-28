@@ -12,7 +12,13 @@ pnpm eval:presets --fake --presets solo,routed --tasks '*' --runs 1
 pnpm eval:presets --presets solo,routed --tasks 'fix-*' --runs 3 --max-usd 2 --model anthropic/claude-sonnet-4-5
 ```
 
-Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd X`, `--model provider/id`, `--run-timeout SEC`, `--fake`, `--out DIR` (default `evals/presets/results/<timestamp>/`, git-ignored). Output: `report.json` (every run plus summary) and `report.md` (the table, including mean `agent` tool calls per run and the verify gate's pass/fail/skip counts). The gate runs only after a sub-agent that edited files (the `implementer` role), so read-only explorer delegation leaves it at 0/0/0. Node >= 22.18 is needed to run the `.ts` fixtures.
+Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd X`, `--model provider/id`, `--judge provider/id`, `--run-timeout SEC`, `--fake`, `--out DIR` (default `evals/presets/results/<timestamp>/`, git-ignored). Output: `report.json` (every run plus summary) and `report.md` (the table, including mean `agent` tool calls per run and the verify gate's pass/fail/skip counts). The gate runs only after a sub-agent that edited files (the `implementer` role), so read-only explorer delegation leaves it at 0/0/0. Node >= 22.18 is needed to run the `.ts` fixtures.
+
+## Quality: diff and blind reviewer
+
+Passing the hidden check says little about code quality, so every run also records the diff of its workspace against the fixture (taken when the agent finishes, before the check files are copied in; `.pista/` is excluded; truncated to 20 000 characters). report.json keeps `diff` and `diffStats` `{ files, added, removed }` per run, and report.md shows `mean diff lines`.
+
+With `--judge provider/id` (checked against the registry like `--model`; any value in `--fake`) one reviewer call per run scores the diff 1-5 on `spec` (does exactly what the task asked, names and scope included), `minimal` (no unrelated edits), `readable` (clear, idiomatic, matches the surrounding style) and `safe` (no regressions, edge cases handled, tests not weakened), each with a one-line reason, as strict JSON. The reviewer is blind: it sees only the task text and the diff, never the preset, model, cost or check result. It uses the run's own copied credentials and has a 120 s limit. report.json gets `quality` `{ spec, minimal, readable, safe, mean, notes }` (or `judgeError` when the reply could not be parsed) and `judgeCostUsd`; report.md gets `mean quality (1-5)` (`–` when not judged). The reviewer's cost is kept apart from the run's `costUsd` but counts toward `totalCostUsd` and the `--max-usd` cap.
 
 ## Cost cap
 
