@@ -54,7 +54,7 @@ async function review(runtime: typeof models, ref: { provider: string; id: strin
   try {
     // Paths of the original fixture (not the workspace, which holds the agent's edits), so the reviewer can spot reuse.
     const content = judgePrompt(job.prompt, result.diff!, fixturePaths(join(job.stageDir, "fixture")));
-    const reply = await runtime.completeSimple(model, { systemPrompt: JUDGE_SYSTEM, messages: [{ role: "user", content, timestamp: Date.now() }] }, { maxTokens: 4000, signal: controller.signal });
+    const reply = await runtime.completeSimple(model, { systemPrompt: JUDGE_SYSTEM, messages: [{ role: "user", content, timestamp: Date.now() }] }, { maxTokens: 16000, ...(model.reasoning ? { reasoning: "minimal" as const } : {}), signal: controller.signal });
     result.judgeCostUsd += reply.usage?.cost?.total || 0;
     if (reply.stopReason === "aborted") throw new Error("reviewer timed out");
     if (reply.stopReason === "length" || reply.stopReason === "error") throw new Error(`reviewer stopped: ${reply.stopReason}${reply.errorMessage ? ` (${reply.errorMessage})` : ""}`);
