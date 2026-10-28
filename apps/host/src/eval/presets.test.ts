@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceDiff } from "./diff.ts";
@@ -45,7 +45,9 @@ test("cost, tokens, sub-agent calls and verify lines are tallied", async () => {
 });
 
 test("task patterns select by name, comma list or prefix", () => {
-  assert.equal(loadTasks(base.tasksDir, "fix-*").length, 2);
+  const fixTasks = readdirSync(base.tasksDir).filter((name) => name.startsWith("fix-"));
+  assert.ok(fixTasks.length >= 2);
+  assert.equal(loadTasks(base.tasksDir, "fix-*").length, fixTasks.length);
   assert.equal(loadTasks(base.tasksDir, "fix-slugify,add-chunk").length, 2);
   assert.throws(() => loadTasks(base.tasksDir, "nope"), /No task matches/);
 });
