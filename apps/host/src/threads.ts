@@ -35,7 +35,7 @@ import { resolveProjectTrust } from "./project-trust.ts";
 import { capModel, modelRef, usableModel } from "./models.ts";
 import { buildSession, ENTRY, readCustomEntry, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
 import { clip, type TextContent } from "./text.ts";
-import { orchestratorPrompt, roleOf, rolePrompt } from "./roles.ts";
+import { DEFAULT_MAX_TOOL_CALLS, orchestratorPrompt, roleOf, rolePrompt, validToolCallLimit } from "./roles.ts";
 import { describeDenied, isModelAllowed, pickAllowedModel, restrictsModels } from "./policy-access.ts";
 import { isLocalProvider } from "./local.ts";
 import { deleteFile } from "./retention.ts";
@@ -57,12 +57,13 @@ interface RunGuard {
 // Pi rejects calls with invalid arguments before extension hooks run, so the
 // loop-guard extension can't see them; these limits catch such loops here.
 const MAX_SAME_ERROR_STREAK = 4;
-const MAX_TOOL_CALLS_PER_RUN = 60;
 
 export interface LiveThread {
   /** Tool audit; absent when the policy has no `audit` block. */
   toolAudit?: ToolAudit;
   guard: RunGuard;
+  /** Tool calls one run may make before the guard stops it: the role's `maxToolCalls` for a sub-agent, `HostConfig.maxToolCalls` for a top-level thread, else 60. */
+  maxToolCalls: number;
   /** "auto" decides per user message; otherwise the pinned level. */
   thinkingMode: ThinkingMode;
   /** Whether Auto chose thinking for the previous user message (context for the fallback). */
@@ -319,6 +320,7 @@ export class ThreadManager {
     const firstUser = session.messages.find((m) => m.role === "user") as Extract<ChatMessage, { role: "user" }> | undefined;
     thread = {
       guard: { lastError: "", streak: 0, toolCalls: 0, stopped: false },
+      maxToolCalls: (role ? roleOf(role, roles).maxToolCalls : validToolCallLimit(defaults.maxToolCalls)) ?? DEFAULT_MAX_TOOL_CALLS,
       thinkingMode: readCustomEntry<{ mode?: ThinkingMode }>(sessionManager, ENTRY.thinkingMode)?.mode ?? (role ? roleOf(role, roles).thinking : undefined) ?? defaults.defaultThinkingMode ?? "auto",
       lastTurnThought: false,
       plan: readCustomEntry<Plan>(sessionManager, ENTRY.plan),
@@ -500,8 +502,8 @@ export class ThreadManager {
     const reason =
       guard.streak >= MAX_SAME_ERROR_STREAK
         ? `the agent called ${event.toolName} ${guard.streak} times in a row with the same error`
-        : guard.toolCalls >= MAX_TOOL_CALLS_PER_RUN
-          ? `the run reached ${MAX_TOOL_CALLS_PER_RUN} tool calls`
+        : guard.toolCalls >= thread.maxToolCalls
+          ? `the run reached ${thread.maxToolCalls} tool calls`
           : undefined;
     if (!reason) return;
     guard.stopped = true;

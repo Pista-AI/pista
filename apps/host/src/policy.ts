@@ -8,6 +8,7 @@ import { parseMcpRule } from "./policy-tools.ts";
 import { compareVersions, parseVersion } from "./semver.ts";
 import { normalizeDomainPattern } from "@pista/pi-browser/domains";
 import { auditSection } from "./audit-policy.ts";
+import { validToolCallLimit } from "./roles.ts";
 import { isTierRef, TIER_NAME } from "./model-tiers.ts";
 import { isRecord, looksLikeSecret } from "./secrets.ts";
 import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
@@ -107,6 +108,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   memoryEnabled: "boolean",
   webSearchEnabled: "boolean",
   browserEnabled: "boolean",
+  maxToolCalls: "number",
   localServers: "array",
   llamaEnabled: "boolean",
   maxOutputTokens: "number",
@@ -137,6 +139,7 @@ const validOverride = (v: unknown): boolean =>
   (v.thinking === undefined || (typeof v.thinking === "string" && ENUMS.defaultThinkingMode!.includes(v.thinking) && v.thinking !== "auto")) &&
   (v.tools === undefined || isStrings(v.tools)) &&
   (v.excludeTools === undefined || isStrings(v.excludeTools)) &&
+  (v.maxToolCalls === undefined || validToolCallLimit(v.maxToolCalls) !== undefined) &&
   (v.disabled === undefined || typeof v.disabled === "boolean");
 
 /** Checks the shape of the nested settings; the top-level kind has been checked already. */
@@ -595,6 +598,7 @@ function section(raw: unknown, name: string, warnings: string[]): Partial<HostCo
       if (k === "maxOutputTokens" && value === null) out[key] = undefined; // null means no cap; an own undefined key still overrides a stored value
       else if (want === "enum" ? !choices?.includes(value as string) : kindOf(value) !== want || !validNested(k, value)) warnings.push(`${name}.${key}: wrong type or value, ignored`);
       else if (k === "maxOutputTokens" && !(Number.isSafeInteger(value) && (value as number) > 0)) warnings.push(`${name}.${key}: must be a positive integer, ignored`);
+      else if (k === "maxToolCalls" && validToolCallLimit(value) === undefined) warnings.push(`${name}.${key}: must be a positive integer up to 1000, ignored`);
       else out[key] = value;
     }
   }

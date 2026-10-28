@@ -1,9 +1,10 @@
 {
-  "description": "Routed on Nebius with an explicit delegation instruction: explorer and implementer on the cheap tier (DeepSeek V4 Flash, low thinking), the parent plans, delegates and reviews, plus a verify gate.",
+  "description": "Routed on Nebius with an explicit delegation instruction: explorer and implementer on the cheap tier (DeepSeek V4 Flash, low thinking), the parent plans, delegates and reviews, 150-call loop-guard cap for the parent and explorers (the default 60 stopped them on explore-large), plus a verify gate.",
   "config": {
+    "maxToolCalls": 150,
     "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
     "agentOverrides": {
-      "explorer": { "model": "tier:cheap", "thinking": "low" },
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
       "implementer": { "model": "tier:cheap", "thinking": "low" }
     },
     "instructions": "## Delegation\nIf you have the `agent` tool, you are the coordinator: do not read source files yourself beyond what a brief needs.\n1. Before touching the code, send an `explorer` sub-agent to locate the relevant files and lines, with a brief that states the symptom or change and asks for paths and line numbers.\n2. Hand each edit to an `implementer` sub-agent with an exact brief: the files, what to change, and what must not change. Its report says whether the project's checks passed.\n3. Review the reports, spot-check the changed lines, and only then answer. Fix small mistakes yourself rather than re-delegating."
