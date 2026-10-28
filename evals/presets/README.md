@@ -39,6 +39,12 @@ Full-access approval is not a sandbox. The agent runs with your OS user's permis
 
 `add-chunk` and `fix-slugify` are one-file tasks; parents rarely delegate on them. `fix-free-shipping` (find a bug from a symptom in a ~20-file shop backend) and `rename-product-sku` (a cross-file rename that must leave order and customer ids alone) are sized so delegating exploration can pay off.
 
+The harder tasks below each have a `tsconfig.json` next to `package.json` (strict, `noEmit`; `types: ["node"]` needs `@types/node` to be resolvable) so a typecheck gate can run on them.
+- `ambiguous-export` asks for a CSV export of a report without saying delimiter, columns, quoting or date format. The check only guards correctness against the repo's conventions (header row = the JSON export's fields in its order, the existing date/amount formatters, RFC 4180 quoting). Judging how the agent handled the ambiguity (a stated assumption or a question) is for the reviewer, not the check.
+- `reuse-existing-helper` needs a cent-exact bill split, and a tested `allocate` helper already exists in another module. The check tests behaviour and reads the sources: the new file must import `allocate`, and the remainder logic must not be copied.
+- `fix-far-bug` reports a wrong total at the edge (an invoice for a Norwegian customer) whose root cause is an alias table two call layers down; the check also exercises the other callers of the shared normaliser (shipping zone, currency, region), so a patch at the edge fails.
+- `spec-many-files` is an exact spec (adding a `currency` field to `Price`: defaults, error text, output formats, JSON back-compat) across about ten files; the check verifies every point literally and that unrelated behaviour is unchanged.
+
 ## Add a task
 
 `tasks/<name>/` with:

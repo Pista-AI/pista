@@ -1,0 +1,1 @@
+This repo is a small reporting module (`src/`, tests in `test/`). Add a CSV export for the monthly report, next to the existing JSON export: `exportMonthlyCsv(report: MonthlyReport): string`, exported from `src/index.ts`. Finance wants to open it in a spreadsheet. Keep the tests in `test/` passing.
