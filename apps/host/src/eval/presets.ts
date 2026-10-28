@@ -47,11 +47,13 @@ export interface RunResult {
   /** The parent's last assistant message (its text, or the provider error), truncated. */
   finalText?: string;
   error?: string;
-  /** Unified diff of the workspace against the fixture (no `.pista/`), truncated to DIFF_CHARS. */
+  /** Unified diff of the workspace against the fixture (no `.pista/`, `node_modules/`, `.git/`), truncated to DIFF_CHARS. */
   diff?: string;
   diffStats: DiffStats;
   /** Blind reviewer scores; present only with --judge and a parseable reply. */
   quality?: Quality;
+  /** Why the workspace diff could not be taken (git failed or timed out). */
+  diffError?: string;
   judgeError?: string;
   /** Cost of the reviewer call, kept apart from `costUsd` (the agent's); both count toward --max-usd. */
   judgeCostUsd: number;
@@ -124,21 +126,22 @@ Answer with strict JSON only: {"spec":{"score":n,"reason":"..."},"minimal":{...}
 
 /** Takes the first JSON object out of the reviewer's reply (it may be wrapped in prose or a code fence). */
 export function parseJudge(text: string): { quality: Quality } | { error: string } {
-  const start = text.indexOf("{");
-  for (let end = text.lastIndexOf("}"); start >= 0 && end > start; end = text.lastIndexOf("}", end - 1)) {
-    let raw: Record<string, { score?: unknown; reason?: unknown } | undefined>;
-    try {
-      raw = JSON.parse(text.slice(start, end + 1));
-    } catch {
-      continue;
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    for (let end = text.lastIndexOf("}"); end > start; end = text.lastIndexOf("}", end - 1)) {
+      let raw: Record<string, { score?: unknown; reason?: unknown } | undefined>;
+      try {
+        raw = JSON.parse(text.slice(start, end + 1));
+      } catch {
+        continue;
+      }
+      const scores = CRITERIA.map((c) => Number(raw?.[c]?.score));
+      if (scores.some((s) => !Number.isFinite(s) || s < 1 || s > 5)) continue;
+      const [spec, minimal, readable, safe] = scores as [number, number, number, number];
+      const notes = CRITERIA.map((c) => `${c}: ${String(raw[c]?.reason ?? "").trim()}`).join(" | ");
+      return { quality: { spec, minimal, readable, safe, mean: (spec + minimal + readable + safe) / 4, notes } };
     }
-    const scores = CRITERIA.map((c) => Number(raw?.[c]?.score));
-    if (scores.some((s) => !Number.isFinite(s) || s < 1 || s > 5)) return { error: "reviewer scores missing or outside 1-5" };
-    const [spec, minimal, readable, safe] = scores as [number, number, number, number];
-    const notes = CRITERIA.map((c) => `${c}: ${String(raw[c]?.reason ?? "").trim()}`).join(" | ");
-    return { quality: { spec, minimal, readable, safe, mean: (spec + minimal + readable + safe) / 4, notes } };
   }
-  return { error: `reviewer reply had no JSON object: ${text.slice(0, 200)}` };
+  return { error: `reviewer reply had no valid scores: ${text.slice(0, 200)}` };
 }
 
 export type Msg = ChatMessage & { toolName?: string };
@@ -225,6 +228,23 @@ export interface ChildJob {
   timeoutMs: number;
   /** Where the parent reports the scratch dir for signal cleanup. */
   scratch: string;
+}
+
+/** "provider/id" to its parts; the id may itself contain slashes. */
+export function splitRef(s: string): { provider: string; id: string } {
+  const [provider, ...rest] = s.split("/");
+  return { provider: provider!, id: rest.join("/") };
+}
+
+/** Adds a run to the report. The reviewer's cost counts toward the total (and so the cap) but not the run's `costUsd`. */
+export function addResult(report: Pick<EvalReport, "results" | "totalCostUsd">, r: RunResult): void {
+  report.results.push(r);
+  report.totalCostUsd += r.costUsd + (r.judgeCostUsd ?? 0);
+}
+
+/** What the reviewer sees: the task and the diff, nothing else (blind). */
+export function judgePrompt(task: string, diff: string): string {
+  return `Task:\n${task}\n\nDiff:\n${diff}${diff.endsWith("[diff truncated]\n") ? "\n(The diff was cut off for length; judge what is shown.)" : ""}`;
 }
 
 export const JUDGE_TIMEOUT_MS = 120_000;
@@ -373,16 +393,8 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
   const presets = opts.presets.map((p) => loadPreset(opts.presetsDir, p));
   const tasks = loadTasks(opts.tasksDir, opts.tasks);
   const timeoutMs = (opts.runTimeoutSec ?? 600) * 1000;
-  let ref: ChildJob["model"];
-  if (!opts.fake) {
-    const [provider, ...rest] = opts.model!.split("/");
-    ref = { provider: provider!, id: rest.join("/") };
-  }
-  let judgeRef: ChildJob["judge"];
-  if (opts.judge !== undefined) {
-    const [provider, ...rest] = opts.judge.split("/");
-    judgeRef = { provider: provider!, id: rest.join("/") };
-  }
+  const ref = opts.fake ? undefined : splitRef(opts.model!);
+  const judgeRef = opts.judge !== undefined ? splitRef(opts.judge) : undefined;
   const realDir = opts.fake ? undefined : realAgentDir();
   const scratch = mkdtempSync(join(tmpdir(), "pista-eval-"));
 
@@ -438,15 +450,14 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
             for (const f of readdirSync(task.dir)) if (f.startsWith("check.")) cpSync(join(task.dir, f), join(dir, "stage", f));
             writeFileSync(join(dir, "stage", ".ready"), "");
           };
-          const res = await spawnChild(base(preset, task, dir), freshEnv(dir), timeoutMs + CHECK_TIMEOUT_MS + KILL_SLACK_MS, stageChecks);
+          const res = await spawnChild(base(preset, task, dir), freshEnv(dir), timeoutMs + CHECK_TIMEOUT_MS + KILL_SLACK_MS + (judgeRef ? JUDGE_TIMEOUT_MS : 0), stageChecks);
           const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0 };
           const result: RunResult = parseResult(res.out) ?? {
             preset: preset.name, task: task.name, run, pass: false, seconds: (Date.now() - started) / 1000, ...empty,
             error: res.timedOut ? "timeout" : `run process exited with code ${res.code} and no result${res.err ? `: ${res.err}` : ""}`,
           };
           result.run = run;
-          report.results.push(result);
-          report.totalCostUsd += result.costUsd + (result.judgeCostUsd ?? 0);
+          addResult(report, result);
           opts.onRun?.(result);
           rmSync(dir, { recursive: true, force: true });
         }

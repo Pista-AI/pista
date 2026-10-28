@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { childEnv, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { workspaceDiff } from "./diff.ts";
+import { addResult, childEnv, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -112,4 +116,47 @@ test("the reviewer reply is parsed from plain JSON or JSON inside prose; anythin
   assert.ok("quality" in wrapped && wrapped.quality.safe === 4);
   assert.ok("error" in parseJudge("no json here"));
   assert.ok("error" in parseJudge('{"spec":{"score":9,"reason":"x"}}'));
+});
+
+test("the diff has relative paths for modified, added and deleted files and skips harness dirs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "diff-test-"));
+  try {
+    const put = (base: string, file: string, text: string) => {
+      mkdirSync(join(dir, base, file, ".."), { recursive: true });
+      writeFileSync(join(dir, base, file), text);
+    };
+    put("stage/fixture", "keep.txt", "one\n");
+    put("stage/fixture", "gone.txt", "bye\n");
+    put("work", "keep.txt", "two\n");
+    put("work", "fresh.txt", "new\n");
+    put("work", ".pista/verify.json", "{}");
+    put("work", "node_modules/x/index.js", "x");
+    const { diff, stats } = await workspaceDiff(join(dir, "stage/fixture"), join(dir, "work"));
+    assert.ok(!diff.includes(dir) && !diff.includes("stage/fixture") && !/\bwork\//.test(diff), diff);
+    assert.ok(!diff.includes(".pista") && !diff.includes("node_modules"));
+    assert.deepEqual(stats, { files: 3, added: 2, removed: 2 });
+    for (const f of ["keep.txt", "gone.txt", "fresh.txt"]) assert.match(diff, new RegExp(`diff --git a/${f} b/${f}`));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the reviewer prompt holds the task and diff only, and notes truncation", () => {
+  const p = judgePrompt("Fix the bug", "diff --git a/x b/x\n+y\n");
+  assert.ok(p.includes("Fix the bug") && p.includes("+y") && !p.includes("cut off"));
+  assert.match(judgePrompt("t", "d\n[diff truncated]\n"), /cut off/);
+});
+
+test("reviewer cost counts toward the total (and so the cap) but not the run's cost", () => {
+  const report = { results: [], totalCostUsd: 0 };
+  const r = { preset: "a", task: "t", run: 1, pass: true, seconds: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0.5, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0.25 };
+  addResult(report, r);
+  assert.equal(report.totalCostUsd, 0.75);
+  assert.equal(r.costUsd, 0.5);
+});
+
+test("the reviewer reply may hold stray braces before the real JSON", () => {
+  const body = { spec: { score: 2, reason: "a" }, minimal: { score: 2, reason: "b" }, readable: { score: 2, reason: "c" }, safe: { score: 2, reason: "d" } };
+  const r = parseJudge(`I looked at {the diff}. ${JSON.stringify(body)}`);
+  assert.ok("quality" in r && r.quality.mean === 2);
 });
