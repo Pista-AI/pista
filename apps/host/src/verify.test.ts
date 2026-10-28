@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxModels, makeManager, setupHome } from "./test-helpers.ts";
@@ -8,7 +9,7 @@ const { home, projectDir } = setupHome("verify-gate");
 mkdirSync(join(home, "agents"), { recursive: true });
 writeFileSync(join(home, "agents", "editor.md"), "---\nname: editor\ndescription: Edits one file.\ntools: read, edit\n---\n");
 const { createAgentRunner } = await import("./subagent.ts");
-const { parseVerifyConfig, runVerify, shellRunner, withProjectLock } = await import("./verify.ts");
+const { parseVerifyConfig, resolveTypecheck, runVerify, shellRunner, withProjectLock } = await import("./verify.ts");
 const { compileToolRules } = await import("./policy-tools.ts");
 
 const { piAi, faux, models, ref } = await fauxModels();
@@ -206,4 +207,66 @@ test("a custom role with an allowlist that includes edit still runs verify", asy
   const out = await dispatch("editor", runner.run);
   assert.match(out, /Verify: passed/);
   assert.equal(runner.calls.length, 1);
+});
+
+function typecheckDir(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "verify-tc-"));
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(join(dir, name, ".."), { recursive: true });
+    writeFileSync(join(dir, name), content);
+  }
+  return dir;
+}
+
+test("typecheck: off without a tsconfig, or when set to false; a string is the command", () => {
+  const none = typecheckDir({ "a.ts": "" });
+  assert.equal(resolveTypecheck({}, none), null);
+  const ts = typecheckDir({ "tsconfig.json": "{}" });
+  assert.equal(resolveTypecheck({ typecheck: false }, ts), null);
+  assert.deepEqual(resolveTypecheck({ typecheck: "tsc -b" }, none), { command: "tsc -b" });
+});
+
+test("typecheck: the project's script, then its own tsc, then the host's tsc, then a skip", () => {
+  const script = typecheckDir({ "tsconfig.json": "{}", "package.json": '{"scripts":{"typecheck":"tsc"}}', "pnpm-lock.yaml": "", "node_modules/.keep": "" });
+  assert.deepEqual(resolveTypecheck({}, script, () => "/host/tsc"), { command: "pnpm run typecheck" });
+  // A script whose dependencies are not installed cannot run, so it is not used.
+  const uninstalled = typecheckDir({ "tsconfig.json": "{}", "package.json": '{"scripts":{"typecheck":"tsc"}}' });
+  const viaHost = resolveTypecheck({ typecheck: true }, uninstalled, () => "/host/tsc");
+  assert.ok(viaHost && "command" in viaHost && viaHost.command.endsWith("/host/tsc --noEmit -p tsconfig.json"));
+  const local = typecheckDir({ "tsconfig.json": "{}", "node_modules/.bin/tsc": "" });
+  const viaLocal = resolveTypecheck({}, local, () => "/host/tsc");
+  assert.ok(viaLocal && "command" in viaLocal && viaLocal.command.includes("node_modules/.bin/tsc --noEmit"));
+  assert.deepEqual(resolveTypecheck({}, uninstalled, () => undefined), { skipped: "typecheck skipped: no tsc" });
+});
+
+test("typecheck: runs before the tests and its failure is reported like a test failure", async () => {
+  const dir = typecheckDir({ "tsconfig.json": "{}" });
+  const config = { commands: ["npm test"], timeoutSec: 5, maxAttempts: 2, typecheck: "tsc --noEmit" };
+  const ok = fakeRunner([{}]);
+  assert.deepEqual(await runVerify(config, dir, null, ok.run), { status: "passed" });
+  assert.deepEqual(ok.calls.map((c) => c.command), ["tsc --noEmit", "npm test"]);
+  const bad = fakeRunner([{ code: 2, output: "a.ts(1,1): error TS2304: Cannot find name 'x'." }]);
+  const failed = await runVerify(config, dir, null, bad.run);
+  assert.ok(failed.status === "failed" && failed.command === "tsc --noEmit" && failed.output.includes("TS2304"));
+  assert.equal(bad.calls.length, 1);
+});
+
+test("parseVerifyConfig keeps a boolean or non-empty string typecheck and drops anything else", () => {
+  assert.equal(parseVerifyConfig({ commands: ["a"], typecheck: false })?.typecheck, false);
+  assert.equal(parseVerifyConfig({ commands: ["a"], typecheck: " tsc " })?.typecheck, "tsc");
+  assert.equal("typecheck" in parseVerifyConfig({ commands: ["a"], typecheck: 3 })!, false);
+});
+
+test("typecheck: auto skips when a command already typechecks; true still forces it", () => {
+  const dir = typecheckDir({ "tsconfig.json": "{}" });
+  assert.equal(resolveTypecheck({ commands: ["pnpm typecheck", "pnpm test"] }, dir, () => "/h/tsc"), null);
+  assert.equal(resolveTypecheck({ commands: ["tsc -p ."] }, dir, () => "/h/tsc"), null);
+  assert.ok(resolveTypecheck({ commands: ["pnpm typecheck"], typecheck: true }, dir, () => "/h/tsc") !== null);
+  assert.ok(resolveTypecheck({ commands: ["npm test"] }, dir, () => "/h/tsc") !== null);
+});
+
+test("typecheck: a host tsc path with shell metacharacters is quoted", { skip: process.platform === "win32" }, () => {
+  const dir = typecheckDir({ "tsconfig.json": "{}" });
+  const plan = resolveTypecheck({}, dir, () => "/a b/$HOME/it's");
+  assert.ok(plan && "command" in plan && plan.command.includes("'/a b/$HOME/it'\\''s'"));
 });

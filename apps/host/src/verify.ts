@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
 import { type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import type { ToolRules } from "./policy-tools.ts";
@@ -16,6 +17,8 @@ export interface VerifyConfig {
   commands: string[];
   timeoutSec: number;
   maxAttempts: number;
+  /** `false` turns the typecheck off, a string is the command to run; absent or `true` means auto (see `resolveTypecheck`). */
+  typecheck?: boolean | string;
 }
 
 export interface CommandResult {
@@ -39,12 +42,67 @@ export interface VerifyDeps {
 /** A usable config from untrusted JSON, or undefined when it is malformed or has no commands. */
 export function parseVerifyConfig(raw: unknown): VerifyConfig | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
-  const { commands, timeoutSec, maxAttempts } = raw as Record<string, unknown>;
+  const { commands, timeoutSec, maxAttempts, typecheck } = raw as Record<string, unknown>;
   if (!Array.isArray(commands)) return undefined;
   const list = commands.filter((c): c is string => typeof c === "string" && c.trim() !== "").map((c) => c.trim());
   if (list.length === 0) return undefined;
   const positive = (v: unknown, fallback: number) => (Number.isSafeInteger(v) && (v as number) > 0 ? (v as number) : fallback);
-  return { commands: list, timeoutSec: positive(timeoutSec, DEFAULT_VERIFY_TIMEOUT_SEC), maxAttempts: positive(maxAttempts, DEFAULT_VERIFY_ATTEMPTS) };
+  return { commands: list, timeoutSec: positive(timeoutSec, DEFAULT_VERIFY_TIMEOUT_SEC), maxAttempts: positive(maxAttempts, DEFAULT_VERIFY_ATTEMPTS),
+    ...(typeof typecheck === "boolean" || (typeof typecheck === "string" && typecheck.trim() !== "") ? { typecheck: typeof typecheck === "string" ? typecheck.trim() : typecheck } : {}),
+  };
+}
+
+const quote = (path: string) => {
+  if (/^[\w./:@+-]+$/.test(path)) return path;
+  // POSIX: single quotes so `$` and backticks in a path do not expand.
+  return process.platform === "win32" ? JSON.stringify(path) : `'${path.replace(/'/g, "'\\''")}'`;
+};
+
+/** A configured command that already typechecks; auto mode then adds nothing, so tsc does not run twice. */
+const LOOKS_LIKE_TYPECHECK = /\btypecheck\b|\btsc\b/;
+
+/** A `tsc` the host itself can resolve (a dev checkout has typescript; the packaged app does not ship it), or undefined. */
+function hostTsc(): string | undefined {
+  try {
+    const pkgPath = createRequire(import.meta.url).resolve("typescript/package.json");
+    const bin = (JSON.parse(readFileSync(pkgPath, "utf8")) as { bin?: string | Record<string, string> }).bin;
+    const rel = typeof bin === "string" ? bin : bin?.tsc;
+    const file = rel && join(dirname(pkgPath), rel);
+    return file && existsSync(file) ? file : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export type TypecheckPlan = { command: string } | { skipped: string } | null;
+
+/**
+ * The typecheck step for `cwd`, or null when there is nothing to check. Auto (`typecheck` absent or true) applies only when the
+ * workspace root has a `tsconfig.json`; then, in order: the project's own `typecheck` script (when its dependencies are installed),
+ * its `node_modules/.bin/tsc`, a tsc the host can resolve, else a skip. A missing tsc never fails the gate.
+ */
+export function resolveTypecheck(config: Pick<VerifyConfig, "typecheck"> & { commands?: string[] }, cwd: string, hostResolve: () => string | undefined = hostTsc): TypecheckPlan {
+  const { typecheck } = config;
+  if (typecheck === false) return null;
+  if (typeof typecheck === "string") return { command: typecheck };
+  if (!existsSync(join(cwd, "tsconfig.json"))) return null;
+  // Explicit `true` forces the step; plain auto leaves it out when a command already does it.
+  if (typecheck === undefined && config.commands?.some((c) => LOOKS_LIKE_TYPECHECK.test(c))) return null;
+  const installed = existsSync(join(cwd, "node_modules"));
+  try {
+    const scripts = (JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as { scripts?: Record<string, unknown> }).scripts;
+    if (installed && typeof scripts?.typecheck === "string") {
+      const runner = existsSync(join(cwd, "pnpm-lock.yaml")) ? "pnpm" : existsSync(join(cwd, "yarn.lock")) ? "yarn" : "npm";
+      return { command: `${runner} run typecheck` };
+    }
+  } catch {
+    // No readable package.json: fall through to tsc.
+  }
+  const local = join(cwd, "node_modules", ".bin", process.platform === "win32" ? "tsc.cmd" : "tsc");
+  if (existsSync(local)) return { command: `${quote(local)} --noEmit -p tsconfig.json` };
+  const host = hostResolve();
+  if (host) return { command: `${quote(process.execPath)} ${quote(host)} --noEmit -p tsconfig.json` };
+  return { skipped: "typecheck skipped: no tsc" };
 }
 
 /**
@@ -65,10 +123,13 @@ export function resolveVerifyConfig(store: VerifyDeps["store"], cwd: string): Ve
 
 /** Runs the commands in order and stops at the first failure. Every command is policy-checked before any runs. */
 export async function runVerify(config: VerifyConfig, cwd: string, rules: ToolRules | null, run: CommandRunner, signal?: AbortSignal): Promise<VerifyOutcome> {
-  for (const command of config.commands) {
+  // The typecheck goes first: it is quicker than tests and its errors are more precise.
+  const plan = resolveTypecheck(config, cwd);
+  const commands = [...(plan && "command" in plan ? [plan.command] : []), ...config.commands];
+  for (const command of commands) {
     if (rules?.checkBash(command)) return { status: "skipped", reason: "blocked by policy" };
   }
-  for (const command of config.commands) {
+  for (const command of commands) {
     const result = await run(command, { cwd, timeoutMs: config.timeoutSec * 1000, signal });
     if (result.timedOut || result.code !== 0) {
       const tail = result.output.length > VERIFY_OUTPUT_CHARS ? `...${result.output.slice(-VERIFY_OUTPUT_CHARS)}` : result.output;

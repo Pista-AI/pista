@@ -106,6 +106,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   linkTarget: "enum",
   memoryEnabled: "boolean",
   webSearchEnabled: "boolean",
+  browserEnabled: "boolean",
   localServers: "array",
   llamaEnabled: "boolean",
   maxOutputTokens: "number",

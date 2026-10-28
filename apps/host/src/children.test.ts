@@ -17,6 +17,16 @@ test("extensionsFor: an unrestricted top-level thread gets everything, including
   ]);
 });
 
+test("extensionsFor: browserEnabled false leaves the browser tools out and nothing else", () => {
+  const before = names(extensionsFor({ role: undefined, restricted: false, isChild: false }, deps));
+  store.patchConfig({ browserEnabled: false });
+  try {
+    assert.deepEqual(names(extensionsFor({ role: undefined, restricted: false, isChild: false }, deps)), before.filter((n) => n !== "browser"));
+  } finally {
+    store.patchConfig({ browserEnabled: true });
+  }
+});
+
 test("extensionsFor: an implementer child keeps tools and the browser but gets no agent or plan tool, and is role-gated", () => {
   assert.deepEqual(names(extensionsFor({ role: "implementer", restricted: false, isChild: true }, deps)), [
     "pi", "pi", "pi", "browser", "browsing-turns", "role-gate", "loop-guard", "workspace-state", "context-prune", "approvals",

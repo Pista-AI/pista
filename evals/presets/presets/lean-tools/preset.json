@@ -1,0 +1,4 @@
+{
+  "description": "Like solo, but without the memory, web search/fetch and browser tools (and their system-prompt guidance), so a coding task carries a shorter tool list. Needs HostConfig.browserEnabled.",
+  "config": { "memoryEnabled": false, "webSearchEnabled": false, "browserEnabled": false }
+}

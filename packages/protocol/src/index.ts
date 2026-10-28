@@ -403,6 +403,8 @@ export interface HostConfig {
   memoryEnabled: boolean;
   /** Web search and page fetching tools (pi-web-access; Exa by default, no API key). */
   webSearchEnabled: boolean;
+  /** The built-in browser tools (`browser_*`). Absent is on; `false` leaves them, and the Browser section of the system prompt, out. */
+  browserEnabled?: boolean;
   /** Local model servers (LM Studio, Ollama, llama.cpp) added as providers. */
   localServers: LocalServer[];
   /** Built-in llama.cpp runtime (`llama-server` in router mode). Downloaded only once the user enables it. */

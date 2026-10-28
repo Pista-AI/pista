@@ -25,6 +25,7 @@ export function browserPrompt(homeUrl: string, webSearchEnabled: boolean): strin
 /** Guidance appended to the system prompt for every thread. */
 export function systemPrompt(store: ConfigStore): string {
   const { homeUrl, instructions, webSearchEnabled } = store.config;
+  const browser = store.config.browserEnabled !== false;
   return [
     "## Pista",
     "You are running inside Pista, a desktop agent app. The user sees your transcript next to a built-in browser.",
@@ -32,10 +33,9 @@ export function systemPrompt(store: ConfigStore): string {
     "For scoped work that would flood this conversation (exploring a codebase, a self-contained change, a review), delegate it with the `agent` tool and a complete brief; you receive only the sub-agent's final report.",
     "Files you have read stay in your context; do not read a file again unless you edited it. Prefer grep to find the spot, then read once.",
     "",
-    ...browserPrompt(homeUrl, webSearchEnabled),
-    "",
+    ...(browser ? [...browserPrompt(homeUrl, webSearchEnabled), ""] : []),
     "## Facts",
-    `Don't state specific facts you can't be sure of from training, such as addresses, phone numbers, prices, opening hours, availability, people, recent events, or anything about the user's own data. Look them up first: the user's data with the connected services' tools, public information with ${webSearchEnabled ? "web_search and fetch_content (or the browser)" : "the browser"}. Say where facts came from, and if you can't verify something, say so instead of guessing.`,
+    `Don't state specific facts you can't be sure of from training, such as addresses, phone numbers, prices, opening hours, availability, people, recent events, or anything about the user's own data. Look them up first: the user's data with the connected services' tools, public information with ${webSearchEnabled ? `web_search and fetch_content${browser ? " (or the browser)" : ""}` : browser ? "the browser" : "your tools"}. Say where facts came from, and if you can't verify something, say so instead of guessing.`,
     "",
     "## Links",
     "Only give URLs you have actually seen in this conversation: from the user, a tool result, or a page you opened. Never guess or construct an address, such as a company's website. If you don't have the URL, say so and search for it instead.",
