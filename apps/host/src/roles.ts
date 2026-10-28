@@ -135,5 +135,8 @@ export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string
       : "You cannot read or edit files yourself; sub-agents do the work through the `agent` tool and you get their reports.",
     "For a change: send an explorer to locate it, then an implementer with the explorer's findings (exact files, what to change, what must not change). An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
     "If a report is incomplete or a check failed, send a follow-up with continueId.",
+    ...(mode === "delegate-read"
+      ? ["Before you end, read the changed lines and compare them with the request (names, scope, what must not change); if they differ, send the implementer a follow-up."]
+      : []),
   ].join("\n");
 }

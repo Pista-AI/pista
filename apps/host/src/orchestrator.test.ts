@@ -104,7 +104,10 @@ test("only top-level orchestrator threads get the orchestrator prompt section", 
   const childId = await manager.spawnChild(delegate, { role: "implementer" });
   await manager.continueChild(childId);
   assert.doesNotMatch(promptOf(childId), /Orchestrator mode/);
-  assert.match(promptOf(await newThread("delegate-read")), /## Orchestrator mode\nYou can read files but not edit/);
+  const reader = promptOf(await newThread("delegate-read"));
+  assert.match(reader, /## Orchestrator mode\nYou can read files but not edit/);
+  assert.match(reader, /Before you end, read the changed lines/);
+  assert.doesNotMatch(promptOf(delegate), /Before you end, read the changed lines/);
   assert.doesNotMatch(promptOf(await newThread("off")), /Orchestrator mode/);
   assert.doesNotMatch(promptOf(await newThread()), /Orchestrator mode/);
 });
