@@ -64,7 +64,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),
           createMcpExtension(),
-          browserExtension(hub, ref, store.managedPolicy?.browser),
+          ...(store.config.browserEnabled === false ? [] : [browserExtension(hub, ref, store.managedPolicy?.browser)]),
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),
     // Depth is 1: a child never gets the agent tool.
