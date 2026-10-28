@@ -14,7 +14,7 @@ import type { Hub } from "./hub.ts";
 import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
 import { resolveRoleModel } from "./model-tiers.ts";
-import { availableRoles, isRestrictedRole, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
+import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, type ChildThreads } from "./subagent.ts";
@@ -27,6 +27,8 @@ export interface ThreadKind {
   /** The role has a tool allowlist. */
   restricted: boolean;
   isChild: boolean;
+  /** Tools of an orchestrator top-level thread (see `HostConfig.orchestratorMode`); absent otherwise. */
+  orchestratorTools?: string[];
 }
 
 export interface ExtensionDeps {
@@ -55,7 +57,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
   const tools = deps.toolAudit;
   const watch = <T extends InlineExtension>(ext: T, source: DecisionSource): InlineExtension => (tools ? observeBlocks(ext, source, tools) : ext);
   return [
-    // Restricted roles are read-only: no codemode, tool search, MCP or browser.
+    // Restricted roles and orchestrators get no codemode, tool search, MCP or browser.
     ...(restricted
       ? []
       : [
@@ -69,6 +71,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record, verify: { store }, ...(deps.roles ? { roles: deps.roles } : {}) })]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
     ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
+    ...(kind.orchestratorTools ? [watch(orchestratorGateExtension(kind.orchestratorTools), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),
     stateExtension(),
     contextPruneExtension(store),
@@ -114,7 +117,9 @@ export class Children {
   /** Child threads keep their role across restarts: it is recorded in threadMeta before the first load. */
   kindOf(threadId: string, roles?: RoleMap): ThreadKind {
     const role = this.store.getThreadMeta(threadId)?.role;
-    return { role, restricted: role !== undefined && isRestrictedRole(role, roles), isChild: this.isChildThread(threadId) };
+    const isChild = this.isChildThread(threadId);
+    const orchestrator = isChild ? undefined : orchestratorTools(this.store.config.orchestratorMode);
+    return { role, restricted: orchestrator !== undefined || (role !== undefined && isRestrictedRole(role, roles)), isChild, ...(orchestrator ? { orchestratorTools: orchestrator } : {}) };
   }
 
   childIds(parentId: string): string[] {

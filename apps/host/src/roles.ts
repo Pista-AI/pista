@@ -1,7 +1,7 @@
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
-import type { AgentOverride, AgentRole, AgentRoleName, BuiltinAgentRoleName } from "@pista/protocol";
+import type { AgentOverride, AgentRole, HostConfig, AgentRoleName, BuiltinAgentRoleName } from "@pista/protocol";
 
-const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 /**
  * Built-in sub-agent roles. An empty `tools` list means unrestricted (the implementer gets
@@ -101,6 +101,26 @@ export function roleGateExtension(role: AgentRoleName, roles: RoleMap = ROLES): 
         if (isToolAllowed(role, event.toolName, roles)) return undefined;
         const { tools, excludeTools } = roleOf(role, roles);
         return { block: true, reason: `Blocked: the ${role} role cannot use ${event.toolName}.${tools.length ? ` It may only use: ${tools.join(", ")}.` : ""}${excludeTools?.length ? ` It may not use: ${excludeTools.join(", ")}.` : ""}` };
+      });
+    },
+  };
+}
+
+/** Tools a top-level thread keeps in orchestrator mode; undefined when the mode is off. */
+export function orchestratorTools(mode: HostConfig["orchestratorMode"]): string[] | undefined {
+  if (mode === "delegate") return ["agent", "plan"];
+  if (mode === "delegate-read") return ["agent", "plan", ...READ_ONLY_TOOLS];
+  return undefined;
+}
+
+/** Blocks tools outside `allowed` for an orchestrator thread, including nested codemode calls (see `roleGateExtension`). */
+export function orchestratorGateExtension(allowed: readonly string[]): InlineExtension {
+  return {
+    name: "orchestrator-gate",
+    factory: (pi: ExtensionAPI) => {
+      pi.on("tool_call", (event) => {
+        if (allowed.includes(event.toolName)) return undefined;
+        return { block: true, reason: `Blocked: orchestrator mode only allows ${allowed.join(", ")}. Delegate this work to a sub-agent with the agent tool.` };
       });
     },
   };

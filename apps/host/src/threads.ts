@@ -278,7 +278,7 @@ export class ThreadManager {
       packages: this.store.packageSync(),
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
-      ...(role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
+      ...(role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : kind.orchestratorTools ? { tools: kind.orchestratorTools } : {}),
       appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {
