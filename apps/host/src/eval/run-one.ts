@@ -88,10 +88,12 @@ const models = faux?.models ?? (await ModelRuntime.create({ allowModelNetwork: t
 if (!faux) registerNebiusProvider(models);
 const store = new ConfigStore();
 const hub = new Hub();
-// Count Pi's auto-retries of failed provider replies; the failed attempts are dropped from the thread's messages.
+// Count Pi's auto-retries and loop-guard stops of failed provider replies; the failed attempts are dropped from the thread's messages.
 const emit = hub.emit.bind(hub);
 hub.emit = (event) => {
   if (event.type === "thread.event" && event.event.type === "auto_retry_start") result.providerRetries = (result.providerRetries ?? 0) + 1;
+  // The loop guard says why it stopped a thread (parent or sub-agent) only in a toast.
+  if (event.type === "toast" && event.message.startsWith("Stopped ")) (result.guardStops ??= []).push(event.message.slice(0, 200));
   emit(event);
 };
 const manager = new ThreadManager(store, hub, models);

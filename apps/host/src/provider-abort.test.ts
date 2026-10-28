@@ -41,3 +41,17 @@ test("orchestrator: a provider abort on the turn after a sub-agent is retried in
   assert.equal(last.content.map((b) => b.text ?? "").join(""), "PARENT-DONE");
   assert.equal(faux.getPendingResponseCount?.() ?? 0, 0);
 });
+
+test("orchestrator: a loop-guard stop is recorded as aborted, not as a provider stream failure", async () => {
+  const id = (await manager.create(project.id)).summary.id;
+  // delegate-read has no bash: four identical failures trip the loop guard, which aborts the run between turns.
+  const bash = () => piAi.fauxAssistantMessage(piAi.fauxToolCall("bash", { command: "node --test" }));
+  faux.setResponses([bash(), bash(), bash(), bash(), piAi.fauxAssistantMessage("NEVER-SENT")]);
+  const { run } = await manager.startPrompt(id, "go", undefined);
+  await run;
+  const messages = liveOf<{ session: { messages: Msg[] } }>(manager).get(id)!.session.messages;
+  const last = messages.findLast((m) => m.role === "assistant")!;
+  assert.equal(last.stopReason, "aborted");
+  assert.doesNotMatch(last.errorMessage ?? "", new RegExp(INTERRUPTED_PREFIX));
+  faux.setResponses([]);
+});
