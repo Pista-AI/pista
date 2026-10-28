@@ -47,8 +47,8 @@ export interface RunResult {
   /** The parent's last assistant message (its text, or the provider error), truncated. */
   finalText?: string;
   error?: string;
-  /** Pi auto-retries of a failed provider reply (parent and sub-agents), e.g. a dropped stream; absent when none. */
-  providerRetries?: number;
+  /** Loop-guard stops (parent or sub-agent), e.g. the same failing tool call four times in a row; absent when none. */
+  guardStops?: string[];
   /** Unified diff of the workspace against the fixture (no `.pista/`, `node_modules/`, `.git/`), truncated to DIFF_CHARS. */
   diff?: string;
   diffStats: DiffStats;
