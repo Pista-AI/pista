@@ -8,7 +8,7 @@ import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
 import { fauxModels } from "./faux-models.ts";
-import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
+import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
 const job = JSON.parse(process.argv[2]!) as ChildJob;
 
@@ -111,6 +111,7 @@ try {
       const kids = (await manager.list()).filter((t) => t.parentId === threadId);
       const childMsgs = await Promise.all(kids.map(async (k) => (await manager.continueChild(k.id)).session.messages as unknown as Msg[]));
       Object.assign(result, tally(parent, childMsgs));
+      result.finalText = finalText(parent);
     }
   } catch {}
   result.seconds = (Date.now() - started) / 1000;

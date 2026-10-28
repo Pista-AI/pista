@@ -44,6 +44,8 @@ export interface RunResult {
   verifyLines: string[];
   /** Tail of the check's output, kept only when the check failed. */
   checkOutput?: string;
+  /** The parent's last assistant message (its text, or the provider error), truncated. */
+  finalText?: string;
   error?: string;
 }
 
@@ -87,6 +89,15 @@ export function loadTasks(root: string, pattern: string): Task[] {
 export type Msg = ChatMessage & { toolName?: string };
 
 /** Token, cost, sub-agent and verify figures for one parent thread and its children. */
+/** The parent's last assistant message: its text, or `[stopReason] errorMessage` when it ended on an error. */
+export function finalText(parent: Msg[]): string | undefined {
+  const last = parent.findLast((m) => m.role === "assistant");
+  if (!last || last.role !== "assistant") return undefined;
+  const text = last.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
+  const error = last.errorMessage ? `[${last.stopReason}] ${last.errorMessage}` : "";
+  return [error, text].filter(Boolean).join("\n").slice(0, FINAL_TEXT_CHARS) || undefined;
+}
+
 export function tally(parent: Msg[], children: Msg[][]): Pick<RunResult, "input" | "output" | "cacheRead" | "cacheWrite" | "costUsd" | "subAgentCalls" | "verifyLines"> {
   const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] as string[] };
   for (const m of [...parent, ...children.flat()]) {
@@ -234,6 +245,8 @@ export function abortEval(): void {
 export const CHECK_TIMEOUT_MS = 120_000;
 /** How much of a failed check's output the report keeps. */
 export const CHECK_OUTPUT_CHARS = 2000;
+/** How much of the parent's final message the report keeps. */
+export const FINAL_TEXT_CHARS = 1000;
 export const KILL_SLACK_MS = 30_000;
 export const AGENT_DONE = "__AGENT_DONE__";
 

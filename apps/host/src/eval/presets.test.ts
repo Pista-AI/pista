@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { childEnv, failed, loadTasks, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { childEnv, failed, finalText, loadTasks, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -14,6 +14,7 @@ test("fake run over every task and both presets passes and produces the report s
   const first = report.results[0]!;
   for (const key of ["seconds", "input", "output", "cacheRead", "cacheWrite", "costUsd", "subAgentCalls"] as const) assert.equal(typeof first[key], "number", key);
   assert.ok(Array.isArray(first.verifyLines));
+  assert.equal(first.finalText, "Done.");
   const md = toMarkdown(report);
   assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| verify pass\/fail\/skip \|/);
   assert.match(md, new RegExp(`\\| solo \\| ${n} \\| 100% \\|`));
@@ -80,4 +81,11 @@ test("garbage child output yields no result instead of throwing", () => {
   assert.equal(parseResult("__EVAL_RESULT__ 5"), undefined);
   assert.equal(parseResult(""), undefined);
   assert.equal(parseResult('__EVAL_RESULT__ {"pass":true}')?.pass, true);
+});
+
+test("finalText keeps the last assistant text or its provider error", () => {
+  const a = (text: string, extra = {}) => ({ role: "assistant", content: [{ type: "text", text }], provider: "p", model: "m", stopReason: "stop", timestamp: 0, ...extra });
+  assert.equal(finalText([a("first"), { role: "user", content: "x", timestamp: 0 }, a("last")] as never), "last");
+  assert.equal(finalText([a("", { stopReason: "error", errorMessage: "429" })] as never), "[error] 429");
+  assert.equal(finalText([] as never), undefined);
 });

@@ -38,7 +38,7 @@ Full-access approval is not a sandbox. The agent runs with your OS user's permis
 `tasks/<name>/` with:
 - `fixture/` the starting repo (node built-ins only, e.g. `node:test`; no install step).
 - `task.md` the prompt.
-- `task.json` `{ "check": "<command>" }`, run in the workspace after the agent finishes; exit 0 passes; a failing check's output tail is kept as `checkOutput` in report.json.
+- `task.json` `{ "check": "<command>" }`, run in the workspace after the agent finishes; exit 0 passes; a failing check's output tail is kept as `checkOutput` in report.json, and every run keeps the parent's last message (or provider error) as `finalText`.
 - `check.*` hidden test files, copied into the workspace only after the agent finishes.
 - `fake/` files the `--fake` model writes (the reference solution): only the files that change, nested paths allowed (`fake/src/a.ts` overwrites `src/a.ts`).
 
