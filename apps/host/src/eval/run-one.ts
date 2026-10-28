@@ -9,7 +9,7 @@ import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
 import { workspaceDiff } from "./diff.ts";
 import { fauxModels } from "./faux-models.ts";
-import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, JUDGE_SYSTEM, JUDGE_TIMEOUT_MS, judgePrompt, type Msg, parseJudge, RESULT_MARK, type RunResult, tally } from "./presets.ts";
+import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, fixturePaths, JUDGE_SYSTEM, JUDGE_TIMEOUT_MS, judgePrompt, type Msg, parseJudge, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
 const job = JSON.parse(process.argv[2]!) as ChildJob;
 
@@ -52,7 +52,8 @@ async function review(runtime: typeof models, ref: { provider: string; id: strin
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
   try {
-    const content = judgePrompt(job.prompt, result.diff!);
+    // Paths of the original fixture (not the workspace, which holds the agent's edits), so the reviewer can spot reuse.
+    const content = judgePrompt(job.prompt, result.diff!, fixturePaths(join(job.stageDir, "fixture")));
     const reply = await runtime.completeSimple(model, { systemPrompt: JUDGE_SYSTEM, messages: [{ role: "user", content, timestamp: Date.now() }] }, { maxTokens: 4000, signal: controller.signal });
     result.judgeCostUsd += reply.usage?.cost?.total || 0;
     if (reply.stopReason === "aborted") throw new Error("reviewer timed out");
@@ -112,7 +113,7 @@ try {
       // Recursive, so a reference solution can touch nested files (paths stay relative to fake/).
       const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => statSync(join(dir, f)).isFile()) : [];
       // The reviewer call (after the agent) takes the last response.
-      const verdict = (s: number) => ({ spec: { score: s, reason: "fake" }, minimal: { score: s, reason: "fake" }, readable: { score: s, reason: "fake" }, safe: { score: s, reason: "fake" } });
+      const verdict = (s: number) => ({ spec: { score: s, reason: "fake" }, minimal: { score: s, reason: "fake" }, readable: { score: s, reason: "fake" }, safe: { score: s, reason: "fake" }, structure: { score: s, reason: "fake" } });
       handle.setResponses([
         ...files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f), content: readFileSync(join(dir, f), "utf8") }))),
         piAi.fauxAssistantMessage("Done."),

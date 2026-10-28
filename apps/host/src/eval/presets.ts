@@ -70,6 +70,7 @@ export interface Quality {
   minimal: number;
   readable: number;
   safe: number;
+  structure: number;
   mean: number;
   notes: string;
 }
@@ -115,14 +116,15 @@ export function loadTasks(root: string, pattern: string): Task[] {
   });
 }
 
-const CRITERIA = ["spec", "minimal", "readable", "safe"] as const;
+const CRITERIA = ["spec", "minimal", "readable", "safe", "structure"] as const;
 
-export const JUDGE_SYSTEM = `You are a strict code reviewer. You get a task description and the unified diff someone produced for it. Score the diff on four criteria, each an integer 1 (poor) to 5 (excellent), with a one-line reason:
+export const JUDGE_SYSTEM = `You are a strict code reviewer. You get a task description, the unified diff someone produced for it, and the list of file paths in the repo before the change (paths only, no contents). Score the diff on five criteria, each an integer 1 (poor) to 5 (excellent), with a one-line reason:
 - spec: does the change do exactly what the task asked, names and scope included?
 - minimal: no unrelated or unnecessary edits.
 - readable: clear, idiomatic, matches the surrounding style.
 - safe: no regressions, edge cases handled, tests kept meaningful and not weakened to pass.
-Answer with strict JSON only: {"spec":{"score":n,"reason":"..."},"minimal":{...},"readable":{...},"safe":{...}}`;
+- structure: fits the existing structure: new code lives where similar code lives, reuses existing helpers instead of duplicating them, no copy-pasted logic. Judge from the file paths: a new file or helper beside a similar existing one that could have been reused is a weakness.
+Answer with strict JSON only: {"spec":{"score":n,"reason":"..."},"minimal":{...},"readable":{...},"safe":{...},"structure":{...}}`;
 
 /** Takes the first JSON object out of the reviewer's reply (it may be wrapped in prose or a code fence). */
 export function parseJudge(text: string): { quality: Quality } | { error: string } {
@@ -136,9 +138,9 @@ export function parseJudge(text: string): { quality: Quality } | { error: string
       }
       const scores = CRITERIA.map((c) => Number(raw?.[c]?.score));
       if (scores.some((s) => !Number.isFinite(s) || s < 1 || s > 5)) continue;
-      const [spec, minimal, readable, safe] = scores as [number, number, number, number];
+      const [spec, minimal, readable, safe, structure] = scores as [number, number, number, number, number];
       const notes = CRITERIA.map((c) => `${c}: ${String(raw[c]?.reason ?? "").trim()}`).join(" | ");
-      return { quality: { spec, minimal, readable, safe, mean: (spec + minimal + readable + safe) / 4, notes } };
+      return { quality: { spec, minimal, readable, safe, structure, mean: (spec + minimal + readable + safe + structure) / 5, notes } };
     }
   }
   return { error: `reviewer reply had no valid scores: ${text.slice(0, 200)}` };
@@ -242,9 +244,34 @@ export function addResult(report: Pick<EvalReport, "results" | "totalCostUsd">, 
   report.totalCostUsd += r.costUsd + (r.judgeCostUsd ?? 0);
 }
 
-/** What the reviewer sees: the task and the diff, nothing else (blind). */
-export function judgePrompt(task: string, diff: string): string {
-  return `Task:\n${task}\n\nDiff:\n${diff}${diff.endsWith("[diff truncated]\n") ? "\n(The diff was cut off for length; judge what is shown.)" : ""}`;
+/** Upper bound on the file paths the reviewer is shown (paths only). */
+export const JUDGE_PATHS_MAX = 200;
+
+/**
+ * Relative file paths under `dir` (sorted, POSIX separators), skipping harness and build dirs. Capped at `max`;
+ * a trailing "... (N more)" entry says how many were left out. Paths only: no contents are read.
+ */
+export function fixturePaths(dir: string, max = JUDGE_PATHS_MAX): string[] {
+  const skip = new Set(["node_modules", ".git", ".pista"]);
+  const out: string[] = [];
+  const walk = (rel: string) => {
+    const entries = readdirSync(join(dir, rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      if (skip.has(e.name)) continue;
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile()) out.push(p);
+    }
+  };
+  if (existsSync(dir)) walk("");
+  if (out.length <= max) return out;
+  return [...out.slice(0, max), `... (${out.length - max} more)`];
+}
+
+/** What the reviewer sees (blind): the task, the diff and the fixture's file paths. Nothing about the run's preset, model, cost or check. */
+export function judgePrompt(task: string, diff: string, paths: string[] = []): string {
+  const files = paths.length ? `\n\nRepo files before the change (paths only):\n${paths.join("\n")}` : "";
+  return `Task:\n${task}\n\nDiff:\n${diff}${diff.endsWith("[diff truncated]\n") ? "\n(The diff was cut off for length; judge what is shown.)" : ""}${files}`;
 }
 
 export const JUDGE_TIMEOUT_MS = 120_000;
