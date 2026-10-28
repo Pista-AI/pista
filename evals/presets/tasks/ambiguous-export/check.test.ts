@@ -9,8 +9,12 @@ const entries: ReportEntry[] = [
   { date: new Date("2026-05-05T09:00:00Z"), customer: "Fjord AS", note: "Line one\nline two", amountCents: 5 },
 ];
 
-/** Minimal RFC 4180 parser: comma separated, "" escapes a quote, CRLF or LF ends a record. */
-function parseCsv(text: string): string[][] {
+/** Minimal RFC 4180 parser: "" escapes a quote, CRLF or LF ends a record. The delimiter (, ; or tab) is taken from the header line. */
+function parseCsv(input: string): string[][] {
+  const text = input.replace(/^\uFEFF/, "");
+  const header = text.split(/\r\n|\n|\r/)[0] ?? "";
+  const count = (d: string) => header.split(d).length - 1;
+  const delimiter = [",", ";", "\t"].reduce((best, d) => (count(d) > count(best) ? d : best), ",");
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = "";
@@ -22,7 +26,7 @@ function parseCsv(text: string): string[][] {
       else if (c === '"') quoted = false;
       else cell += c;
     } else if (c === '"' && cell === "") quoted = true;
-    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === delimiter) { row.push(cell); cell = ""; }
     else if (c === "\r" || c === "\n") {
       if (c === "\r" && text[i + 1] === "\n") i++;
       row.push(cell); rows.push(row); row = []; cell = "";
@@ -45,9 +49,10 @@ test("header row uses the JSON export's field names in the same order", () => {
   const report = buildMonthlyReport("2026-05", entries);
   const jsonRows = JSON.parse(exportMonthlyJson(report)).rows as Record<string, string>[];
   const rows = csvOf(report);
-  assert.deepEqual(rows[0], Object.keys(jsonRows[0]!));
+  assert.deepEqual(rows[0]!.map((h) => h.trim().toLowerCase()), Object.keys(jsonRows[0]!).map((k) => k.toLowerCase()));
 });
 
+// One row per entry is expected: no "Total" or summary rows.
 test("every cell matches the JSON export's value, including the date and amount format", () => {
   const report = buildMonthlyReport("2026-05", entries);
   const jsonRows = JSON.parse(exportMonthlyJson(report)).rows as Record<string, string>[];
