@@ -13,6 +13,7 @@ import { approvalExtension, browserExtension, loopGuardExtension, policyGateExte
 import type { Hub } from "./hub.ts";
 import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
+import { providerAbortRetryExtension } from "./provider-abort.ts";
 import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
@@ -73,6 +74,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
     ...(kind.orchestratorTools ? [watch(orchestratorGateExtension(kind.orchestratorTools), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),
+    providerAbortRetryExtension(),
     stateExtension(),
     contextPruneExtension(store),
     // Children share the parent's cwd, so only role-less threads may write the plan file.

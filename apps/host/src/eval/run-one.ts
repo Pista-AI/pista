@@ -87,7 +87,14 @@ const faux = job.fake ? await fauxModels() : undefined;
 const models = faux?.models ?? (await ModelRuntime.create({ allowModelNetwork: true }));
 if (!faux) registerNebiusProvider(models);
 const store = new ConfigStore();
-const manager = new ThreadManager(store, new Hub(), models);
+const hub = new Hub();
+// Count Pi's auto-retries of failed provider replies; the failed attempts are dropped from the thread's messages.
+const emit = hub.emit.bind(hub);
+hub.emit = (event) => {
+  if (event.type === "thread.event" && event.event.type === "auto_retry_start") result.providerRetries = (result.providerRetries ?? 0) + 1;
+  emit(event);
+};
+const manager = new ThreadManager(store, hub, models);
 let threadId: string | undefined;
 try {
   cpSync(join(job.stageDir, "fixture"), job.workDir, { recursive: true });
