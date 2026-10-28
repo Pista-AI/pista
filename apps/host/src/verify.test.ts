@@ -256,3 +256,17 @@ test("parseVerifyConfig keeps a boolean or non-empty string typecheck and drops 
   assert.equal(parseVerifyConfig({ commands: ["a"], typecheck: " tsc " })?.typecheck, "tsc");
   assert.equal("typecheck" in parseVerifyConfig({ commands: ["a"], typecheck: 3 })!, false);
 });
+
+test("typecheck: auto skips when a command already typechecks; true still forces it", () => {
+  const dir = typecheckDir({ "tsconfig.json": "{}" });
+  assert.equal(resolveTypecheck({ commands: ["pnpm typecheck", "pnpm test"] }, dir, () => "/h/tsc"), null);
+  assert.equal(resolveTypecheck({ commands: ["tsc -p ."] }, dir, () => "/h/tsc"), null);
+  assert.ok(resolveTypecheck({ commands: ["pnpm typecheck"], typecheck: true }, dir, () => "/h/tsc") !== null);
+  assert.ok(resolveTypecheck({ commands: ["npm test"] }, dir, () => "/h/tsc") !== null);
+});
+
+test("typecheck: a host tsc path with shell metacharacters is quoted", { skip: process.platform === "win32" }, () => {
+  const dir = typecheckDir({ "tsconfig.json": "{}" });
+  const plan = resolveTypecheck({}, dir, () => "/a b/$HOME/it's");
+  assert.ok(plan && "command" in plan && plan.command.includes("'/a b/$HOME/it'\\''s'"));
+});

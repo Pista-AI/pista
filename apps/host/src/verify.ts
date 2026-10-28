@@ -52,7 +52,14 @@ export function parseVerifyConfig(raw: unknown): VerifyConfig | undefined {
   };
 }
 
-const quote = (path: string) => (/^[\w./:@+-]+$/.test(path) ? path : JSON.stringify(path));
+const quote = (path: string) => {
+  if (/^[\w./:@+-]+$/.test(path)) return path;
+  // POSIX: single quotes so `$` and backticks in a path do not expand.
+  return process.platform === "win32" ? JSON.stringify(path) : `'${path.replace(/'/g, "'\\''")}'`;
+};
+
+/** A configured command that already typechecks; auto mode then adds nothing, so tsc does not run twice. */
+const LOOKS_LIKE_TYPECHECK = /\btypecheck\b|\btsc\b/;
 
 /** A `tsc` the host itself can resolve (a dev checkout has typescript; the packaged app does not ship it), or undefined. */
 function hostTsc(): string | undefined {
@@ -74,11 +81,13 @@ export type TypecheckPlan = { command: string } | { skipped: string } | null;
  * workspace root has a `tsconfig.json`; then, in order: the project's own `typecheck` script (when its dependencies are installed),
  * its `node_modules/.bin/tsc`, a tsc the host can resolve, else a skip. A missing tsc never fails the gate.
  */
-export function resolveTypecheck(config: Pick<VerifyConfig, "typecheck">, cwd: string, hostResolve: () => string | undefined = hostTsc): TypecheckPlan {
+export function resolveTypecheck(config: Pick<VerifyConfig, "typecheck"> & { commands?: string[] }, cwd: string, hostResolve: () => string | undefined = hostTsc): TypecheckPlan {
   const { typecheck } = config;
   if (typecheck === false) return null;
   if (typeof typecheck === "string") return { command: typecheck };
   if (!existsSync(join(cwd, "tsconfig.json"))) return null;
+  // Explicit `true` forces the step; plain auto leaves it out when a command already does it.
+  if (typecheck === undefined && config.commands?.some((c) => LOOKS_LIKE_TYPECHECK.test(c))) return null;
   const installed = existsSync(join(cwd, "node_modules"));
   try {
     const scripts = (JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as { scripts?: Record<string, unknown> }).scripts;
