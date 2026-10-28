@@ -13,7 +13,7 @@ const deps = { store, hub, ref: { threadId: "t" }, threads: manager, plan: { get
 
 test("extensionsFor: an unrestricted top-level thread gets everything, including the agent and plan tools", () => {
   assert.deepEqual(names(extensionsFor({ role: undefined, restricted: false, isChild: false }, deps)), [
-    "pi", "pi", "pi", "browser", "browsing-turns", "agent-tool", "loop-guard", "provider-abort-retry", "workspace-state", "context-prune", "plan", "approvals",
+    "pi", "pi", "pi", "browser", "browsing-turns", "agent-tool", "loop-guard", "abort-label", "workspace-state", "context-prune", "plan", "approvals",
   ]);
 });
 
@@ -29,13 +29,13 @@ test("extensionsFor: browserEnabled false leaves the browser tools out and nothi
 
 test("extensionsFor: an implementer child keeps tools and the browser but gets no agent or plan tool, and is role-gated", () => {
   assert.deepEqual(names(extensionsFor({ role: "implementer", restricted: false, isChild: true }, deps)), [
-    "pi", "pi", "pi", "browser", "browsing-turns", "role-gate", "loop-guard", "provider-abort-retry", "workspace-state", "context-prune", "approvals",
+    "pi", "pi", "pi", "browser", "browsing-turns", "role-gate", "loop-guard", "abort-label", "workspace-state", "context-prune", "approvals",
   ]);
 });
 
 test("extensionsFor: a restricted child loses codemode, tool search, MCP and the browser", () => {
   assert.deepEqual(names(extensionsFor({ role: "explorer", restricted: true, isChild: true }, deps)), [
-    "role-gate", "loop-guard", "provider-abort-retry", "workspace-state", "context-prune", "approvals",
+    "role-gate", "loop-guard", "abort-label", "workspace-state", "context-prune", "approvals",
   ]);
 });
 
