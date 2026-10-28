@@ -125,3 +125,15 @@ export function orchestratorGateExtension(allowed: readonly string[]): InlineExt
     },
   };
 }
+
+/** System-prompt section for an orchestrator top-level thread; children never get it. */
+export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string {
+  return [
+    "## Orchestrator mode",
+    mode === "delegate-read"
+      ? "You can read files but not edit them or run commands; sub-agents make changes through the `agent` tool and you get their reports."
+      : "You cannot read or edit files yourself; sub-agents do the work through the `agent` tool and you get their reports.",
+    "For a change: send an explorer to locate it, then an implementer with the explorer's findings (exact files, what to change, what must not change). An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
+    "If a report is incomplete or a check failed, send a follow-up with continueId.",
+  ].join("\n");
+}

@@ -96,3 +96,15 @@ test("switching the mode on and reloading idle threads restricts the reopened pa
   await manager.open(id);
   assert.deepEqual([...liveOf().get(id)!.session.getActiveToolNames()].sort(), ["agent", "plan"]);
 });
+
+test("only top-level orchestrator threads get the orchestrator prompt section", async () => {
+  const promptOf = (id: string) => (liveOf().get(id)!.session as unknown as { systemPrompt: string }).systemPrompt;
+  const delegate = await newThread("delegate");
+  assert.match(promptOf(delegate), /## Orchestrator mode\nYou cannot read or edit files yourself/);
+  const childId = await manager.spawnChild(delegate, { role: "implementer" });
+  await manager.continueChild(childId);
+  assert.doesNotMatch(promptOf(childId), /Orchestrator mode/);
+  assert.match(promptOf(await newThread("delegate-read")), /## Orchestrator mode\nYou can read files but not edit/);
+  assert.doesNotMatch(promptOf(await newThread("off")), /Orchestrator mode/);
+  assert.doesNotMatch(promptOf(await newThread()), /Orchestrator mode/);
+});
