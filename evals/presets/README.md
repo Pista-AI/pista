@@ -44,6 +44,7 @@ The harder tasks below (Node >= 22.18 to run the `.ts` files) each have a `tscon
 - `reuse-existing-helper` needs a cent-exact bill split, and a tested `allocate` helper already exists in another module. The check tests behaviour and reads the sources: the new file must import `allocate`, and the remainder logic must not be copied. Failures are labelled `BEHAVIOUR WRONG` or `NOT REUSED / DUPLICATED`, so a fail can be reuse-only.
 - `fix-far-bug` reports a wrong total at the edge (an invoice for a Norwegian customer) whose root cause is an alias table two call layers down; the check also exercises the other callers of the shared normaliser (shipping zone, currency, region), so a patch at the edge fails.
 - `spec-many-files` is an exact spec (adding a `currency` field to `Price`: defaults, error text, output formats, JSON back-compat) across about ten files; the check verifies every point literally and that unrelated behaviour is unchanged.
+- `explore-large` (49 files in 13 domains, with a deprecated module, dead code and a look-alike bank-day calendar as distractors) asks for holiday-aware shipping dates ("the holiday calendar already exists"). The reference change touches 4 files: the business-day helpers, `dispatchDate` and its two callers (`orders/place.ts`, `orders/eta.ts`); the check also guards that the shared calendar and bank settlement keep their old behaviour.
 
 ## Add a task
 
