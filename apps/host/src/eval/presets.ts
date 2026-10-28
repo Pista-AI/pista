@@ -123,7 +123,7 @@ export const JUDGE_SYSTEM = `You are a strict code reviewer. You get a task desc
 - minimal: no unrelated or unnecessary edits.
 - readable: clear, idiomatic, matches the surrounding style.
 - safe: no regressions, edge cases handled, tests kept meaningful and not weakened to pass.
-- structure: fits the existing structure: new code lives where similar code lives, reuses existing helpers instead of duplicating them, no copy-pasted logic. Judge from the file paths: a new file or helper beside a similar existing one that could have been reused is a weakness.
+- structure: fits the existing structure: new code lives where similar code lives, reuses existing helpers instead of duplicating them, no copy-pasted logic. Judge from the file paths: a new file or helper beside a similar existing one that could have been reused is a weakness. If no file list is shown, score structure from the diff alone.
 Answer with strict JSON only: {"spec":{"score":n,"reason":"..."},"minimal":{...},"readable":{...},"safe":{...},"structure":{...}}`;
 
 /** Takes the first JSON object out of the reviewer's reply (it may be wrapped in prose or a code fence). */
