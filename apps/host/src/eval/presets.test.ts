@@ -1,22 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { childEnv, failed, loadTasks, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { childEnv, failed, finalText, loadTasks, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
-test("fake run over both tasks and both presets passes and produces the report shape", async () => {
+test("fake run over every task and both presets passes and produces the report shape", async () => {
   const report = await runEval({ ...base, presets: ["solo", "routed"], tasks: "*", runs: 1, fake: true });
-  assert.equal(report.results.length, 4);
+  const n = loadTasks(base.tasksDir, "*").length;
+  assert.equal(report.results.length, 2 * n);
   for (const r of report.results) assert.ok(r.pass, `${r.preset}/${r.task}: ${r.error ?? "check failed"}`);
-  assert.deepEqual(report.summary.map((s) => [s.preset, s.runs, s.passRate]), [["solo", 2, 1], ["routed", 2, 1]]);
+  assert.deepEqual(report.summary.map((s) => [s.preset, s.runs, s.passRate]), [["solo", n, 1], ["routed", n, 1]]);
   const first = report.results[0]!;
   for (const key of ["seconds", "input", "output", "cacheRead", "cacheWrite", "costUsd", "subAgentCalls"] as const) assert.equal(typeof first[key], "number", key);
   assert.ok(Array.isArray(first.verifyLines));
+  assert.equal(first.finalText, "Done.");
   const md = toMarkdown(report);
-  assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \|/);
-  assert.match(md, /\| solo \| 2 \| 100% \|/);
-  assert.match(md, /\| routed \| 2 \| 100% \|/);
+  assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| verify pass\/fail\/skip \|/);
+  assert.match(md, new RegExp(`\\| solo \\| ${n} \\| 100% \\|`));
+  assert.match(md, new RegExp(`\\| routed \\| ${n} \\| 100% \\|`));
 });
 
 test("a real run needs --max-usd and --model", async () => {
@@ -34,10 +36,12 @@ test("cost, tokens, sub-agent calls and verify lines are tallied", async () => {
   assert.deepEqual(t.verifyLines, ["verify: passed"]);
   const s = summarize([{ preset: "a", task: "t", run: 1, pass: true, seconds: 2, ...t }], ["a"]);
   assert.equal(s[0]!.meanCostUsd, 0.5);
+  assert.equal(s[0]!.meanSubAgentCalls, 1);
+  assert.deepEqual(s[0]!.verify, { passed: 1, failed: 0, skipped: 0 });
 });
 
 test("task patterns select by name, comma list or prefix", () => {
-  assert.equal(loadTasks(base.tasksDir, "fix-*").length, 1);
+  assert.equal(loadTasks(base.tasksDir, "fix-*").length, 2);
   assert.equal(loadTasks(base.tasksDir, "fix-slugify,add-chunk").length, 2);
   assert.throws(() => loadTasks(base.tasksDir, "nope"), /No task matches/);
 });
@@ -77,4 +81,11 @@ test("garbage child output yields no result instead of throwing", () => {
   assert.equal(parseResult("__EVAL_RESULT__ 5"), undefined);
   assert.equal(parseResult(""), undefined);
   assert.equal(parseResult('__EVAL_RESULT__ {"pass":true}')?.pass, true);
+});
+
+test("finalText keeps the last assistant text or its provider error", () => {
+  const a = (text: string, extra = {}) => ({ role: "assistant", content: [{ type: "text", text }], provider: "p", model: "m", stopReason: "stop", timestamp: 0, ...extra });
+  assert.equal(finalText([a("first"), { role: "user", content: "x", timestamp: 0 }, a("last")] as never), "last");
+  assert.equal(finalText([a("", { stopReason: "error", errorMessage: "429" })] as never), "[error] 429");
+  assert.equal(finalText([] as never), undefined);
 });

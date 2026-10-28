@@ -42,6 +42,10 @@ export interface RunResult {
   costUsd: number;
   subAgentCalls: number;
   verifyLines: string[];
+  /** Tail of the check's output, kept only when the check failed. */
+  checkOutput?: string;
+  /** The parent's last assistant message (its text, or the provider error), truncated. */
+  finalText?: string;
   error?: string;
 }
 
@@ -52,6 +56,10 @@ export interface Summary {
   meanCostUsd: number;
   meanTokens: number;
   meanSeconds: number;
+  /** Mean `agent` tool calls per run (parent and children). */
+  meanSubAgentCalls: number;
+  /** Verify-gate outcomes summed over all runs (from the sub-agent results' "Verify: ..." lines). */
+  verify: { passed: number; failed: number; skipped: number };
 }
 
 export function loadPreset(root: string, name: string): Preset {
@@ -81,6 +89,15 @@ export function loadTasks(root: string, pattern: string): Task[] {
 export type Msg = ChatMessage & { toolName?: string };
 
 /** Token, cost, sub-agent and verify figures for one parent thread and its children. */
+/** The parent's last assistant message: its text, or `[stopReason] errorMessage` when it ended on an error. */
+export function finalText(parent: Msg[]): string | undefined {
+  const last = parent.findLast((m) => m.role === "assistant");
+  if (!last || last.role !== "assistant") return undefined;
+  const text = last.content.map((b) => (b.type === "text" ? b.text : "")).join("").trim();
+  const error = last.errorMessage ? `[${last.stopReason}] ${last.errorMessage}` : "";
+  return [error, text].filter(Boolean).join("\n").slice(0, FINAL_TEXT_CHARS) || undefined;
+}
+
 export function tally(parent: Msg[], children: Msg[][]): Pick<RunResult, "input" | "output" | "cacheRead" | "cacheWrite" | "costUsd" | "subAgentCalls" | "verifyLines"> {
   const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [] as string[] };
   for (const m of [...parent, ...children.flat()]) {
@@ -150,6 +167,10 @@ export interface ChildJob {
 
 export const RESULT_MARK = "__EVAL_RESULT__ ";
 
+function count(rs: RunResult[], re: RegExp): number {
+  return rs.reduce((n, r) => n + r.verifyLines.filter((l) => re.test(l)).length, 0);
+}
+
 export function summarize(results: RunResult[], presets: string[]): Summary[] {
   return presets.map((preset) => {
     const rs = results.filter((r) => r.preset === preset);
@@ -161,6 +182,12 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
       meanCostUsd: mean((r) => r.costUsd),
       meanTokens: mean((r) => r.input + r.output + r.cacheRead + r.cacheWrite),
       meanSeconds: mean((r) => r.seconds),
+      meanSubAgentCalls: mean((r) => r.subAgentCalls),
+      verify: {
+        passed: count(rs, /verify: passed/i),
+        failed: count(rs, /verify: failed/i),
+        skipped: count(rs, /verify: skipped/i),
+      },
     };
   });
 }
@@ -169,9 +196,12 @@ export function toMarkdown(report: EvalReport): string {
   const lines = [
     `# Preset eval${report.fake ? " (fake model)" : ""}`,
     "",
-    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) |",
-    "|---|---|---|---|---|---|",
-    ...report.summary.map((s) => `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} |`),
+    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | verify pass/fail/skip |",
+    "|---|---|---|---|---|---|---|---|",
+    ...report.summary.map(
+      (s) =>
+        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
+    ),
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,
   ];
@@ -213,6 +243,10 @@ export function abortEval(): void {
 
 /** Child budget: run timeout + the check's 120 s; the parent kills only after that plus slack. */
 export const CHECK_TIMEOUT_MS = 120_000;
+/** How much of a failed check's output the report keeps. */
+export const CHECK_OUTPUT_CHARS = 2000;
+/** How much of the parent's final message the report keeps. */
+export const FINAL_TEXT_CHARS = 1000;
 export const KILL_SLACK_MS = 30_000;
 export const AGENT_DONE = "__AGENT_DONE__";
 

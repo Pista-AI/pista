@@ -2,30 +2,35 @@
 // to throwaway dirs before this starts, so importing the host here cannot touch the user's state.
 // The workspace (job.workDir) is a copy of the fixture; full-access and trust apply to that folder only. This is not
 // a sandbox: the agent runs with the user's OS permissions.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
 import { fauxModels } from "./faux-models.ts";
-import { AGENT_DONE, CHECK_TIMEOUT_MS, type ChildJob, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
+import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, type Msg, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
 const job = JSON.parse(process.argv[2]!) as ChildJob;
 
 /** Runs the check in its own process group and kills the group on timeout (group kill skipped on Windows). */
-function sh(command: string, cwd: string, timeoutMs: number): Promise<number | "timeout"> {
+/** Runs `command`; `out` is the tail of its combined stdout/stderr. */
+function sh(command: string, cwd: string, timeoutMs: number): Promise<{ code: number | "timeout"; out: string }> {
   return new Promise((resolve) => {
-    const { child, kill } = spawnGroup(command, [], { cwd, shell: true, stdio: "ignore" });
+    const { child, kill } = spawnGroup(command, [], { cwd, shell: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const keep = (d: Buffer) => (out = (out + d.toString()).slice(-CHECK_OUTPUT_CHARS));
+    child.stdout?.on("data", keep);
+    child.stderr?.on("data", keep);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
     }, timeoutMs);
-    child.on("error", () => resolve(1));
+    child.on("error", (e) => resolve({ code: 1, out: String(e) }));
     child.on("close", (code) => {
       clearTimeout(timer);
       kill();
-      resolve(timedOut ? "timeout" : (code ?? 1));
+      resolve({ code: timedOut ? "timeout" : (code ?? 1), out });
     });
   });
 }
@@ -72,7 +77,8 @@ try {
       }]);
     } else {
       const dir = join(job.stageDir, "fake");
-      const files = existsSync(dir) ? readdirSync(dir) : [];
+      // Recursive, so a reference solution can touch nested files (paths stay relative to fake/).
+      const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => statSync(join(dir, f)).isFile()) : [];
       handle.setResponses([...files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f), content: readFileSync(join(dir, f), "utf8") }))), piAi.fauxAssistantMessage("Done.")]);
     }
   }
@@ -90,9 +96,10 @@ try {
     console.log(AGENT_DONE);
     for (let i = 0; i < 600 && !existsSync(join(job.stageDir, ".ready")); i++) await new Promise((r) => setTimeout(r, 50));
     for (const f of readdirSync(job.stageDir)) if (f.startsWith("check.")) cpSync(join(job.stageDir, f), join(job.workDir, f));
-    const code = await sh(job.check, job.workDir, CHECK_TIMEOUT_MS);
+    const { code, out } = await sh(job.check, job.workDir, CHECK_TIMEOUT_MS);
     if (code === "timeout") result.error = "check timeout";
     result.pass = code === 0;
+    if (!result.pass) result.checkOutput = out;
   }
 } catch (error) {
   result.error = error instanceof Error ? error.message : String(error);
@@ -104,6 +111,7 @@ try {
       const kids = (await manager.list()).filter((t) => t.parentId === threadId);
       const childMsgs = await Promise.all(kids.map(async (k) => (await manager.continueChild(k.id)).session.messages as unknown as Msg[]));
       Object.assign(result, tally(parent, childMsgs));
+      result.finalText = finalText(parent);
     }
   } catch {}
   result.seconds = (Date.now() - started) / 1000;

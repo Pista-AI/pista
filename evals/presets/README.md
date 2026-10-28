@@ -12,7 +12,7 @@ pnpm eval:presets --fake --presets solo,routed --tasks '*' --runs 1
 pnpm eval:presets --presets solo,routed --tasks 'fix-*' --runs 3 --max-usd 2 --model anthropic/claude-sonnet-4-5
 ```
 
-Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd X`, `--model provider/id`, `--run-timeout SEC`, `--fake`, `--out DIR` (default `evals/presets/results/<timestamp>/`, git-ignored). Output: `report.json` (every run plus summary) and `report.md` (the table). Node >= 22.18 is needed to run the `.ts` fixtures.
+Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd X`, `--model provider/id`, `--run-timeout SEC`, `--fake`, `--out DIR` (default `evals/presets/results/<timestamp>/`, git-ignored). Output: `report.json` (every run plus summary) and `report.md` (the table, including mean `agent` tool calls per run and the verify gate's pass/fail/skip counts). The gate runs only after a sub-agent that edited files (the `implementer` role), so read-only explorer delegation leaves it at 0/0/0. Node >= 22.18 is needed to run the `.ts` fixtures.
 
 ## Cost cap
 
@@ -29,14 +29,18 @@ Full-access approval is not a sandbox. The agent runs with your OS user's permis
 - The workspace is a copy of the task's `fixture/`, trusted and set to full-access for that folder only. Fixtures are first staged in the scratch dir, so the workspace and prompt never mention repo paths. Real runs never stage `fake/`, and the hidden check files are copied into the staging dir only after the agent has finished, so they do not exist while it runs; this eval measures cooperative runs, not adversarial ones.
 - Use real runs only on a machine where a full-access agent is acceptable.
 
+## Tasks
+
+`add-chunk` and `fix-slugify` are one-file tasks; parents rarely delegate on them. `fix-free-shipping` (find a bug from a symptom in a ~20-file shop backend) and `rename-product-sku` (a cross-file rename that must leave order and customer ids alone) are sized so delegating exploration can pay off.
+
 ## Add a task
 
 `tasks/<name>/` with:
 - `fixture/` the starting repo (node built-ins only, e.g. `node:test`; no install step).
 - `task.md` the prompt.
-- `task.json` `{ "check": "<command>" }`, run in the workspace after the agent finishes; exit 0 passes.
+- `task.json` `{ "check": "<command>" }`, run in the workspace after the agent finishes; exit 0 passes; a failing check's output tail is kept as `checkOutput` in report.json, and every run keeps the parent's last message (or provider error) as `finalText`.
 - `check.*` hidden test files, copied into the workspace only after the agent finishes.
-- `fake/` files the `--fake` model writes (the reference solution).
+- `fake/` files the `--fake` model writes (the reference solution): only the files that change, nested paths allowed (`fake/src/a.ts` overwrites `src/a.ts`).
 
 ## Add a preset
 
