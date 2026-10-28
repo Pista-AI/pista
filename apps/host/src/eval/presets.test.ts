@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceDiff } from "./diff.ts";
-import { addResult, childEnv, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -109,13 +109,18 @@ test("a fake run records the diff, and a judged one records the reviewer score a
 });
 
 test("the reviewer reply is parsed from plain JSON or JSON inside prose; anything else is an error", () => {
-  const body = { spec: { score: 5, reason: "a" }, minimal: { score: 4, reason: "b" }, readable: { score: 3, reason: "c" }, safe: { score: 4, reason: "d" } };
+  const body = { spec: { score: 5, reason: "a" }, minimal: { score: 4, reason: "b" }, readable: { score: 3, reason: "c" }, safe: { score: 4, reason: "d" }, structure: { score: 4, reason: "e" } };
   const ok = parseJudge(JSON.stringify(body));
-  assert.ok("quality" in ok && ok.quality.mean === 4 && ok.quality.notes.includes("spec: a"));
+  assert.ok("quality" in ok && ok.quality.mean === 4 && ok.quality.structure === 4 && ok.quality.notes.includes("spec: a") && ok.quality.notes.includes("structure: e"));
   const wrapped = parseJudge(`Sure! Here is my review:\n\`\`\`json\n${JSON.stringify(body)}\n\`\`\`\nHope that helps {really}.`);
   assert.ok("quality" in wrapped && wrapped.quality.safe === 4);
   assert.ok("error" in parseJudge("no json here"));
   assert.ok("error" in parseJudge('{"spec":{"score":9,"reason":"x"}}'));
+});
+
+test("a reviewer reply without the structure score is rejected", () => {
+  const body = { spec: { score: 5, reason: "a" }, minimal: { score: 4, reason: "b" }, readable: { score: 3, reason: "c" }, safe: { score: 4, reason: "d" } };
+  assert.ok("error" in parseJudge(JSON.stringify(body)));
 });
 
 test("the diff has relative paths for modified, added and deleted files and skips harness dirs", async () => {
@@ -141,10 +146,27 @@ test("the diff has relative paths for modified, added and deleted files and skip
   }
 });
 
-test("the reviewer prompt holds the task and diff only, and notes truncation", () => {
-  const p = judgePrompt("Fix the bug", "diff --git a/x b/x\n+y\n");
+test("the reviewer prompt holds the task, diff and fixture paths, and notes truncation", () => {
+  const p = judgePrompt("Fix the bug", "diff --git a/x b/x\n+y\n", ["src/a.ts", "src/b.ts"]);
   assert.ok(p.includes("Fix the bug") && p.includes("+y") && !p.includes("cut off"));
+  assert.ok(p.includes("Repo files before the change (paths only):\nsrc/a.ts\nsrc/b.ts"));
+  assert.ok(!judgePrompt("Fix the bug", "d").includes("Repo files"));
   assert.match(judgePrompt("t", "d\n[diff truncated]\n"), /cut off/);
+});
+
+test("fixture paths are listed relative, sorted, skip harness dirs and are capped", () => {
+  const dir = mkdtempSync(join(tmpdir(), "paths-test-"));
+  try {
+    for (const f of ["z.ts", "src/b.ts", "src/a.ts", "node_modules/x/i.js", ".pista/verify.json", ".git/HEAD"]) {
+      mkdirSync(join(dir, f, ".."), { recursive: true });
+      writeFileSync(join(dir, f), "x");
+    }
+    assert.deepEqual(fixturePaths(dir), ["src/a.ts", "src/b.ts", "z.ts"]);
+    assert.deepEqual(fixturePaths(dir, 2), ["src/a.ts", "src/b.ts", "... (1 more)"]);
+    assert.deepEqual(fixturePaths(join(dir, "missing")), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("reviewer cost counts toward the total (and so the cap) but not the run's cost", () => {
@@ -156,7 +178,7 @@ test("reviewer cost counts toward the total (and so the cap) but not the run's c
 });
 
 test("the reviewer reply may hold stray braces before the real JSON", () => {
-  const body = { spec: { score: 2, reason: "a" }, minimal: { score: 2, reason: "b" }, readable: { score: 2, reason: "c" }, safe: { score: 2, reason: "d" } };
+  const body = { spec: { score: 2, reason: "a" }, minimal: { score: 2, reason: "b" }, readable: { score: 2, reason: "c" }, safe: { score: 2, reason: "d" }, structure: { score: 2, reason: "e" } };
   const r = parseJudge(`I looked at {the diff}. ${JSON.stringify(body)}`);
   assert.ok("quality" in r && r.quality.mean === 2);
 });
