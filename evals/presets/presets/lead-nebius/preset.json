@@ -1,0 +1,13 @@
+{
+  "description": "Lead mode on Nebius: the parent keeps every tool and delegates exploration and large changes to agents, while it may still read and edit small things itself; explorer and implementer run on the cheap tier (DeepSeek V4 Flash, low thinking); 150-call loop-guard cap for the parent and explorers (the default 60 stopped them on explore-large); verify gate after edits. Needs HostConfig.orchestratorMode (host PR orchestrator-mode).",
+  "config": {
+    "maxToolCalls": 150,
+    "orchestratorMode": "lead",
+    "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
+    "agentOverrides": {
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
+      "implementer": { "model": "tier:cheap", "thinking": "low" }
+    }
+  },
+  "verify": { "commands": ["node --test"] }
+}
