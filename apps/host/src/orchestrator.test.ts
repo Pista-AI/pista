@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { orchestratorTools } from "./roles.ts";
 import { fauxModels, liveOf as liveMap, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("orchestrator");
@@ -8,10 +9,11 @@ const { manager, store, project } = await makeManager({ projectDir, models });
 store.patchConfig({ defaultModel: ref });
 
 type Live = { session: { messages: { role: string; content?: unknown }[]; getActiveToolNames(): string[]; prompt(text: string): Promise<void> } };
+const kindOf = (id: string) => (manager as unknown as { children: { kindOf(id: string): { restricted: boolean; isChild: boolean; orchestratorTools?: string[]; orchestratorMode?: string } } }).children.kindOf(id);
 const liveOf = () => liveMap<Live>(manager);
 
 /** A new top-level thread under the given mode; the mode is read when the session is built. */
-async function newThread(mode?: "off" | "delegate" | "delegate-read") {
+async function newThread(mode?: "off" | "delegate" | "delegate-read" | "lead") {
   store.patchConfig({ orchestratorMode: mode });
   return (await manager.create(project.id)).summary.id;
 }
@@ -108,6 +110,32 @@ test("only top-level orchestrator threads get the orchestrator prompt section", 
   assert.match(reader, /## Orchestrator mode\nYou can read files but not edit/);
   assert.match(reader, /Before you end, read the changed lines/);
   assert.doesNotMatch(promptOf(delegate), /Before you end, read the changed lines/);
-  assert.doesNotMatch(promptOf(await newThread("off")), /Orchestrator mode/);
+  const lead = await newThread("lead");
+  assert.match(promptOf(lead), /## Lead mode\nMake small edits yourself\. Delegate exploration/);
+  assert.doesNotMatch(promptOf(lead), /Orchestrator mode/);
+  const leadChild = await manager.spawnChild(lead, { role: "implementer" });
+  await manager.continueChild(leadChild);
+  assert.doesNotMatch(promptOf(leadChild), /Lead mode|Orchestrator mode/);
+  assert.doesNotMatch(promptOf(await newThread("off")), /Orchestrator mode|Lead mode/);
   assert.doesNotMatch(promptOf(await newThread()), /Orchestrator mode/);
+});
+
+test("lead: the parent keeps every tool and the agent tool, with no orchestrator allowlist or gate", async () => {
+  assert.equal(orchestratorTools("lead"), undefined);
+  const id = await newThread("lead");
+  const kind = kindOf(id);
+  assert.equal(kind.restricted, false);
+  assert.equal(kind.orchestratorTools, undefined);
+  assert.equal(kind.orchestratorMode, "lead");
+  const sent = await sentTools(id, [piAi.fauxAssistantMessage("done")]);
+  for (const tool of ["agent", "bash", "edit", "plan", "read", "write"]) assert.ok(sent.includes(tool), tool);
+  const { session } = liveOf().get(id)! as unknown as { session: { extensionRunner: { emitToolCall(e: never): Promise<{ block?: boolean } | undefined> } } };
+  for (const toolName of ["bash", "edit", "write", "read"]) assert.doesNotMatch(String(((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: toolName, toolName, input: {} } as never)) as { reason?: string } | undefined)?.reason ?? ""), /orchestrator mode only allows/, toolName);
+});
+
+test("lead: a child has no orchestrator mode in its kind", async () => {
+  const id = await newThread("lead");
+  const childId = await manager.spawnChild(id, { role: "implementer" });
+  assert.equal(kindOf(childId).orchestratorMode, undefined);
+  assert.equal(kindOf(id).isChild, false);
 });

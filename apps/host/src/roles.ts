@@ -138,6 +138,13 @@ export function orchestratorGateExtension(allowed: readonly string[]): InlineExt
 
 /** System-prompt section for an orchestrator top-level thread; children never get it. */
 export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string {
+  if (mode === "lead") {
+    return [
+      "## Lead mode",
+      "Make small edits yourself. Delegate exploration and large or parallel changes to sub-agents with the `agent` tool.",
+      "In a brief, give the goal, the files and the existing helpers to reuse (file and export), not finished code.",
+    ].join("\n");
+  }
   return [
     "## Orchestrator mode",
     mode === "delegate-read"

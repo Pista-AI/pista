@@ -397,9 +397,9 @@ export interface HostConfig {
   defaultThinkingMode: ThinkingMode;
   /**
    * Limits the top-level thread's own tools so it must delegate through the `agent` tool. `"delegate"` leaves it
-   * `agent` and `plan`; `"delegate-read"` adds the read-only tools. Sub-agents keep their role's tools. Absent is `"off"`.
+   * `agent` and `plan`; `"delegate-read"` adds the read-only tools. `"lead"` keeps every tool and only adds a prompt section telling it to delegate exploration and large work. Sub-agents keep their role's tools. Absent is `"off"`.
    */
-  orchestratorMode?: "off" | "delegate" | "delegate-read";
+  orchestratorMode?: "off" | "delegate" | "delegate-read" | "lead";
   /** Extra system-prompt text appended for every thread. */
   instructions: string;
   linkTarget: LinkTarget;

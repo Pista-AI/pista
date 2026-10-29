@@ -119,7 +119,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
 const ENUMS: Partial<Record<keyof HostConfig, readonly string[]>> = {
   approvalMode: ["full-access", "ask-writes", "read-only"],
   linkTarget: ["builtin", "home", "external"],
-  orchestratorMode: ["off", "delegate", "delegate-read"],
+  orchestratorMode: ["off", "delegate", "delegate-read", "lead"],
   defaultThinkingMode: ["auto", "off", "minimal", "low", "medium", "high", "xhigh"],
 };
 const ROLES = ["explorer", "implementer", "reviewer"];
