@@ -417,7 +417,7 @@ export const parseResult = (out: string): RunResult | undefined => {
 
 /** Runs every preset x task x run sequentially, each in a child process with fresh state. Never reads the user's PISTA_HOME. */
 /** Names never copied out of a run's state dirs, even if they sit beside session files. */
-const SECRET_NAME = /auth|credential|models|token|secret|\.env/i;
+const SECRET_NAME = /^(auth|credentials?|models?|models-store|\.env)(\.|-|$)/i;
 
 /** Copy only `*.jsonl` session files (keeping their layout) from the run's `home` and `agent` dirs; returns how many. */
 function copySessions(dir: string, dest: string): number {
