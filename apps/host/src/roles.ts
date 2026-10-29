@@ -14,7 +14,7 @@ export const ROLES: Record<BuiltinAgentRoleName, AgentRole> & RoleMap = {
   explorer: {
     name: "explorer",
     tools: READ_ONLY_TOOLS,
-    description: "Read-only research: reads, greps and lists files, then reports what it found.",
+    description: "Read-only research: reads, greps and lists files, then reports what it found, including existing helpers (file and export) that already do part of the job.",
   },
   implementer: {
     name: "implementer",
@@ -143,10 +143,13 @@ export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string
     mode === "delegate-read"
       ? "You can read files but not edit them or run commands; sub-agents make changes through the `agent` tool and you get their reports."
       : "You cannot read or edit files yourself; sub-agents do the work through the `agent` tool and you get their reports.",
-    "For a change: send an explorer to locate it, then an implementer with the explorer's findings (exact files, what to change, what must not change). An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
+    "For a change: send an explorer to locate it, then an implementer with the explorer's findings (exact files, what to change, what must not change, and the existing helpers to reuse by file and export instead of writing new code; if the report does not say, ask the explorer \"is there an existing helper for X?\"). An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
     "If a report is incomplete or a check failed, send a follow-up with continueId.",
     ...(mode === "delegate-read"
-      ? ["Before you end, read the changed lines and compare them with the request (names, scope, what must not change); if they differ, send the implementer a follow-up."]
+      ? [
+          "Rely on the explorer's report: do not re-read files it covered. Read a file yourself only to resolve a concrete gap or contradiction in a report, and keep it targeted (grep or a line range, not the whole file).",
+          "Before you end, read the changed lines and compare them with the request (names, scope, what must not change); if they differ, send the implementer a follow-up.",
+        ]
       : []),
   ].join("\n");
 }

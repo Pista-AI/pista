@@ -107,7 +107,10 @@ test("only top-level orchestrator threads get the orchestrator prompt section", 
   const reader = promptOf(await newThread("delegate-read"));
   assert.match(reader, /## Orchestrator mode\nYou can read files but not edit/);
   assert.match(reader, /Before you end, read the changed lines/);
+  assert.match(reader, /do not re-read files it covered/);
+  assert.match(reader, /existing helpers to reuse by file and export/);
   assert.doesNotMatch(promptOf(delegate), /Before you end, read the changed lines/);
+  assert.doesNotMatch(promptOf(delegate), /do not re-read files it covered/);
   assert.doesNotMatch(promptOf(await newThread("off")), /Orchestrator mode/);
   assert.doesNotMatch(promptOf(await newThread()), /Orchestrator mode/);
 });
