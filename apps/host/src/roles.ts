@@ -19,7 +19,7 @@ export const ROLES: Record<BuiltinAgentRoleName, AgentRole> & RoleMap = {
   implementer: {
     name: "implementer",
     tools: [],
-    description: "Makes changes: full tool set, same approvals as the parent.",
+    description: "Makes changes: full tool set, same approvals as the parent. If the brief names an existing helper, use it rather than re-implementing it.",
   },
   // Read-only for now; narrowing bash to a few git subcommands is not reliable through a name-level gate.
   reviewer: {
@@ -143,7 +143,7 @@ export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string
     mode === "delegate-read"
       ? "You can read files but not edit them or run commands; sub-agents make changes through the `agent` tool and you get their reports."
       : "You cannot read or edit files yourself; sub-agents do the work through the `agent` tool and you get their reports.",
-    "For a change: send an explorer to locate it, then an implementer with the explorer's findings (exact files, what to change, what must not change, and the existing helpers to reuse by file and export instead of writing new code; if the report does not say, ask the explorer \"is there an existing helper for X?\"). An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
+    "For a change: send an explorer to locate it, then an implementer. The brief states the goal, the exact files to change, the behaviour required, what must not change, and the existing helpers to reuse (file and export); if the explorer's report names a helper that does all or part of the job, the brief says \"reuse X from Y\" or says in one line why not, and if the report does not say, ask the explorer \"is there an existing helper for X?\". A brief never contains finished code or a full implementation to paste, at most a signature or a one-line call to a helper: writing the code is the implementer's job. An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
     "If a report is incomplete or a check failed, send a follow-up with continueId.",
     ...(mode === "delegate-read"
       ? [

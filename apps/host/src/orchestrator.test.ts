@@ -108,7 +108,11 @@ test("only top-level orchestrator threads get the orchestrator prompt section", 
   assert.match(reader, /## Orchestrator mode\nYou can read files but not edit/);
   assert.match(reader, /Before you end, read the changed lines/);
   assert.match(reader, /do not re-read files it covered/);
-  assert.match(reader, /existing helpers to reuse by file and export/);
+  for (const p of [reader, promptOf(delegate)]) {
+    assert.match(p, /existing helpers to reuse \(file and export\)/);
+    assert.match(p, /"reuse X from Y" or says in one line why not/);
+    assert.match(p, /never contains finished code or a full implementation to paste/);
+  }
   assert.doesNotMatch(promptOf(delegate), /Before you end, read the changed lines/);
   assert.doesNotMatch(promptOf(delegate), /do not re-read files it covered/);
   assert.doesNotMatch(promptOf(await newThread("off")), /Orchestrator mode/);
