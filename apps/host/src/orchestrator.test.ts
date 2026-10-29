@@ -9,7 +9,6 @@ const { manager, store, project } = await makeManager({ projectDir, models });
 store.patchConfig({ defaultModel: ref });
 
 type Live = { session: { messages: { role: string; content?: unknown }[]; getActiveToolNames(): string[]; prompt(text: string): Promise<void> } };
-const kindOf = (id: string) => (manager as unknown as { children: { kindOf(id: string): { restricted: boolean; isChild: boolean; orchestratorTools?: string[]; orchestratorMode?: string } } }).children.kindOf(id);
 const liveOf = () => liveMap<Live>(manager);
 
 /** A new top-level thread under the given mode; the mode is read when the session is built. */
@@ -120,22 +119,8 @@ test("only top-level orchestrator threads get the orchestrator prompt section", 
   assert.doesNotMatch(promptOf(await newThread()), /Orchestrator mode/);
 });
 
-test("lead: the parent keeps every tool and the agent tool, with no orchestrator allowlist or gate", async () => {
+test("lead: the parent is sent every tool", async () => {
   assert.equal(orchestratorTools("lead"), undefined);
-  const id = await newThread("lead");
-  const kind = kindOf(id);
-  assert.equal(kind.restricted, false);
-  assert.equal(kind.orchestratorTools, undefined);
-  assert.equal(kind.orchestratorMode, "lead");
-  const sent = await sentTools(id, [piAi.fauxAssistantMessage("done")]);
+  const sent = await sentTools(await newThread("lead"), [piAi.fauxAssistantMessage("done")]);
   for (const tool of ["agent", "bash", "edit", "plan", "read", "write"]) assert.ok(sent.includes(tool), tool);
-  const { session } = liveOf().get(id)! as unknown as { session: { extensionRunner: { emitToolCall(e: never): Promise<{ block?: boolean } | undefined> } } };
-  for (const toolName of ["bash", "edit", "write", "read"]) assert.doesNotMatch(String(((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: toolName, toolName, input: {} } as never)) as { reason?: string } | undefined)?.reason ?? ""), /orchestrator mode only allows/, toolName);
-});
-
-test("lead: a child has no orchestrator mode in its kind", async () => {
-  const id = await newThread("lead");
-  const childId = await manager.spawnChild(id, { role: "implementer" });
-  assert.equal(kindOf(childId).orchestratorMode, undefined);
-  assert.equal(kindOf(id).isChild, false);
 });

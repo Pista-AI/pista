@@ -58,3 +58,34 @@ test("kindOf and parentOf read threadMeta, then the loaded or indexed summary", 
   assert.deepEqual(children.kindOf("indexed"), { role: undefined, restricted: false, isChild: true });
   assert.equal(children.parentOf("indexed"), "p");
 });
+
+test("lead keeps a top-level thread unrestricted and ungated; delegate-read gates it; children never get the mode", async () => {
+  const { summary: parent } = await manager.create(project.id);
+  const childId = await manager.spawnChild(parent.id, { role: "implementer" });
+  const children = new Children(store, {
+    ensure: async () => {
+      throw new Error("not used");
+    },
+    load: async () => {
+      throw new Error("not used");
+    },
+    summary: () => undefined,
+    summaries: () => [],
+  });
+  try {
+    store.patchConfig({ orchestratorMode: "lead" });
+    const lead = children.kindOf(parent.id);
+    assert.deepEqual(lead, { role: undefined, restricted: false, isChild: false, orchestratorMode: "lead" });
+    const leadNames = names(extensionsFor(lead, deps));
+    assert.ok(!leadNames.includes("orchestrator-gate"));
+    assert.ok(leadNames.includes("browser") && leadNames.includes("agent-tool"));
+    assert.equal(children.kindOf(childId).orchestratorMode, undefined);
+
+    store.patchConfig({ orchestratorMode: "delegate-read" });
+    const reader = children.kindOf(parent.id);
+    assert.equal(reader.restricted, true);
+    assert.ok(names(extensionsFor(reader, deps)).includes("orchestrator-gate"));
+  } finally {
+    store.patchConfig({ orchestratorMode: undefined });
+  }
+});
