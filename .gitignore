@@ -23,4 +23,4 @@ apps/desktop/release
 auth.json
 *.gguf
 *.onnx
-evals/presets/results/
+**/evals/presets/results/
