@@ -296,3 +296,11 @@ test("a signal that aborts while the child is being spawned never dispatches the
   assert.ok(result.details.childThreadId, "the spawned child is still reported");
   assert.equal(prompted, false);
 });
+
+test("agent tool description carries the brief guidance", async () => {
+  const { describe } = await import("./subagent.ts");
+  const { ROLES } = await import("./roles.ts");
+  const text = describe(Object.values(ROLES));
+  assert.match(text, /existing helpers to reuse/);
+  assert.match(text, /do not write the finished code/);
+});

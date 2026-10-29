@@ -14,7 +14,7 @@ export const ROLES: Record<BuiltinAgentRoleName, AgentRole> & RoleMap = {
   explorer: {
     name: "explorer",
     tools: READ_ONLY_TOOLS,
-    description: "Read-only research: reads, greps and lists files, then reports what it found.",
+    description: "Read-only research: reads, greps and lists files, then reports what it found, including existing helpers that fit the task (file and export).",
   },
   implementer: {
     name: "implementer",
