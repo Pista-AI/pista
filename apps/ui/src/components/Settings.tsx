@@ -50,7 +50,7 @@ function useDraft<T>(value: T | undefined) {
 
 // Mirrors ROLES in apps/host/src/roles.ts (descriptions only; the host owns tools and defaults).
 const ROLE_DESCRIPTIONS: Record<BuiltinAgentRoleName, string> = {
-  explorer: "Read-only research: reads, greps and lists files, then reports what it found.",
+  explorer: "Read-only research: reads, greps and lists files, then reports what it found, including existing helpers that fit the task (file and export).",
   implementer: "Makes changes: full tool set, same approvals as the parent.",
   reviewer: "Read-only review of files and changes, reports findings.",
 };
