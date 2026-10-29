@@ -12,7 +12,7 @@ pnpm eval:presets --fake --presets solo,routed --tasks '*' --runs 1
 pnpm eval:presets --presets solo,routed --tasks 'fix-*' --runs 3 --max-usd 2 --model anthropic/claude-sonnet-4-5
 ```
 
-Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd X`, `--model provider/id`, `--judge provider/id`, `--run-timeout SEC`, `--fake`, `--out DIR` (default `evals/presets/results/<timestamp>/`, git-ignored). Output: `report.json` (every run plus summary) and `report.md` (the table, including mean `agent` tool calls per run and the verify gate's pass/fail/skip counts). The gate runs only after a sub-agent that edited files (the `implementer` role), so read-only explorer delegation leaves it at 0/0/0. Node >= 22.18 is needed to run the `.ts` fixtures.
+Options: `--presets a,b`, `--tasks name,name|prefix*|*`, `--runs N`, `--max-usd X`, `--model provider/id`, `--judge provider/id`, `--run-timeout SEC`, `--fake`, `--no-sessions`, `--out DIR` (default `evals/presets/results/<timestamp>/`, git-ignored). Output: `report.json` (every run plus summary) and `report.md` (the table, including mean `agent` tool calls per run and the verify gate's pass/fail/skip counts). The gate runs only after a sub-agent that edited files (the `implementer` role), so read-only explorer delegation leaves it at 0/0/0. Each run's Pi session transcripts (parent and sub-agents; only `*.jsonl` files from its `home` and `agent` dirs, never auth, credentials or models files) are copied to `<out>/sessions/<preset>/<task>-<run>/` and referenced as `sessionsDir` in report.json; `--no-sessions` skips this. Node >= 22.18 is needed to run the `.ts` fixtures.
 
 ## Quality: diff and blind reviewer
 

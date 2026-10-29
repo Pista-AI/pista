@@ -2,7 +2,7 @@
 // fragments ("presets") and reports pass rate, cost, tokens and time. Everything happens in temp copies.
 // This file never imports the host. Each run executes in its own child process (run-one.ts) with a fresh
 // PISTA_HOME, Pi agent dir and memory dir, because the host reads those at import time.
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,8 @@ export interface RunResult {
   error?: string;
   /** Loop-guard stops (parent or sub-agent), e.g. the same failing tool call four times in a row; absent when none. */
   guardStops?: string[];
+  /** Where the run's Pi session JSONL files were copied, relative to the output dir; absent with --no-sessions or when none were found. */
+  sessionsDir?: string;
   /** Unified diff of the workspace against the fixture (no `.pista/`, `node_modules/`, `.git/`), truncated to DIFF_CHARS. */
   diff?: string;
   diffStats: DiffStats;
@@ -196,6 +198,8 @@ export interface EvalOptions {
   /** Per-run wall-clock limit (default 10 min). The thread is aborted and the run recorded with error "timeout". */
   runTimeoutSec?: number;
   fake?: boolean;
+  /** Absolute output dir; when set, each run's Pi session files are copied to `<outDir>/sessions/<preset>/<task>-<run>/` before the scratch dir is removed. */
+  outDir?: string;
   /** Test only: the fake model never answers, so the run must time out. */
   fakeHang?: boolean;
   /** Called after each run (progress output). */
@@ -412,6 +416,28 @@ export const parseResult = (out: string): RunResult | undefined => {
 };
 
 /** Runs every preset x task x run sequentially, each in a child process with fresh state. Never reads the user's PISTA_HOME. */
+/** Names never copied out of a run's state dirs, even if they sit beside session files. */
+const SECRET_NAME = /^(auth|credentials?|models?|models-store|\.env)(\.|-|$)/i;
+
+/** Copy only `*.jsonl` session files (keeping their layout) from the run's `home` and `agent` dirs; returns how many. */
+function copySessions(dir: string, dest: string): number {
+  let n = 0;
+  const walk = (src: string, rel: string) => {
+    for (const name of readdirSync(src)) {
+      if (SECRET_NAME.test(name)) continue;
+      const from = join(src, name);
+      if (statSync(from).isDirectory()) walk(from, join(rel, name));
+      else if (name.endsWith(".jsonl")) {
+        mkdirSync(join(dest, rel), { recursive: true });
+        cpSync(from, join(dest, rel, name));
+        n++;
+      }
+    }
+  };
+  for (const d of ["home", "agent"]) if (existsSync(join(dir, d))) walk(join(dir, d), d);
+  return n;
+}
+
 export async function runEval(opts: EvalOptions): Promise<EvalReport> {
   needNumber("--runs", opts.runs, { int: true });
   needNumber("--max-usd", opts.maxUsd);
@@ -450,6 +476,7 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
     scratch,
   });
 
+  let warnedSessions = false;
   const report: EvalReport = { generatedAt: new Date().toISOString(), fake: !!opts.fake, maxUsd: opts.maxUsd, judged: opts.judge !== undefined, totalCostUsd: 0, results: [], summary: [] };
   try {
     if (!opts.fake) {
@@ -487,6 +514,15 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
           };
           result.run = run;
           addResult(report, result);
+          if (opts.outDir) {
+            const rel = join("sessions", preset.name, `${task.name}-${run}`);
+            try {
+              if (copySessions(dir, join(opts.outDir, rel)) > 0) result.sessionsDir = rel;
+            } catch (e) {
+              if (!warnedSessions) console.error(`warning: could not copy session files: ${(e as Error).message}`);
+              warnedSessions = true;
+            }
+          }
           opts.onRun?.(result);
           rmSync(dir, { recursive: true, force: true });
         }

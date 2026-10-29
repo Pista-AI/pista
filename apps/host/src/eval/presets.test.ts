@@ -184,3 +184,19 @@ test("the reviewer reply may hold stray braces before the real JSON", () => {
   const r = parseJudge(`I looked at {the diff}. ${JSON.stringify(body)}`);
   assert.ok("quality" in r && r.quality.mean === 2);
 });
+
+test("session files are kept under <outDir>/sessions by default and skipped without outDir", async () => {
+  const out = mkdtempSync(join(tmpdir(), "pista-eval-out-"));
+  try {
+    const kept = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true, outDir: out });
+    const rel = kept.results[0]!.sessionsDir!;
+    assert.equal(rel, join("sessions", "solo", "fix-slugify-1"));
+    const files = (readdirSync(join(out, rel), { recursive: true }) as string[]).filter((f) => f.endsWith(".jsonl"));
+    assert.ok(files.length >= 1);
+    assert.ok(!(readdirSync(join(out, rel), { recursive: true }) as string[]).some((f) => /auth|models/.test(f)));
+    const skipped = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true });
+    assert.equal(skipped.results[0]!.sessionsDir, undefined);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});

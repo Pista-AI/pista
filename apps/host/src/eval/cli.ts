@@ -19,6 +19,7 @@ const { values } = parseArgs({
     judge: { type: "string" },
     fake: { type: "boolean", default: false },
     out: { type: "string" },
+    "no-sessions": { type: "boolean", default: false },
   },
 });
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
@@ -29,7 +30,9 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 }
 const num = (v: string | undefined) => (v === undefined ? undefined : Number(v));
 const root = resolve(fileURLToPath(new URL("../../../../evals/presets", import.meta.url)));
+const out = resolve(values.out ?? join(root, "results", new Date().toISOString().replace(/[:.]/g, "-")));
 const report = await runEval({
+  outDir: values["no-sessions"] ? undefined : out,
   presetsDir: join(root, "presets"),
   tasksDir: join(root, "tasks"),
   presets: values.presets!.split(",").map((s) => s.trim()).filter(Boolean),
@@ -45,7 +48,6 @@ const report = await runEval({
   console.error(error.message);
   process.exit(2);
 });
-const out = resolve(values.out ?? join(root, "results", new Date().toISOString().replace(/[:.]/g, "-")));
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2));
 writeFileSync(join(out, "report.md"), toMarkdown(report));
