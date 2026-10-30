@@ -261,13 +261,13 @@ export function createAgentRunner(opts: AgentToolOptions) {
   };
 }
 
-const describe = (roles: AgentRole[]) => [
+export const describe = (roles: AgentRole[]) => [
   "Delegate a scoped task to a sub-agent that runs in its own thread and returns only its final message.",
   `Roles: ${roles
     .map((r) => `${r.name} (${r.description})`)
     .join(" ")}`,
-  "The sub-agent sees nothing of this conversation, only the brief: state the goal, the scope (files or areas, and what is off limits), the facts it needs, how to tell it is done, and ask for a short report.",
-  "Use it to keep exploration and large changes out of your own context, and to run independent tasks in parallel (at most 3 at once). Do not use it for a step you can do in one or two tool calls.",
+  "The sub-agent sees nothing of this conversation, only the brief. A brief states the goal, the exact files to touch, the required behaviour, what must not change, and the existing helpers to reuse (file and export name), and asks for a short report. Describe the change; do not write the finished code into the brief.",
+  "Delegate when the work is large or would bloat your context (wide exploration, changes across many files), or to run independent tasks in parallel (at most 3 at once). Do not use it for a step you can do in a few tool calls.",
   "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time.",
   "Set continueId to a thread id from an earlier result to send a follow-up to that sub-agent, which keeps its context.",
   "Give a short reason for each delegation: it is shown to the user in the decision log.",
@@ -292,7 +292,7 @@ export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
                 { description: "Required for a new sub-agent (ignored with continueId, which keeps its own role). explorer and reviewer are read-only; implementer can change files" },
               ),
             ),
-            brief: Type.String({ description: "The complete task: goal, scope, context, acceptance, and the report format you want back" }),
+            brief: Type.String({ description: "The complete task: goal, exact files, required behaviour, what must not change, existing helpers to reuse (file and export), and the report format you want back. Describe the change; do not write the finished code." }),
             continueId: Type.Optional(Type.String({ description: "Thread id of an earlier sub-agent to send this brief to as a follow-up instead of starting a new one" })),
             reason: Type.Optional(Type.String({ description: "One sentence on why you are delegating this (the why, not the what), e.g. 'Reading the whole module would flood my context, so an explorer summarises it.'" })),
           }),
