@@ -5,7 +5,7 @@ import {
   type InlineExtension,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentRoleName, ModelRef, ThinkingMode, ThreadSummary } from "@pista/protocol";
+import type { AgentRoleName, HostConfig, ModelRef, ThinkingMode, ThreadSummary } from "@pista/protocol";
 import type { ConfigStore } from "./config.ts";
 import { contextPruneExtension } from "./context-prune.ts";
 import { browsingTurnsExtension } from "./browsing-turns.ts";
@@ -30,6 +30,8 @@ export interface ThreadKind {
   isChild: boolean;
   /** Tools of an orchestrator top-level thread (see `HostConfig.orchestratorMode`); absent otherwise. */
   orchestratorTools?: string[];
+  /** Orchestrator mode of a top-level thread (not "off"); picks its prompt section. Absent for children and when off. */
+  orchestratorMode?: NonNullable<HostConfig["orchestratorMode"]>;
 }
 
 export interface ExtensionDeps {
@@ -121,7 +123,14 @@ export class Children {
     const role = this.store.getThreadMeta(threadId)?.role;
     const isChild = this.isChildThread(threadId);
     const orchestrator = isChild ? undefined : orchestratorTools(this.store.config.orchestratorMode);
-    return { role, restricted: orchestrator !== undefined || (role !== undefined && isRestrictedRole(role, roles)), isChild, ...(orchestrator ? { orchestratorTools: orchestrator } : {}) };
+    const mode = isChild ? undefined : this.store.config.orchestratorMode;
+    return {
+      role,
+      restricted: orchestrator !== undefined || (role !== undefined && isRestrictedRole(role, roles)),
+      isChild,
+      ...(orchestrator ? { orchestratorTools: orchestrator } : {}),
+      ...(mode && mode !== "off" ? { orchestratorMode: mode } : {}),
+    };
   }
 
   childIds(parentId: string): string[] {
