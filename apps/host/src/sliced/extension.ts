@@ -18,6 +18,8 @@ export interface SlicedDeps {
 /** Times the harness reminds the parent to call `slices` before it lets the run continue solo. */
 const MAX_NUDGES = 2;
 const TERMINAL: SliceStatus[] = ["done", "failed", "skipped"];
+const MESSAGE_TYPE = "pista.sliced";
+// No notion of read-only web, browser or MCP tools exists in the role gate, so only the built-in read-only tools pass in the plan phase.
 const PLAN_TOOLS = ["slices", "plan", ...READ_ONLY_TOOLS];
 
 const emptyBoard = (): SliceBoard => ({ slices: [], fitsSolo: false, reason: "", phase: "plan", status: {}, nudges: 0 });
@@ -37,7 +39,9 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
         pi.appendEntry(ENTRY.slices, next);
       };
       const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-      const note = (content: string) => pi.sendMessage({ customType: "pista.sliced", content, display: false }, { deliverAs: "steer" });
+      // Set by the gate when the model tried a tool the plan phase blocks during this run.
+      let blockedThisRun = false;
+      const note = (content: string) => pi.sendMessage({ customType: MESSAGE_TYPE, content, display: false }, { deliverAs: "steer" });
 
       pi.registerTool(
         defineTool({
@@ -69,9 +73,9 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
               save({ ...next, phase: "solo" });
               return text(`Proceed solo: ${decision.reason}. Board:\n${renderBoard(next)}`);
             }
-            // TODO(step 3): run `decision.waves` with implementer children. Until then nothing is dispatched, so the slices are
-            // marked skipped (a later user message may start a new board) and the gate is lifted.
-            save({ ...next, phase: "dispatch", status: Object.fromEntries(checked.slices.map((s) => [s.id, "skipped" as const])) });
+            // TODO(step 3): run `decision.waves` with implementer children and set phase "dispatch". Until then nothing is
+            // dispatched: the parent continues solo and the slices are marked skipped.
+            save({ ...next, phase: "solo", status: Object.fromEntries(checked.slices.map((s) => [s.id, "skipped" as const])) });
             return text("Dispatch not yet wired in this build; proceed solo.");
           },
         }),
@@ -80,6 +84,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
       // A new user message starts a new board unless the previous one still has unfinished slices.
       pi.on("before_agent_start", (event) => {
         if (event.messageType !== "user") return;
+        blockedThisRun = false;
         const b = current();
         if (b.phase !== "solo" && b.phase !== "done" && !Object.values(b.status).every((s) => TERMINAL.includes(s))) return;
         const pristine = b.phase === "plan" && b.slices.length === 0 && b.nudges === 0;
@@ -89,27 +94,30 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
 
       pi.on("tool_call", (event) => {
         if (current().phase !== "plan" || PLAN_TOOLS.includes(event.toolName)) return undefined;
+        blockedThisRun = true;
         return { block: true, reason: `Blocked: call \`slices\` first. Until then only ${PLAN_TOOLS.join(", ")} are allowed.` };
       });
 
-      // The parent tried to end its turn without a valid slice list.
-      pi.on("agent_before_settle", () => {
+      // The parent is about to end its turn in the plan phase. A run that never tried a blocked tool was a chat answer, so the
+      // gate is lifted silently; one that did is reminded to call `slices`, at most MAX_NUDGES times, then left to run solo.
+      pi.on("agent_before_settle", (event) => {
         const b = current();
-        if (b.phase !== "plan") return undefined;
-        if (b.nudges >= MAX_NUDGES) {
+        if (event.outcome !== "completed" || b.phase !== "plan") return undefined;
+        if (!blockedThisRun || b.nudges >= MAX_NUDGES) {
           save({ ...b, phase: "solo" });
-          note("No slice list arrived; continuing without one. All tools are available.");
-        } else {
-          save({ ...b, nudges: b.nudges + 1 });
-          note("Split the request with the `slices` tool before doing anything else.");
+          return undefined;
         }
+        blockedThisRun = false;
+        save({ ...b, nudges: b.nudges + 1 });
+        note("Split the request with the `slices` tool before doing anything else.");
         return { continue: true };
       });
 
       // The board rides along at the end of every request; it is not stored in the transcript.
       pi.on("context", (event) => {
-        if (!board || board.slices.length === 0) return undefined;
-        return { messages: [...event.messages, { role: "user", content: [{ type: "text", text: `Slice board (${board.phase}):\n${renderBoard(board)}` }], timestamp: Date.now() }] };
+        const b = current();
+        if (b.slices.length === 0) return undefined;
+        return { messages: [...event.messages, { role: "user", content: [{ type: "text", text: `Slice board (${b.phase}):\n${renderBoard(b)}` }], timestamp: Date.now() }] };
       });
     },
   };

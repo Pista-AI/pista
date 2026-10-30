@@ -32,10 +32,10 @@ export function areasOverlap(a: string, b: string): boolean {
 
 const disjoint = (a: string[], b: string[]) => !a.some((p) => b.some((q) => areasOverlap(p, q)));
 
-/** Solo or dispatch, from the parent's slice list alone. One overlapping pair inside a level serialises the whole level. `repoTokens` and `window` are the repo size estimate and the parent's context window. */
+/** Solo or dispatch, from the parent's slice list alone. One overlapping pair inside a level serialises the whole level. `repoTokens` and `window` are the repo size estimate and the parent's context window; a window of 0 means unknown, so the size check never forces solo. */
 export function decide(board: SliceBoard, cfg: SlicedConfig, repoTokens: number, window: number): Decision {
   if (board.slices.length < cfg.minSlices) return { kind: "solo", reason: `fewer than ${cfg.minSlices} slices` };
-  if (board.fitsSolo && repoTokens < window * cfg.repoSizeFraction) return { kind: "solo", reason: "small task in a small repo" };
+  if (board.fitsSolo && window > 0 && repoTokens < window * cfg.repoSizeFraction) return { kind: "solo", reason: "small task in a small repo" };
   const byId = new Map(board.slices.map((s) => [s.id, s]));
   const waves: string[][] = [];
   for (const level of topoOrder(board.slices)) {

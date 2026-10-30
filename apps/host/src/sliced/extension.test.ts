@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readSliceBoard } from "../session.ts";
+import { ENTRY, readSliceBoard } from "../session.ts";
 import { fauxModels, liveOf as liveMap, makeManager, setupHome } from "../test-helpers.ts";
 
 const { projectDir } = setupHome("sliced-ext");
@@ -23,11 +23,45 @@ test("a model that never calls slices is nudged twice, then runs solo with tools
   const id = await newThread();
   assert.equal(await blocked(id, "bash"), true);
   assert.equal(await blocked(id, "read"), false);
-  faux.setResponses([piAi.fauxAssistantMessage("one"), piAi.fauxAssistantMessage("two"), piAi.fauxAssistantMessage("three"), piAi.fauxAssistantMessage("four")]);
+  const attempt = () => piAi.fauxAssistantMessage(piAi.fauxToolCall("bash", { command: "ls" }));
+  faux.setResponses([attempt(), piAi.fauxAssistantMessage("one"), attempt(), piAi.fauxAssistantMessage("two"), attempt(), piAi.fauxAssistantMessage("three")]);
   await session(id).prompt("change it");
   assert.equal(board(id)?.phase, "solo");
   assert.equal(board(id)?.nudges, 2);
   assert.equal(await blocked(id, "bash"), false);
+});
+
+test("a plain answer without tool calls lifts the gate silently", async () => {
+  const id = await newThread();
+  faux.setResponses([piAi.fauxAssistantMessage("It is a monorepo.")]);
+  await session(id).prompt("what is this?");
+  assert.equal(board(id)?.phase, "solo");
+  assert.equal(board(id)?.nudges, 0);
+  assert.equal(await blocked(id, "bash"), false);
+});
+
+test("a provider error does not nudge or change the phase", async () => {
+  const id = await newThread();
+  faux.setResponses([piAi.fauxAssistantMessage("x", { stopReason: "error", errorMessage: "boom" })]);
+  await session(id).prompt("go").catch(() => undefined);
+  assert.notEqual(board(id)?.phase, "solo");
+  assert.equal(board(id)?.nudges ?? 0, 0);
+});
+
+test("an unfinished board survives a new user message and is read back from the session", async () => {
+  const id = await newThread();
+  const pending = { slices: [{ id: "a", title: "Pending a", goal: "g", filesOrAreas: ["src/a"], acceptance: "t", dependsOn: [] }], fitsSolo: false, reason: "r", phase: "dispatch", status: { a: "running" }, nudges: 0 };
+  (session(id).sessionManager as unknown as { appendCustomEntry(t: string, d: unknown): void }).appendCustomEntry(ENTRY.slices, pending);
+  let seen = "";
+  faux.setResponses([
+    (ctx: { messages: unknown[] }) => {
+      seen = JSON.stringify(ctx.messages.at(-1));
+      return piAi.fauxAssistantMessage("ok");
+    },
+  ]);
+  await session(id).prompt("again");
+  assert.match(seen, /Pending a/);
+  assert.equal(board(id)?.status.a, "running");
 });
 
 test("an invalid list returns an error and the phase stays plan", async () => {
@@ -56,12 +90,12 @@ test("a valid list below minSlices proceeds solo and lifts the gate", async () =
   assert.equal(await blocked(id, "bash"), false);
 });
 
-test("a valid list above minSlices returns the stub text and moves to dispatch", async () => {
+test("a valid list above minSlices returns the stub text and continues solo", async () => {
   const id = await newThread();
   faux.setResponses([slicesCall([slice("a"), slice("b")]), piAi.fauxAssistantMessage("done")]);
   await session(id).prompt("go");
   assert.match(results(id)[0]!, /Dispatch not yet wired/);
-  assert.equal(board(id)?.phase, "dispatch");
+  assert.equal(board(id)?.phase, "solo");
   assert.equal(await blocked(id, "bash"), false);
 });
 
@@ -86,8 +120,8 @@ test("a new user message after the board is finished starts a new plan", async (
   faux.setResponses([slicesCall([slice("a")]), piAi.fauxAssistantMessage("done")]);
   await session(id).prompt("go");
   assert.equal(board(id)?.phase, "solo");
-  faux.setResponses([piAi.fauxAssistantMessage("x"), piAi.fauxAssistantMessage("y"), piAi.fauxAssistantMessage("z")]);
+  faux.setResponses([piAi.fauxAssistantMessage("x")]);
   await session(id).prompt("next");
   assert.equal(board(id)?.slices.length, 0);
-  assert.equal(board(id)?.nudges, 2);
+  assert.equal(board(id)?.phase, "solo");
 });
