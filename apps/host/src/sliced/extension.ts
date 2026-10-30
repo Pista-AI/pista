@@ -28,8 +28,21 @@ const TERMINAL: SliceStatus[] = ["done", "failed", "skipped"];
 const MESSAGE_TYPE = "pista.sliced";
 // No notion of read-only web, browser or MCP tools exists in the role gate, so only the built-in read-only tools pass in the plan phase.
 const PLAN_TOOLS = ["slices", "plan", ...READ_ONLY_TOOLS];
+// `agent` stays so the parent can re-dispatch a fix to an earlier child with continueId.
+const INTEGRATE_READ_ONLY_TOOLS = ["agent", "plan", ...READ_ONLY_TOOLS];
+const INTEGRATE_PROMPT = "Check the reports against the request. Report failed or skipped slices honestly. Fix small things yourself; re-dispatch larger fixes.";
+/** Times the harness asks the parent to mention failed or skipped slices in its final answer. */
+const MAX_INTEGRATE_NUDGES = 1;
 
-const emptyBoard = (): SliceBoard => ({ slices: [], fitsSolo: false, reason: "", phase: "plan", status: {}, nudges: 0 });
+const emptyBoard = (): SliceBoard => ({ slices: [], fitsSolo: false, reason: "", phase: "plan", status: {}, nudges: 0, integrateNudges: 0 });
+
+/** Text of the last assistant message, or "" when there is none. */
+function lastAssistantText(messages: { role: string; content?: unknown }[]): string {
+  const last = messages.findLast((m) => m.role === "assistant");
+  if (!last) return "";
+  if (typeof last.content === "string") return last.content;
+  return Array.isArray(last.content) ? last.content.map((c: { type?: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : "")).join("\n") : "";
+}
 
 /**
  * Sliced orchestrator mode, plan phase: the parent must call `slices` before changing anything, and the harness
@@ -74,7 +87,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
           execute: async (_id, params, signal, onUpdate, ctx) => {
             const checked = validateSlices(params.slices.map(({ files_or_areas, depends_on, ...rest }) => ({ ...rest, filesOrAreas: files_or_areas, dependsOn: depends_on })));
             if (!checked.ok) return text(`Error: ${checked.error}. Call \`slices\` again with a corrected list.`);
-            const next: SliceBoard = { slices: checked.slices, fitsSolo: params.fits_solo, reason: params.reason, phase: "plan", status: Object.fromEntries(checked.slices.map((s) => [s.id, "pending" as const])), nudges: current().nudges };
+            const next: SliceBoard = { slices: checked.slices, fitsSolo: params.fits_solo, reason: params.reason, phase: "plan", status: Object.fromEntries(checked.slices.map((s) => [s.id, "pending" as const])), nudges: current().nudges, integrateNudges: 0 };
             const decision = decide(next, resolveSlicedConfig(deps.config()), await estimateRepoTokens(deps.cwd), ctx.model?.contextWindow ?? 0);
             if (decision.kind === "solo") {
               save({ ...next, phase: "solo" });
@@ -89,10 +102,9 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
               signal,
               onUpdate: (line) => onUpdate?.({ content: [{ type: "text", text: line }], details: {} }),
             });
-            // Step 4 gates the integrate phase; until then the parent's tools are not restricted after dispatch.
             save({ ...done, phase: "integrate" });
             const reports = done.slices.map((s) => `## ${s.id} ${done.status[s.id]}\n${clip(results[s.id]?.report ?? "", REPORT_CLIP)}`);
-            return text(`Dispatch finished.\n${renderBoard(done)}\n\n${reports.join("\n\n")}`);
+            return text(`Dispatch finished.\n${renderBoard(done)}\n\n${reports.join("\n\n")}\n\n${INTEGRATE_PROMPT}`);
           },
         }),
       );
@@ -109,7 +121,12 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
       });
 
       pi.on("tool_call", (event) => {
-        if (current().phase !== "plan" || PLAN_TOOLS.includes(event.toolName)) return undefined;
+        const phase = current().phase;
+        if (phase === "integrate") {
+          if (deps.config()?.integrateTools !== "read-only" || INTEGRATE_READ_ONLY_TOOLS.includes(event.toolName)) return undefined;
+          return { block: true, reason: `Blocked: during integration only ${INTEGRATE_READ_ONLY_TOOLS.join(", ")} are allowed.` };
+        }
+        if (phase !== "plan" || PLAN_TOOLS.includes(event.toolName)) return undefined;
         blockedThisRun = true;
         return { block: true, reason: `Blocked: call \`slices\` first. Until then only ${PLAN_TOOLS.join(", ")} are allowed.` };
       });
@@ -118,7 +135,20 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
       // gate is lifted silently; one that did is reminded to call `slices`, at most MAX_NUDGES times, then left to run solo.
       pi.on("agent_before_settle", (event) => {
         const b = current();
-        if (event.outcome !== "completed" || b.phase !== "plan") return undefined;
+        if (event.outcome !== "completed") return undefined;
+        if (b.phase === "integrate") {
+          // The answer must own up to every slice that did not land; one reminder, then the board is closed either way.
+          const answer = lastAssistantText(event.context.contextMessages as { role: string; content?: unknown }[]).toLowerCase();
+          const missing = b.slices.filter((s) => (b.status[s.id] === "failed" || b.status[s.id] === "skipped") && !answer.includes(s.id.toLowerCase()) && !answer.includes(s.title.toLowerCase()));
+          if (missing.length === 0 || (b.integrateNudges ?? 0) >= MAX_INTEGRATE_NUDGES) {
+            save({ ...b, phase: "done" });
+            return undefined;
+          }
+          save({ ...b, integrateNudges: (b.integrateNudges ?? 0) + 1 });
+          note(`Your answer must mention the failed/skipped slices: ${missing.map((s) => s.id).join(", ")}`);
+          return { continue: true };
+        }
+        if (b.phase !== "plan") return undefined;
         if (!blockedThisRun || b.nudges >= MAX_NUDGES) {
           save({ ...b, phase: "solo" });
           return undefined;

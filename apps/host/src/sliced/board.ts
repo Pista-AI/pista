@@ -20,6 +20,8 @@ export interface SliceBoard {
   status: Record<string, SliceStatus>;
   /** How often the harness has had to remind the parent to call `slices`. */
   nudges: number;
+  /** How often the harness has asked the parent to mention failed or skipped slices; absent in boards saved before step 4. */
+  integrateNudges?: number;
 }
 
 const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
