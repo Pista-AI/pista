@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceDiff } from "./diff.ts";
-import { addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -196,7 +196,17 @@ test("session files are kept under <outDir>/sessions by default and skipped with
     assert.ok(!(readdirSync(join(out, rel), { recursive: true }) as string[]).some((f) => /auth|models/.test(f)));
     const skipped = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true });
     assert.equal(skipped.results[0]!.sessionsDir, undefined);
+    assert.equal(skipped.results[0]!.metrics, undefined);
+    assert.ok(kept.results[0]!.metrics);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+test("markdown shows session metrics when present and dashes when absent", () => {
+  const r: RunResult = { preset: "a", task: "t", run: 1, pass: true, seconds: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0 };
+  const metrics = { parentPeakContext: 1700, compactions: 1, childCompactions: 0, parentTokens: 3, childTokens: 1, parentShare: 0.75, agentCallsByRole: { explorer: 2 }, briefsWithCode: 1, wallClockSeconds: 9 };
+  const md = (results: RunResult[]) => toMarkdown({ generatedAt: "", fake: false, totalCostUsd: 0, results, summary: summarize(results, ["a"]) });
+  assert.match(md([{ ...r, metrics }]), /\| 1700 \| 1\.0 \| 75% \| 1\.0 \| explorer 2\.0 \|/);
+  assert.match(md([r]), /\| – \| – \| – \| – \| – \|/);
 });

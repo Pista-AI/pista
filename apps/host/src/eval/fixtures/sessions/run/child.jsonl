@@ -1,0 +1,3 @@
+{"type":"session","id":"c1","timestamp":"2026-10-30T10:00:11.000Z","parentSession":"p1"}
+{"type":"message","timestamp":"2026-10-30T10:00:20.000Z","message":{"role":"assistant","usage":{"input":400,"output":100,"cacheRead":100,"cacheWrite":0},"content":[{"type":"text","text":"found"}]}}
+{"type":"compaction","timestamp":"2026-10-30T10:00:30.000Z","summary":"s","firstKeptEntryId":"e1","tokensBefore":500}

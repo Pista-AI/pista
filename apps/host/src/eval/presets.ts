@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChatMessage } from "@pista/protocol";
 import { spawnGroup } from "../process-group.ts";
+import { sessionMetrics, type SessionMetrics } from "./session-metrics.ts";
 
 export interface Preset {
   name: string;
@@ -51,6 +52,8 @@ export interface RunResult {
   guardStops?: string[];
   /** Where the run's Pi session JSONL files were copied, relative to the output dir; absent with --no-sessions or when none were found. */
   sessionsDir?: string;
+  /** Orchestration metrics from the kept session files; absent when they were not kept. */
+  metrics?: SessionMetrics;
   /** Unified diff of the workspace against the fixture (no `.pista/`, `node_modules/`, `.git/`), truncated to DIFF_CHARS. */
   diff?: string;
   diffStats: DiffStats;
@@ -94,6 +97,8 @@ export interface Summary {
   meanDiffLines: number;
   /** Verify-gate outcomes summed over all runs (from the sub-agent results' "Verify: ..." lines). */
   verify: { passed: number; failed: number; skipped: number };
+  /** Means over the runs that have session metrics; undefined when none do. */
+  meanMetrics?: { parentPeakContext: number; compactions: number; parentShare: number; briefsWithCode: number; agentCallsByRole: Record<string, number> };
 }
 
 export function loadPreset(root: string, name: string): Preset {
@@ -293,6 +298,10 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
     const rs = results.filter((r) => r.preset === preset);
     const judged = rs.filter((r) => r.quality);
     const mean = (f: (r: RunResult) => number) => (rs.length ? rs.reduce((s, r) => s + f(r), 0) / rs.length : 0);
+    const ms = rs.flatMap((r) => (r.metrics ? [r.metrics] : []));
+    const mm = (f: (m: SessionMetrics) => number) => ms.reduce((s, m) => s + f(m), 0) / ms.length;
+    const roles: Record<string, number> = {};
+    for (const m of ms) for (const [k, v] of Object.entries(m.agentCallsByRole)) roles[k] = (roles[k] ?? 0) + v / ms.length;
     return {
       preset,
       runs: rs.length,
@@ -308,19 +317,26 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
         failed: count(rs, /verify: failed/i),
         skipped: count(rs, /verify: skipped/i),
       },
+      meanMetrics: ms.length ? { parentPeakContext: mm((m) => m.parentPeakContext), compactions: mm((m) => m.compactions), parentShare: mm((m) => m.parentShare), briefsWithCode: mm((m) => m.briefsWithCode), agentCallsByRole: roles } : undefined,
     };
   });
+}
+
+function metricCells(m: Summary["meanMetrics"]): string {
+  if (!m) return "– | – | – | – | –";
+  const roles = Object.entries(m.agentCallsByRole).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(", ") || "–";
+  return `${Math.round(m.parentPeakContext)} | ${m.compactions.toFixed(1)} | ${(m.parentShare * 100).toFixed(0)}% | ${m.briefsWithCode.toFixed(1)} | ${roles}`;
 }
 
 export function toMarkdown(report: EvalReport): string {
   const lines = [
     `# Preset eval${report.fake ? " (fake model)" : ""}`,
     "",
-    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip | peak parent ctx | compactions | parent token share | briefs with code | agent calls by role |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...report.summary.map(
       (s) =>
-        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
+        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} | ${metricCells(s.meanMetrics)} |`,
     ),
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,
@@ -517,7 +533,10 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
           if (opts.outDir) {
             const rel = join("sessions", preset.name, `${task.name}-${run}`);
             try {
-              if (copySessions(dir, join(opts.outDir, rel)) > 0) result.sessionsDir = rel;
+              if (copySessions(dir, join(opts.outDir, rel)) > 0) {
+                result.sessionsDir = rel;
+                result.metrics = sessionMetrics(join(opts.outDir, rel));
+              }
             } catch (e) {
               if (!warnedSessions) console.error(`warning: could not copy session files: ${(e as Error).message}`);
               warnedSessions = true;
