@@ -87,7 +87,8 @@ const faux = job.fake ? await fauxModels() : undefined;
 // Built-in providers are registered by the host at startup (index.ts), not by ModelRuntime itself.
 const models = faux?.models ?? (await ModelRuntime.create({ allowModelNetwork: true }));
 const windowCap = job.preset.config.contextWindowCap;
-if (!faux) registerNebiusProvider(models, typeof windowCap === "number" ? windowCap : undefined);
+if (windowCap !== undefined && (typeof windowCap !== "number" || !Number.isInteger(windowCap) || windowCap <= 0)) throw new Error(`preset ${job.preset.name}: contextWindowCap must be a positive integer`);
+if (!faux) registerNebiusProvider(models, windowCap);
 const store = new ConfigStore();
 const hub = new Hub();
 const emit = hub.emit.bind(hub);
@@ -107,7 +108,9 @@ try {
   if (job.preset.agentsDir) cpSync(job.preset.agentsDir, join(job.workDir, ".pista", "agents"), { recursive: true });
   const project = store.addProject(job.workDir);
   store.setProjectTrusted(project.id, true);
-  store.patchConfig({ ...job.preset.config, approvalMode: "full-access", defaultModel: parentModel(job.preset, faux?.ref, job.model) } as Partial<HostConfig>);
+  const parent = parentModel(job.preset, faux?.ref, job.model);
+  if (parent) result.model = `${parent.provider}/${parent.id}`;
+  store.patchConfig({ ...job.preset.config, approvalMode: "full-access", defaultModel: parent } as Partial<HostConfig>);
   threadId = (await manager.create(project.id)).summary.id;
   if (faux) {
     const { piAi, faux: handle } = faux;

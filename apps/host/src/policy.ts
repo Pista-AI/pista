@@ -153,8 +153,8 @@ function validNested(key: keyof HostConfig, value: unknown): boolean {
   return true;
 }
 
-/** mcpServers live in Pi's mcp.json, not in config.json; a policy declares them in its `mcp` section instead. */
-const UNSUPPORTED: ReadonlyArray<keyof HostConfig> = ["mcpServers"];
+/** mcpServers live in Pi's mcp.json, not in config.json; a policy declares them in its `mcp` section instead. contextWindowCap is eval-only. */
+const UNSUPPORTED: ReadonlyArray<keyof HostConfig> = ["mcpServers", "contextWindowCap"];
 
 function kindOf(value: unknown): Kind | "null" {
   if (value === null || value === undefined) return "null";
@@ -591,7 +591,7 @@ function section(raw: unknown, name: string, warnings: string[]): Partial<HostCo
     if (!Object.hasOwn(KEYS, key)) {
       warnings.push(`${name}.${key}: unknown setting, ignored`);
     } else if (UNSUPPORTED.includes(key as keyof HostConfig)) {
-      warnings.push(`${name}.${key}: not supported here, use the "mcp" section, ignored`);
+      warnings.push(key === "mcpServers" ? `${name}.${key}: not supported here, use the "mcp" section, ignored` : `${name}.${key}: eval-only setting, not supported here, ignored`);
     } else {
       const k = key as keyof HostConfig;
       const want = KEYS[k];

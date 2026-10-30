@@ -19,7 +19,9 @@ test("fake run over every task and both presets passes and produces the report s
   for (const key of ["seconds", "input", "output", "cacheRead", "cacheWrite", "costUsd", "subAgentCalls"] as const) assert.equal(typeof first[key], "number", key);
   assert.ok(Array.isArray(first.verifyLines));
   assert.equal(first.finalText, "Done.");
+  assert.match(first.model ?? "", /^[^/]+\/.+/);
   const md = toMarkdown(report);
+  assert.match(md, /Parent models: solo = /);
   assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| mean quality \(1-5\) \| mean diff lines \| verify pass\/fail\/skip \|/);
   assert.match(md, new RegExp(`\\| solo \\| ${n} \\| 100% \\|`));
   assert.match(md, new RegExp(`\\| routed \\| ${n} \\| 100% \\|`));

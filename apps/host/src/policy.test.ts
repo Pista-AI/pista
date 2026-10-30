@@ -219,6 +219,12 @@ test("bad allowlist entries are dropped with a warning", () => {
   assert.match(text, /models\.extra: unknown setting/);
 });
 
+test("contextWindowCap is eval-only: a policy default for it is ignored with a warning", () => {
+  const { policy, warnings } = load(JSON.stringify({ version: 1, defaults: { contextWindowCap: 32768, maxOutputTokens: 4096 } }));
+  assert.deepEqual(policy?.defaults, { maxOutputTokens: 4096 });
+  assert.match(warnings.join("\n"), /defaults\.contextWindowCap: eval-only setting/);
+});
+
 test("allow that is not an array fails closed: an empty list, with a warning", () => {
   const { policy, warnings } = load(JSON.stringify({ version: 1, providers: { allow: "corp" }, models: { allow: {} } }));
   assert.deepEqual(policy?.providers?.allow, []);

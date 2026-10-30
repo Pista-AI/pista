@@ -51,7 +51,7 @@ export function registerNebiusProvider(runtime: ModelRuntime, contextWindowCap?:
       reasoning: m.reasoning,
       input: (m.image ? ["text", "image"] : ["text"]) as ("text" | "image")[],
       cost: { input: m.input, output: m.output, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: contextWindowCap ? Math.min(m.contextWindow, contextWindowCap) : m.contextWindow,
+      contextWindow: contextWindowCap !== undefined ? Math.min(m.contextWindow, contextWindowCap) : m.contextWindow,
       maxTokens: MAX_OUTPUT,
       // Nebius accepts only system/user/assistant/tool roles; Pi's default
       // "developer" system role is rejected with HTTP 422.
