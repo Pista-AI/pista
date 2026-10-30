@@ -9,6 +9,8 @@ export interface SliceResult {
   verify: AgentOutcome["verify"];
   report: string;
   threadId?: string;
+  /** Shown beside the status, e.g. "verify failed after 2 attempts (pnpm test)" or "unverified: no edits". */
+  note?: string;
 }
 
 export interface ScheduleParams {
@@ -24,7 +26,10 @@ export interface ScheduleParams {
 
 const STANDARD_CONSTRAINTS = "Read the code before deciding details; follow the conventions of neighbouring code; state assumptions in your report. Stay inside this slice's files unless the acceptance command needs more.";
 
-/** Runs the waves in order with one implementer child per slice. A slice that depends on a failed or skipped one is skipped; a failed slice does not stop independent ones. */
+/**
+ * Runs the waves in order with one implementer child per slice. Slices of a parallel wave share one working tree, and the
+ * verify gate runs inside `runAgent`, so slice A's verify can see slice B's half-written edits and fail for that reason.
+ * That is why `maxParallel` defaults to 1; splitting run and verify would need a runner API that separates them. A slice that depends on a failed or skipped one is skipped; a failed slice does not stop independent ones. */
 export async function runSchedule(params: ScheduleParams): Promise<{ board: SliceBoard; results: Record<string, SliceResult> }> {
   const { waves, runAgent, persist, signal, onUpdate } = params;
   let board = params.board;
@@ -52,8 +57,9 @@ export async function runSchedule(params: ScheduleParams): Promise<{ board: Slic
         { role: "implementer", goal: slice.goal, pointers: slice.filesOrAreas, acceptance: slice.acceptance, constraints: `${STANDARD_CONSTRAINTS}\n\nSlice board:\n${renderBoard(board)}` },
         signal,
       );
-      result = { verify: outcome.verify, report: outcome.report, threadId: outcome.threadId };
       failed = outcome.verify === "failed" || outcome.aborted;
+      const note = outcome.verifyNote ? `verify ${outcome.verifyNote}` : outcome.verify === "none" && !outcome.edited && !failed ? "unverified: no edits" : undefined;
+      result = { verify: outcome.verify, report: outcome.report, threadId: outcome.threadId, ...(note ? { note } : {}) };
     } catch (error) {
       result = { verify: "none", report: `Error: ${error instanceof Error ? error.message : String(error)}` };
       failed = true;
