@@ -13,6 +13,8 @@ import { runSchedule, type SliceRunner } from "./schedule.ts";
 export interface SlicedDeps {
   cwd: string;
   config: () => HostConfig["sliced"];
+  /** `HostConfig.contextWindowCap`: the window the thread is held to, whatever the model advertises. */
+  windowCap?: () => number | undefined;
   /** The thread's latest persisted board (see `readSliceBoard`). */
   readBoard: () => SliceBoard | undefined;
   /** Runs one implementer child; shared with the `agent` tool. */
@@ -88,7 +90,9 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
             const checked = validateSlices(params.slices.map(({ files_or_areas, depends_on, ...rest }) => ({ ...rest, filesOrAreas: files_or_areas, dependsOn: depends_on })));
             if (!checked.ok) return text(`Error: ${checked.error}. Call \`slices\` again with a corrected list.`);
             const next: SliceBoard = { slices: checked.slices, fitsSolo: params.fits_solo, reason: params.reason, phase: "plan", status: Object.fromEntries(checked.slices.map((s) => [s.id, "pending" as const])), nudges: current().nudges, integrateNudges: 0 };
-            const decision = decide(next, resolveSlicedConfig(deps.config()), await estimateRepoTokens(deps.cwd), ctx.model?.contextWindow ?? 0);
+            const cap = deps.windowCap?.();
+            const window = Math.min(ctx.model?.contextWindow || Infinity, cap ?? Infinity);
+            const decision = decide(next, resolveSlicedConfig(deps.config()), await estimateRepoTokens(deps.cwd), Number.isFinite(window) ? window : 0);
             if (decision.kind === "solo") {
               save({ ...next, phase: "solo" });
               return text(`Proceed solo: ${decision.reason}. Board:\n${renderBoard(next)}`);

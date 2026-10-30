@@ -8,6 +8,7 @@ import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
 import { workspaceDiff } from "./diff.ts";
+import { type FakeFile, fakeFallsBackToSolo, fakeFiles, fakeReport, fakeSlices, sliceFiles, slicedFake } from "./fake-solution.ts";
 import { fauxModels } from "./faux-models.ts";
 import { parentModel } from "./parent-model.ts";
 import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, fixturePaths, JUDGE_SYSTEM, JUDGE_TIMEOUT_MS, judgePrompt, type Msg, parseJudge, parseSubtests, RESULT_MARK, type RunResult, tally } from "./presets.ts";
@@ -122,13 +123,26 @@ try {
       }]);
     } else {
       const dir = join(job.stageDir, "fake");
-      // Recursive, so a reference solution can touch nested files (paths stay relative to fake/).
-      const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => statSync(join(dir, f)).isFile()) : [];
+      const write = (f: FakeFile) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f.path), content: f.content }));
+      const sliced = slicedFake(job.preset.config as Partial<HostConfig>, dir) ? fakeSlices(dir)! : undefined;
       // The reviewer call (after the agent) takes the last response.
       const verdict = (s: number) => ({ spec: { score: s, reason: "fake" }, minimal: { score: s, reason: "fake" }, readable: { score: s, reason: "fake" }, safe: { score: s, reason: "fake" }, structure: { score: s, reason: "fake" } });
+      // One global queue, consumed in call order. Sliced: the parent's `slices` call, then each slice's child (writes, then its
+      // report) in dependency order, then the parent's answer. If the harness will go solo (too few slices) the parent writes everything itself.
+      const solo = sliced && fakeFallsBackToSolo(job.preset.config as Partial<HostConfig>, sliced.payload);
+      const script =
+        sliced && !solo
+          ? [
+              piAi.fauxAssistantMessage(piAi.fauxToolCall("slices", sliced.payload)),
+              ...sliced.order.flatMap((id) => {
+                const own = sliceFiles(dir, id);
+                return [...own.map(write), piAi.fauxAssistantMessage(fakeReport(id, own))];
+              }),
+              piAi.fauxAssistantMessage("Done: all slices verified."),
+            ]
+          : [...(sliced ? [piAi.fauxAssistantMessage(piAi.fauxToolCall("slices", sliced.payload))] : []), ...fakeFiles(dir).map(write), piAi.fauxAssistantMessage("Done.")];
       handle.setResponses([
-        ...files.map((f) => piAi.fauxAssistantMessage(piAi.fauxToolCall("write", { path: join(job.workDir, f), content: readFileSync(join(dir, f), "utf8") }))),
-        piAi.fauxAssistantMessage("Done."),
+        ...script,
         ...(job.judge ? [piAi.fauxAssistantMessage(`Review:\n${JSON.stringify(verdict(4))}`)] : []),
       ]);
     }

@@ -1,0 +1,40 @@
+{
+  "slices": [
+    {
+      "id": "types",
+      "title": "Return types",
+      "goal": "Add src/returns/types.ts: statuses, guard, ReturnRequest and canTransition",
+      "files_or_areas": [
+        "src/returns/types.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass"
+    },
+    {
+      "id": "service",
+      "title": "Return service",
+      "goal": "Add ReturnService in src/returns/service.ts",
+      "files_or_areas": [
+        "src/returns/service.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass",
+      "depends_on": [
+        "types"
+      ]
+    },
+    {
+      "id": "cli-tests",
+      "title": "Returns CLI and tests",
+      "goal": "Add runReturnsCli in src/cli/returns.ts and test/returns.test.ts",
+      "files_or_areas": [
+        "src/cli/returns.ts",
+        "test/returns.test.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass",
+      "depends_on": [
+        "service"
+      ]
+    }
+  ],
+  "fits_solo": false,
+  "reason": "Three dependent parts, each with its own verification"
+}

@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceDiff } from "./diff.ts";
-import { addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { slicedFake } from "./fake-solution.ts";
+import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -198,6 +199,8 @@ test("session files are kept under <outDir>/sessions by default and skipped with
     assert.ok(!(readdirSync(join(out, rel), { recursive: true }) as string[]).some((f) => /auth|models/.test(f)));
     const skipped = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true });
     assert.equal(skipped.results[0]!.sessionsDir, undefined);
+    assert.equal(skipped.results[0]!.metrics, undefined);
+    assert.ok(kept.results[0]!.metrics);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -215,4 +218,68 @@ test("parseSubtests reads node's reporter summary (spec and TAP) and leaves othe
   const crashed = summarize([{ ...base, preset: "a", pass: false, subtests: { pass: 0, total: 0 } }, { ...base, preset: "a", pass: true, subtests: { pass: 2, total: 2 } }], ["a"]);
   assert.equal(crashed[0]!.meanSubtestPct, 50);
   assert.equal(summarize([{ ...base, preset: "a", pass: true }], ["a"])[0]!.meanSubtestPct, undefined);
+});
+
+test("markdown shows session metrics when present and dashes when absent", () => {
+  const r: RunResult = { preset: "a", task: "t", run: 1, pass: true, seconds: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0 };
+  const metrics = { parentPeakContext: 1700, compactions: 1, childCompactions: 0, parentTokens: 3, childTokens: 1, parentShare: 0.75, agentCallsByRole: { explorer: 2 }, briefsWithCode: 1, wallClockSeconds: 9 };
+  const md = (results: RunResult[]) => toMarkdown({ generatedAt: "", fake: false, totalCostUsd: 0, results, summary: summarize(results, ["a"]) });
+  assert.match(md([{ ...r, metrics }]), /\| 1700 \| 1\.0 \| 75% \| 1\.0 \| explorer 2\.0 \|/);
+  assert.match(md([r]), /\| – \| – \| – \| – \| – \|/);
+  assert.match(md([{ ...r, metrics: { ...metrics, sliced: { dispatched: true, slices: 5, done: 4, failed: 1, skipped: 0 } } }]), /\| explorer 2\.0 \| 1\/1 dispatched; 4\/1\/0 of 5 \|/);
+});
+
+test("a fake sliced run dispatches one implementer per slice and the report says so", async () => {
+  const out = mkdtempSync(join(tmpdir(), "pista-eval-sliced-"));
+  try {
+    const report = await runEval({ ...base, presets: ["sliced-32k", "solo-32k"], tasks: "multi-slice-spec", runs: 1, fake: true, outDir: out });
+    for (const r of report.results) assert.ok(r.pass, `${r.preset}: ${r.error ?? "check failed"}`);
+    assert.equal(report.results[0]!.finalText, "Done: all slices verified.");
+    assert.deepEqual(report.summary[0]!.sliced, { runs: 1, dispatched: 1, slices: 3, done: 3, failed: 0, skipped: 0 });
+    assert.equal(report.summary[1]!.sliced, undefined);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+/** A throwaway task whose reference solution proposes `n` slices (a.txt, b.txt, ...). */
+function tinySlicedTask(n: number): string {
+  const tasks = mkdtempSync(join(tmpdir(), "pista-tiny-tasks-"));
+  const dir = join(tasks, "tiny");
+  const ids = "abcdef".slice(0, n).split("");
+  mkdirSync(join(dir, "fixture"), { recursive: true });
+  writeFileSync(join(dir, "fixture", "README.md"), "x\n");
+  writeFileSync(join(dir, "task.md"), "Create the files.\n");
+  writeFileSync(join(dir, "task.json"), JSON.stringify({ check: `node -e "for (const f of '${ids.map((i) => `${i}.txt`).join(" ")}'.split(' ')) require('fs').accessSync(f)"` }));
+  const slice = (id: string) => ({ id, title: id, goal: `create ${id}.txt`, files_or_areas: [`${id}.txt`], acceptance: `${id}.txt exists` });
+  mkdirSync(join(dir, "fake"), { recursive: true });
+  writeFileSync(join(dir, "fake", "slices.json"), JSON.stringify({ slices: ids.map(slice), fits_solo: false, reason: "test" }));
+  for (const id of ids) {
+    mkdirSync(join(dir, "fake", id));
+    writeFileSync(join(dir, "fake", id, `${id}.txt`), `${id}\n`);
+  }
+  return tasks;
+}
+
+test("fake sliced runs refuse maxParallel above 1 because the fake reply queue is global", () => {
+  const tasks = tinySlicedTask(3);
+  try {
+    const dir = join(tasks, "tiny", "fake");
+    assert.equal(slicedFake({ orchestratorMode: "sliced", sliced: { maxParallel: 1 } }, dir), true);
+    assert.equal(slicedFake({ orchestratorMode: "lead" }, dir), false);
+    assert.throws(() => slicedFake({ orchestratorMode: "sliced", sliced: { maxParallel: 2 } }, dir), /maxParallel 1/);
+  } finally {
+    rmSync(tasks, { recursive: true, force: true });
+  }
+});
+
+test("a fake sliced task with fewer slices than minSlices runs solo and still passes", async () => {
+  const tasks = tinySlicedTask(2);
+  try {
+    const report = await runEval({ ...base, tasksDir: tasks, presets: ["sliced-32k"], tasks: "tiny", runs: 1, fake: true });
+    assert.ok(report.results[0]!.pass, report.results[0]!.error ?? report.results[0]!.checkOutput ?? "check failed");
+    assert.equal(report.results[0]!.finalText, "Done.");
+  } finally {
+    rmSync(tasks, { recursive: true, force: true });
+  }
 });
