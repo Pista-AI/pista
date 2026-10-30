@@ -369,3 +369,13 @@ test("modelTiers and tier: role models are validated", () => {
   assert.equal(load(JSON.stringify({ version: 1, locked: { agentOverrides: { explorer: { model: "tier:Bad Name" } } } })).policy?.locked?.agentOverrides, undefined);
   assert.equal(load(JSON.stringify({ version: 1, locked: { agentRoles: { reviewer: { model: "tier:Bad Name" } } } })).policy?.locked?.agentRoles, undefined);
 });
+
+test("sliced settings are validated", () => {
+  const locked = (sliced: unknown) => load(JSON.stringify({ version: 1, locked: { orchestratorMode: "sliced", sliced } })).policy?.locked;
+  assert.equal(locked({})?.orchestratorMode, "sliced");
+  const good = { minSlices: 2, maxParallel: 3, integrateTools: "read-only", repoSizeFraction: 0.25 };
+  assert.deepEqual(locked(good)?.sliced, good);
+  for (const bad of [{ minSlices: 0 }, { minSlices: 1.5 }, { maxParallel: 4 }, { maxParallel: 0 }, { integrateTools: "none" }, { repoSizeFraction: 0 }, { repoSizeFraction: 1.1 }, { other: 1 }, [], "x"]) {
+    assert.equal(locked(bad)?.sliced, undefined, JSON.stringify(bad));
+  }
+});
