@@ -12,6 +12,7 @@ export interface SlicedConfig {
 export function resolveSlicedConfig(cfg?: HostConfig["sliced"]): SlicedConfig {
   return {
     minSlices: cfg?.minSlices ?? 3,
+    // Default 1: parallel children share one working tree, so one slice's verify can see another's half-written edits.
     maxParallel: Math.min(cfg?.maxParallel ?? 1, 3),
     integrateTools: cfg?.integrateTools ?? "full",
     repoSizeFraction: cfg?.repoSizeFraction ?? 0.5,

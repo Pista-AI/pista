@@ -91,7 +91,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
             });
             // Step 4 gates the integrate phase; until then the parent's tools are not restricted after dispatch.
             save({ ...done, phase: "integrate" });
-            const reports = done.slices.map((s) => `## ${s.id} ${done.status[s.id]}\n${clip(results[s.id]?.report ?? "", REPORT_CLIP)}`);
+            const reports = done.slices.map((s) => `## ${s.id} ${done.status[s.id]}${results[s.id]?.note ? ` (${results[s.id]!.note})` : ""}\n${clip(results[s.id]?.report ?? "", REPORT_CLIP)}`);
             return text(`Dispatch finished.\n${renderBoard(done)}\n\n${reports.join("\n\n")}`);
           },
         }),
