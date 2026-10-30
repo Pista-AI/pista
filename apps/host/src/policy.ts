@@ -109,6 +109,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   webSearchEnabled: "boolean",
   browserEnabled: "boolean",
   maxToolCalls: "number",
+  contextWindowCap: "number",
   localServers: "array",
   llamaEnabled: "boolean",
   maxOutputTokens: "number",

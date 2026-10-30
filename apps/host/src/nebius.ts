@@ -37,7 +37,8 @@ const NEBIUS_MODELS: NebiusModel[] = [
 ];
 
 /** Registers Nebius as a Pi provider; it counts as configured only when NEBIUS_API_KEY (or a stored key) exists. */
-export function registerNebiusProvider(runtime: ModelRuntime): void {
+/** `contextWindowCap` (evals) lowers every model's window to at most that many tokens. */
+export function registerNebiusProvider(runtime: ModelRuntime, contextWindowCap?: number): void {
   runtime.registerProvider(NEBIUS_PROVIDER_ID, {
     name: "Nebius",
     baseUrl: NEBIUS_BASE_URL,
@@ -50,7 +51,7 @@ export function registerNebiusProvider(runtime: ModelRuntime): void {
       reasoning: m.reasoning,
       input: (m.image ? ["text", "image"] : ["text"]) as ("text" | "image")[],
       cost: { input: m.input, output: m.output, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: m.contextWindow,
+      contextWindow: contextWindowCap ? Math.min(m.contextWindow, contextWindowCap) : m.contextWindow,
       maxTokens: MAX_OUTPUT,
       // Nebius accepts only system/user/assistant/tool roles; Pi's default
       // "developer" system role is rejected with HTTP 422.
