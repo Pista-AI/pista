@@ -37,8 +37,8 @@ const say = (text: string) => piAi.fauxAssistantMessage(text);
 
 async function dispatchFull(role: string, run: ReturnType<typeof fakeRunner>["run"]) {
   const { summary } = await manager.create(project.id);
-  const runAgent = createAgentRunner({ threads: manager, ref: { threadId: summary.id }, verify: { store, run } });
-  return runAgent({ role: role as never, brief: "do it" });
+  const runAgent = createAgentRunner({ reportFormat: false, threads: manager, ref: { threadId: summary.id }, verify: { store, run } });
+  return runAgent({ role: role as never, goal: "do it", acceptance: "pnpm test" });
 }
 const dispatch = async (role: string, run: ReturnType<typeof fakeRunner>["run"]) => (await dispatchFull(role, run)).content[0]!.text;
 
@@ -180,9 +180,9 @@ test("a stop during verify ends the run without recording a failed verify", asyn
     await new Promise((r) => opts.signal?.addEventListener("abort", r, { once: true }));
     return { code: 1, output: "killed", timedOut: false };
   };
-  const runAgent = createAgentRunner({ threads: manager, ref: { threadId: summary.id }, verify: { store, run }, record: (d) => void decisions.push(d) });
+  const runAgent = createAgentRunner({ reportFormat: false, threads: manager, ref: { threadId: summary.id }, verify: { store, run }, record: (d) => void decisions.push(d) });
   faux.setResponses([writeCall(), say("report")]);
-  const result = await runAgent({ role: "implementer", brief: "do it" }, abort.signal);
+  const result = await runAgent({ role: "implementer", goal: "do it", acceptance: "pnpm test" }, abort.signal);
   assert.match(result.content[0]!.text, /^Aborted/);
   assert.ok(!decisions.some((d) => /^Verify/.test(d.summary)));
 });

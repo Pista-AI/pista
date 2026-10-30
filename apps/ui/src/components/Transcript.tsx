@@ -645,7 +645,7 @@ function AgentToolCard({ call, result, run }: { call: ToolCallBlock; result?: To
   const [open, setOpen] = useState(false);
   const args = call.arguments ?? {};
   const role = str(args.role);
-  const briefLine = str(args.brief).split("\n").find((l) => l.trim())?.trim() ?? "";
+  const briefLine = str(args.goal ?? args.brief).split("\n").find((l) => l.trim())?.trim() ?? "";
   const status = run?.status ?? (result ? (result.isError ? "error" : "done") : "running");
   const raw = result ?? run?.result ?? run?.partial;
   const details = ((raw as { details?: AgentDetails } | undefined)?.details ?? {}) as AgentDetails;
@@ -671,7 +671,7 @@ function AgentToolCard({ call, result, run }: { call: ToolCallBlock; result?: To
           </button>
         )}
       </div>
-      <div className="a-brief" title={str(args.brief)}>
+      <div className="a-brief" title={str(args.goal ?? args.brief)}>
         {briefLine}
       </div>
       {text && state !== "running" && (

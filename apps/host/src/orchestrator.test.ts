@@ -54,8 +54,8 @@ test("delegate: a bash call is blocked by the gate even though the tool is not a
 test("delegate: an agent call still works and returns the child's report", async () => {
   const id = await newThread("delegate");
   faux.setResponses([
-    piAi.fauxAssistantMessage(piAi.fauxToolCall("agent", { role: "explorer", brief: "Report the entry point." })),
-    piAi.fauxAssistantMessage("CHILD-REPORT"),
+    piAi.fauxAssistantMessage(piAi.fauxToolCall("agent", { role: "explorer", goal: "Report the entry point." })),
+    piAi.fauxAssistantMessage("CHILD-REPORT\n## Findings\nx\n## Ran\nx\n## Assumptions\nnone\n## Open questions\nnone"),
     piAi.fauxAssistantMessage("done"),
   ]);
   await liveOf().get(id)!.session.prompt("go");
