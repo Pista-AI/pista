@@ -4,7 +4,8 @@ import { Type } from "typebox";
 import type { RecordDecision } from "./decisions.ts";
 import type { ThreadRef } from "./extensions.ts";
 import { usageTotals } from "./models.ts";
-import { availableRoles, ROLES, type RoleMap } from "./roles.ts";
+import { briefProblem, capReport, composeBrief, hasReportSections, reportFollowUp } from "./brief.ts";
+import { availableRoles, roleOf, ROLES, type RoleMap } from "./roles.ts";
 import { clip } from "./text.ts";
 import { feedbackPrompt, resolveVerifyConfig, runVerify, shellRunner, verifyKey, withProjectLock, type VerifyDeps } from "./verify.ts";
 import type { ThreadManager } from "./threads.ts";
@@ -27,12 +28,21 @@ export interface AgentToolOptions {
   record?: RecordDecision;
   /** Verify gate: when set, an implementer that changed files must pass the configured checks before its report is returned. */
   verify?: VerifyDeps;
+  /** Ask each child for the structured report and send one follow-up when it is missing (default true). */
+  reportFormat?: boolean;
 }
 
 export interface AgentToolParams {
   /** Required unless `continueId` is set; a continued child keeps its own role. */
   role?: AgentRoleName;
-  brief: string;
+  /** What done looks like, 1-3 sentences; with `continueId` it is the follow-up message. */
+  goal: string;
+  /** Files, directories, symbols or commands worth starting from. */
+  pointers?: string[];
+  /** The command that must pass or the behaviour to verify; required for a new implementer. */
+  acceptance?: string;
+  /** Limits, e.g. files not to touch. */
+  constraints?: string;
   continueId?: string;
   /** Why delegate this, in one sentence; logged with the dispatch. */
   reason?: string;
@@ -78,6 +88,8 @@ function runWaiter(session: AgentSession, onToolEnd: (toolName: string, isError:
  */
 export function createAgentRunner(opts: AgentToolOptions) {
   const { threads, ref } = opts;
+  /** A role whose file replaces the whole prompt defines its own report format. */
+  const roleHasOwnFormat = (role: AgentRoleName | undefined) => !!role && roleOf(role, opts.roles ?? ROLES).promptMode === "replace";
   /** Calls in flight, counted before any await so parallel calls in one turn cannot exceed the limit. */
   let active = 0;
   const busy = new Set<string>();
@@ -89,7 +101,10 @@ export function createAgentRunner(opts: AgentToolOptions) {
       throw new Error(`Too many sub-agents are running (${MAX_RUNNING_CHILDREN}). Wait for one to finish, or do the work yourself.`);
     }
     if (!params.continueId && !params.role) throw new Error("role is required unless continueId is set.");
-    if (!params.brief?.trim()) throw new Error("The brief is empty: describe the task for the sub-agent.");
+    if (!params.goal?.trim()) throw new Error("The goal is empty: describe what done looks like for the sub-agent.");
+    if (!params.continueId && params.role === "implementer" && !params.acceptance?.trim()) throw new Error("acceptance is required for an implementer: give the command that must pass or the behaviour to verify.");
+    const problem = briefProblem({ goal: params.goal, constraints: params.constraints, pointers: params.pointers });
+    if (problem) throw new Error(problem);
     if (signal?.aborted) return { content: text("Aborted before the sub-agent started."), details: { aborted: true } as AgentToolDetails };
     active++;
     // getSessionStats is cumulative for the child thread, so a continued child reports its whole thread.
@@ -122,7 +137,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
         // The signal aborted while the child was being set up: leave it idle and never send the brief.
         if (signal?.aborted) return { content: text(`Aborted before the ${who} started (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
         update(`Started ${who}.`);
-        let brief = params.brief;
+        let brief = composeBrief(params, !!params.continueId);
         if (role === "implementer") {
           const explorer = [...inflight].find(([k, v]) => k !== key && v.role === "explorer")?.[1];
           if (explorer) {
@@ -137,7 +152,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
         }
         opts.record?.({
           kind: "agent_dispatch",
-          summary: `Dispatch ${role ?? "sub-agent"}: ${clip(params.brief, 80)}`,
+          summary: `Dispatch ${role ?? "sub-agent"}: ${clip(params.goal, 80)}`,
           ...(params.reason?.trim() ? { reason: clip(params.reason, 300) } : {}),
           data: { role: role ?? null, childThreadId: childId, continueId: params.continueId ?? null },
         });
@@ -194,6 +209,10 @@ export function createAgentRunner(opts: AgentToolOptions) {
             }
           };
           let outcome = await turn(brief);
+          // Report format: one tool-free follow-up when the last message lacks the sections (not on continueId turns), then take what comes back.
+          if (outcome === "finished" && !params.continueId && opts.reportFormat !== false && !roleHasOwnFormat(role) && !hasReportSections(child.session.getLastAssistantText() ?? "", role)) {
+            outcome = await turn(reportFollowUp(role));
+          }
 
           // Verify gate: the host runs the configured checks instead of trusting the child's "done".
           let verifyLine = "";
@@ -243,7 +262,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
           const { billed: tokens, cacheRead } = usageTotals(child.session.getSessionStats().tokens);
           const footer = `[sub-agent thread ${childId}${tokens ? `, ${tokenLabel(tokens)}` : ""}]`;
           logResult("done", final);
-          return { content: text(`${final}${verifyLine ? `\n\n${verifyLine}` : ""}\n\n${footer}`), details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead } as AgentToolDetails };
+          return { content: text(`${capReport(final)}${verifyLine ? `\n\n${verifyLine}` : ""}\n\n${footer}`), details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead } as AgentToolDetails };
         } catch (error) {
           if (!logged) logResult("error", error instanceof Error ? error.message : String(error));
           throw error;
@@ -266,7 +285,7 @@ export const describe = (roles: AgentRole[]) => [
   `Roles: ${roles
     .map((r) => `${r.name} (${r.description})`)
     .join(" ")}`,
-  "The sub-agent sees nothing of this conversation, only the brief. A brief states the goal, the exact files to touch, the required behaviour, what must not change, and the existing helpers to reuse (file and export name), and asks for a short report. Describe the change; do not write the finished code into the brief.",
+  "The sub-agent sees nothing of this conversation, only what you pass. Give a goal (what done looks like), pointers (files, symbols or commands to start from), acceptance (the command that must pass; required for an implementer) and constraints (what not to touch). The sub-agent reads the code and writes the implementation: a brief containing code is rejected. It replies with a report: Changed (or Findings), Ran, Assumptions, Open questions.",
   "Delegate when the work is large or would bloat your context (wide exploration, changes across many files), or to run independent tasks in parallel (at most 3 at once). Do not use it for a step you can do in a few tool calls.",
   "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time.",
   "Set continueId to a thread id from an earlier result to send a follow-up to that sub-agent, which keeps its context.",
@@ -292,8 +311,11 @@ export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
                 { description: "Required for a new sub-agent (ignored with continueId, which keeps its own role). explorer and reviewer are read-only; implementer can change files" },
               ),
             ),
-            brief: Type.String({ description: "The complete task: goal, exact files, required behaviour, what must not change, existing helpers to reuse (file and export), and the report format you want back. Describe the change; do not write the finished code." }),
-            continueId: Type.Optional(Type.String({ description: "Thread id of an earlier sub-agent to send this brief to as a follow-up instead of starting a new one" })),
+            goal: Type.String({ description: "What done looks like, 1-3 sentences. With continueId, the follow-up message. No code." }),
+            pointers: Type.Optional(Type.Array(Type.String(), { description: "Files, directories, symbols or commands worth starting from, e.g. 'apps/host/src/text.ts: clip'" })),
+            acceptance: Type.Optional(Type.String({ description: "The command that must pass or the behaviour to verify. Required for an implementer" })),
+            constraints: Type.Optional(Type.String({ description: "Limits, e.g. files not to touch. No code." })),
+            continueId: Type.Optional(Type.String({ description: "Thread id of an earlier sub-agent to send this goal to as a follow-up instead of starting a new one" })),
             reason: Type.Optional(Type.String({ description: "One sentence on why you are delegating this (the why, not the what), e.g. 'Reading the whole module would flood my context, so an explorer summarises it.'" })),
           }),
           execute: (_id, params, signal, onUpdate) => run(params as AgentToolParams, signal, onUpdate as UpdateFn | undefined),
