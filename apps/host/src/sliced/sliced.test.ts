@@ -31,6 +31,7 @@ test("validateSlices rejects bad lists", () => {
   bad([slice("")], /id/);
   bad([slice("a", [], [])], /filesOrAreas/);
   bad([{ ...slice("a"), acceptance: " " }], /acceptance/);
+  for (const area of ["", ".", "/", "./"]) bad([slice("a", [area])], /filesOrAreas/);
   bad([slice("a", ["x"], ["nope"])], /unknown slice "nope"/);
   bad([slice("a", ["x"], ["a"])], /itself/);
   bad([slice("a", ["x"], ["b"]), slice("b", ["y"], ["a"])], /cycle/);
@@ -89,10 +90,11 @@ test("estimateRepoTokens counts text bytes with and without git", async () => {
     writeFileSync(join(dir, "big.txt"), "x".repeat(2 * 1024 * 1024));
     writeFileSync(join(dir, "logo.png"), "x".repeat(4000));
     writeFileSync(join(dir, "node_modules", "dep.js"), "x".repeat(4000));
-    assert.equal(await estimateRepoTokens(dir), 1000); // walk fallback: not a git repo
+    const expected = 1000 + 262144; // the 2 MB file counts as 1 MB; the png and node_modules do not
+    assert.equal(await estimateRepoTokens(dir), expected); // walk fallback: not a git repo
     execFileSync("git", ["init", "-q"], { cwd: dir });
     execFileSync("git", ["add", "src", "big.txt", "logo.png"], { cwd: dir });
-    assert.equal(await estimateRepoTokens(dir), 1000); // tracked files only
+    assert.equal(await estimateRepoTokens(dir), expected); // tracked files only
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
