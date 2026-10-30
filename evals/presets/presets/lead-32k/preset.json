@@ -1,0 +1,15 @@
+{
+  "description": "Lead mode under context pressure: as lead-nebius (parent keeps its tools and delegates large work; explorer and implementer on the cheap tier, V4 Flash, low thinking), with every model's context window capped at 32k so the parent's window fills up unless it delegates. Parent pinned to Flash whatever --model says. Compare with solo-32k.",
+  "config": {
+    "contextWindowCap": 32768,
+    "maxToolCalls": 150,
+    "orchestratorMode": "lead",
+    "defaultModel": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" },
+    "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
+    "agentOverrides": {
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
+      "implementer": { "model": "tier:cheap", "thinking": "low" }
+    }
+  },
+  "verify": { "commands": ["node --test"] }
+}
