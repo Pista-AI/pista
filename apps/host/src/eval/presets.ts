@@ -46,6 +46,8 @@ export interface RunResult {
   verifyLines: string[];
   /** Tail of the check's output, kept only when the check failed. */
   checkOutput?: string;
+  /** Subtests passed/total from the node test runner's summary lines in the check output; absent when it has none. */
+  subtests?: { pass: number; total: number };
   /** The parent's last assistant message (its text, or the provider error), truncated. */
   finalText?: string;
   error?: string;
@@ -88,6 +90,8 @@ export interface Summary {
   meanCostUsd: number;
   meanTokens: number;
   meanSeconds: number;
+  /** Mean of pass / total over runs that have `subtests`, in percent; undefined when none has. */
+  meanSubtestPct?: number;
   /** Mean `agent` tool calls per run (parent and children). */
   meanSubAgentCalls: number;
   /** Mean of the reviewer's `quality.mean` over judged runs; undefined when none was judged. */
@@ -286,6 +290,15 @@ export const JUDGE_TIMEOUT_MS = 120_000;
 export const DIFF_CHARS = 20_000;
 export const RESULT_MARK = "__EVAL_RESULT__ ";
 
+/** Subtest counts from node's test-runner summary (`ℹ pass N` / `ℹ fail N`, or TAP `# pass N` / `# fail N`); the last summary wins. */
+export function parseSubtests(output: string): { pass: number; total: number } | undefined {
+  const last = (name: string) => [...output.matchAll(new RegExp(`^(?:ℹ|#) ${name} (\\d+)\\s*$`, "gm"))].at(-1)?.[1];
+  const pass = last("pass");
+  const fail = last("fail");
+  if (pass === undefined || fail === undefined) return undefined;
+  return { pass: Number(pass), total: Number(pass) + Number(fail) };
+}
+
 function count(rs: RunResult[], re: RegExp): number {
   return rs.reduce((n, r) => n + r.verifyLines.filter((l) => re.test(l)).length, 0);
 }
@@ -294,6 +307,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
   return presets.map((preset) => {
     const rs = results.filter((r) => r.preset === preset);
     const judged = rs.filter((r) => r.quality);
+    const scored = rs.filter((r) => r.subtests);
     const mean = (f: (r: RunResult) => number) => (rs.length ? rs.reduce((s, r) => s + f(r), 0) / rs.length : 0);
     return {
       preset,
@@ -302,6 +316,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
       meanCostUsd: mean((r) => r.costUsd),
       meanTokens: mean((r) => r.input + r.output + r.cacheRead + r.cacheWrite),
       meanSeconds: mean((r) => r.seconds),
+      meanSubtestPct: scored.length ? (scored.reduce((s, r) => s + (r.subtests!.total ? r.subtests!.pass / r.subtests!.total : 0), 0) / scored.length) * 100 : undefined,
       meanSubAgentCalls: mean((r) => r.subAgentCalls),
       meanQuality: judged.length ? judged.reduce((s, r) => s + r.quality!.mean, 0) / judged.length : undefined,
       meanDiffLines: mean((r) => (r.diffStats?.added ?? 0) + (r.diffStats?.removed ?? 0)),
@@ -318,11 +333,11 @@ export function toMarkdown(report: EvalReport): string {
   const lines = [
     `# Preset eval${report.fake ? " (fake model)" : ""}`,
     "",
-    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "| preset | runs | pass rate | mean subtest % | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
     ...report.summary.map(
       (s) =>
-        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
+        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanSubtestPct?.toFixed(0) ?? "–"} | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
     ),
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,

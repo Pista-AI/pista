@@ -10,7 +10,7 @@ import { spawnGroup } from "../process-group.ts";
 import { workspaceDiff } from "./diff.ts";
 import { fauxModels } from "./faux-models.ts";
 import { parentModel } from "./parent-model.ts";
-import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, fixturePaths, JUDGE_SYSTEM, JUDGE_TIMEOUT_MS, judgePrompt, type Msg, parseJudge, RESULT_MARK, type RunResult, tally } from "./presets.ts";
+import { AGENT_DONE, CHECK_OUTPUT_CHARS, CHECK_TIMEOUT_MS, type ChildJob, finalText, fixturePaths, JUDGE_SYSTEM, JUDGE_TIMEOUT_MS, judgePrompt, type Msg, parseJudge, parseSubtests, RESULT_MARK, type RunResult, tally } from "./presets.ts";
 
 const job = JSON.parse(process.argv[2]!) as ChildJob;
 
@@ -153,6 +153,7 @@ try {
     if (code === "timeout") result.error = "check timeout";
     result.pass = code === 0;
     if (!result.pass) result.checkOutput = out;
+    result.subtests = parseSubtests(out);
     if (job.judge) {
       // No paid call for a broken run or when there is nothing to review.
       const skip = result.error ? "run errored" : result.diffError ? "no diff" : result.diffStats.files === 0 ? "empty diff" : undefined;
