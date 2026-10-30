@@ -49,3 +49,32 @@ test("capReport truncates with a marker", () => {
   assert.ok(out.endsWith("\n[truncated]"));
   assert.equal(out.length, 6000 + "\n[truncated]".length);
 });
+
+test("looksLikeCode negatives: backticked identifier, commands and file:line references", () => {
+  assert.equal(looksLikeCode("Use `clip` from text.ts"), false);
+  assert.equal(looksLikeCode("Run node --test and pnpm typecheck"), false);
+  assert.equal(looksLikeCode("Start from src/x.ts:42\napps/host/src/y.ts:7"), false);
+});
+
+test("briefProblem checks pointers but not acceptance", () => {
+  assert.match(briefProblem({ goal: "ok", pointers: ["a;", "b;", "c;"] }) ?? "", /Remove the code/);
+});
+
+test("hasReportSections accepts colon and bold variants", () => {
+  const r = "**Changed**\nx\n## Ran:\nx\n## **Assumptions**\nx\n**Open questions:**\nx";
+  assert.equal(hasReportSections(r, "implementer"), true);
+});
+
+test("capReport keeps the first line and the closing sections, trimming the body", () => {
+  const report = `Summary line\n## Changed\n${"c".repeat(5000)}\n## Ran\n${"r".repeat(5000)}\n## Assumptions\nA1\n## Open questions\nQ1`;
+  const out = capReport(report);
+  assert.ok(out.length <= 6000);
+  assert.ok(out.startsWith("Summary line\n## Changed"));
+  assert.ok(out.endsWith("## Assumptions\nA1\n## Open questions\nQ1"));
+  assert.ok(out.includes("[truncated]"));
+});
+
+test("capReport does not split a surrogate pair", () => {
+  const out = capReport("😀".repeat(100), 51);
+  assert.ok(!/[\ud800-\udbff]\n\[truncated\]$/.test(out));
+});

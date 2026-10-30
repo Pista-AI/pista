@@ -328,6 +328,6 @@ test("a report without the required sections gets one follow-up; the reply is re
   const out = (await run({ role: "explorer", goal: brief })).content[0]!.text;
   assert.equal(prompts.length, 2);
   assert.match(prompts[1]!, /required report format/);
-  assert.match(out, /\[truncated\]\n\n\[sub-agent thread/);
+  assert.match(out, /\[truncated\]\n\n## Assumptions[^]*\[sub-agent thread/);
   assert.ok(!out.includes("loose prose"));
 });

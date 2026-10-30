@@ -103,7 +103,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
     if (!params.continueId && !params.role) throw new Error("role is required unless continueId is set.");
     if (!params.goal?.trim()) throw new Error("The goal is empty: describe what done looks like for the sub-agent.");
     if (!params.continueId && params.role === "implementer" && !params.acceptance?.trim()) throw new Error("acceptance is required for an implementer: give the command that must pass or the behaviour to verify.");
-    const problem = briefProblem({ goal: params.goal, constraints: params.constraints });
+    const problem = briefProblem({ goal: params.goal, constraints: params.constraints, pointers: params.pointers });
     if (problem) throw new Error(problem);
     if (signal?.aborted) return { content: text("Aborted before the sub-agent started."), details: { aborted: true } as AgentToolDetails };
     active++;
@@ -209,6 +209,10 @@ export function createAgentRunner(opts: AgentToolOptions) {
             }
           };
           let outcome = await turn(brief);
+          // Report format: one tool-free follow-up when the last message lacks the sections (not on continueId turns), then take what comes back.
+          if (outcome === "finished" && !params.continueId && opts.reportFormat !== false && !roleHasOwnFormat(role) && !hasReportSections(child.session.getLastAssistantText() ?? "", role)) {
+            outcome = await turn(reportFollowUp(role));
+          }
 
           // Verify gate: the host runs the configured checks instead of trusting the child's "done".
           let verifyLine = "";
@@ -252,16 +256,6 @@ export function createAgentRunner(opts: AgentToolOptions) {
             }
             logResult("aborted");
             return { content: text(`Aborted: the ${who} was stopped (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
-          }
-          // Report format: one follow-up when the child's last message lacks the sections, then take what comes back.
-          if (outcome === "finished" && opts.reportFormat !== false && !roleHasOwnFormat(role) && !hasReportSections(child.session.getLastAssistantText() ?? "", role)) {
-            outcome = await turn(reportFollowUp(role));
-            if (outcome !== "finished") {
-              await threads.abort(childId);
-              logResult(outcome);
-              if (outcome === "timeout") throw new Error(`The ${who} did not finish in time and was stopped (thread ${childId}).`);
-              return { content: text(`Aborted: the ${who} was stopped (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
-            }
           }
           const final = child.session.getLastAssistantText()?.trim();
           if (!final) throw new Error(`The ${who} produced no final message (thread ${childId}).`);

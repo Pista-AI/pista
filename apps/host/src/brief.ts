@@ -24,8 +24,8 @@ export function looksLikeCode(text: string | undefined): boolean {
 }
 
 /** Returns the error message when the brief carries implementation, otherwise undefined. */
-export function briefProblem(fields: Pick<BriefFields, "goal" | "constraints">): string | undefined {
-  return looksLikeCode(fields.goal) || looksLikeCode(fields.constraints) ? CODE_IN_BRIEF_ERROR : undefined;
+export function briefProblem(fields: Pick<BriefFields, "goal" | "constraints" | "pointers">): string | undefined {
+  return looksLikeCode(fields.goal) || looksLikeCode(fields.constraints) || looksLikeCode(fields.pointers?.join("\n")) ? CODE_IN_BRIEF_ERROR : undefined;
 }
 
 /** The child's first user message. A follow-up (`continueId`) carries the goal as the message and skips the standing line. */
@@ -54,16 +54,34 @@ export function reportFormatPrompt(role: string): string {
 
 /** True when every required section heading appears on a line of its own. */
 export function hasReportSections(text: string, role: string | undefined): boolean {
-  return reportSections(role).every((heading) => new RegExp(`^${heading}\\s*$`, "mi").test(text));
+  return reportSections(role).every((heading) => new RegExp(`^\\s*(?:##\\s*\\**|\\*\\*)${heading.slice(3)}\\**:?\\**\\s*$`, "mi").test(text));
 }
 
 export function reportFollowUp(role: string | undefined): string {
-  return `Your last message is not in the required report format. Reply with the report only, with these sections: ${reportSections(role).join(", ")}. Use "none" for an empty section.`;
+  return `Your last message is not in the required report format. Reply with the report only; do not use tools. Sections: ${reportSections(role).join(", ")}. Use "none" for an empty section.`;
 }
 
 export const MAX_REPORT_CHARS = 6000;
 
-/** Caps the report returned to the parent, marking the cut. */
+/** Cuts at `end`, never between the halves of a surrogate pair. */
+function safeSlice(text: string, end: number): string {
+  const code = text.charCodeAt(end - 1);
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? end - 1 : end);
+}
+
+/**
+ * Caps the report returned to the parent, marking the cut. Keeps the first line and the closing
+ * `## Assumptions` and `## Open questions` sections whole and trims the body between them.
+ */
 export function capReport(text: string, max = MAX_REPORT_CHARS): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n[truncated]`;
+  if (text.length <= max) return text;
+  const marker = "\n[truncated]\n\n";
+  const tailAt = text.search(/^## Assumptions\b/m);
+  const firstEnd = text.indexOf("\n");
+  if (tailAt <= 0 || firstEnd < 0 || firstEnd >= tailAt) return `${safeSlice(text, max)}\n[truncated]`;
+  const head = text.slice(0, firstEnd);
+  const tail = text.slice(tailAt);
+  const room = max - head.length - 1 - tail.length - marker.length;
+  if (room <= 0) return `${safeSlice(text, max)}\n[truncated]`;
+  return `${head}\n${safeSlice(text.slice(firstEnd + 1, tailAt), room)}${marker}${tail}`;
 }
