@@ -29,6 +29,8 @@ export interface Task {
 }
 
 export interface RunResult {
+  /** The parent thread's model ("provider/id"), after a preset's own `defaultModel` pin. */
+  model?: string;
   preset: string;
   task: string;
   run: number;
@@ -44,6 +46,8 @@ export interface RunResult {
   verifyLines: string[];
   /** Tail of the check's output, kept only when the check failed. */
   checkOutput?: string;
+  /** Subtests passed/total from the node test runner's summary lines in the check output; 0 of 0 when it has none. */
+  subtests?: { pass: number; total: number };
   /** The parent's last assistant message (its text, or the provider error), truncated. */
   finalText?: string;
   error?: string;
@@ -86,6 +90,8 @@ export interface Summary {
   meanCostUsd: number;
   meanTokens: number;
   meanSeconds: number;
+  /** Mean of pass / total over runs that have `subtests`, in percent; undefined when none has. */
+  meanSubtestPct?: number;
   /** Mean `agent` tool calls per run (parent and children). */
   meanSubAgentCalls: number;
   /** Mean of the reviewer's `quality.mean` over judged runs; undefined when none was judged. */
@@ -284,6 +290,21 @@ export const JUDGE_TIMEOUT_MS = 120_000;
 export const DIFF_CHARS = 20_000;
 export const RESULT_MARK = "__EVAL_RESULT__ ";
 
+/**
+ * Subtest counts from node's test-runner summary (`ℹ tests N` / `ℹ pass N` / ..., or TAP `# ...`), ANSI colours stripped; the last summary wins.
+ * `total` is the `tests` line, else pass + fail + cancelled + skipped. Output with no summary (the check crashed) counts as 0 of 0.
+ */
+export function parseSubtests(output: string): { pass: number; total: number } {
+  const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const get = (name: string) => {
+    const v = [...plain.matchAll(new RegExp(`^(?:ℹ|#) ${name} (\\d+)\\s*$`, "gm"))].at(-1)?.[1];
+    return v === undefined ? undefined : Number(v);
+  };
+  const pass = get("pass");
+  if (pass === undefined) return { pass: 0, total: 0 };
+  return { pass, total: get("tests") ?? pass + (get("fail") ?? 0) + (get("cancelled") ?? 0) + (get("skipped") ?? 0) };
+}
+
 function count(rs: RunResult[], re: RegExp): number {
   return rs.reduce((n, r) => n + r.verifyLines.filter((l) => re.test(l)).length, 0);
 }
@@ -292,6 +313,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
   return presets.map((preset) => {
     const rs = results.filter((r) => r.preset === preset);
     const judged = rs.filter((r) => r.quality);
+    const scored = rs.filter((r) => r.subtests);
     const mean = (f: (r: RunResult) => number) => (rs.length ? rs.reduce((s, r) => s + f(r), 0) / rs.length : 0);
     return {
       preset,
@@ -300,6 +322,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
       meanCostUsd: mean((r) => r.costUsd),
       meanTokens: mean((r) => r.input + r.output + r.cacheRead + r.cacheWrite),
       meanSeconds: mean((r) => r.seconds),
+      meanSubtestPct: scored.length ? (scored.reduce((s, r) => s + (r.subtests!.total ? r.subtests!.pass / r.subtests!.total : 0), 0) / scored.length) * 100 : undefined,
       meanSubAgentCalls: mean((r) => r.subAgentCalls),
       meanQuality: judged.length ? judged.reduce((s, r) => s + r.quality!.mean, 0) / judged.length : undefined,
       meanDiffLines: mean((r) => (r.diffStats?.added ?? 0) + (r.diffStats?.removed ?? 0)),
@@ -316,11 +339,11 @@ export function toMarkdown(report: EvalReport): string {
   const lines = [
     `# Preset eval${report.fake ? " (fake model)" : ""}`,
     "",
-    "| preset | runs | pass rate | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "| preset | runs | pass rate | mean subtest % | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
     ...report.summary.map(
       (s) =>
-        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
+        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanSubtestPct?.toFixed(0) ?? "–"} | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} |`,
     ),
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,
@@ -329,6 +352,9 @@ export function toMarkdown(report: EvalReport): string {
   if (report.judged) lines.push("", `Reviewer cost (included in the total): ${judgeCost.toFixed(4)} USD.`);
   const errors = report.results.filter((r) => r.error);
   if (errors.length) lines.push("", `Runs with errors: ${errors.length} of ${report.results.length} (${[...new Set(errors.map((r) => r.error))].join("; ")})`);
+  const models = new Map<string, Set<string>>();
+  for (const r of report.results) if (r.model) (models.get(r.preset) ?? models.set(r.preset, new Set()).get(r.preset)!).add(r.model);
+  if (models.size) lines.push("", `Parent models: ${[...models].map(([p, m]) => `${p} = ${[...m].join(", ")}`).join("; ")}.`);
   if (report.aborted) lines.push("", `Aborted: ${report.aborted}`);
   return lines.join("\n") + "\n";
 }

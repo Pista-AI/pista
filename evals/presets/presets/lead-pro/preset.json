@@ -1,0 +1,14 @@
+{
+  "description": "Cost arbitrage: DeepSeek V4 Pro leads (plans, reviews, may edit small things) and delegates exploration and large changes to explorer and implementer agents on the cheap tier (V4 Flash, low thinking). Full context window. Parent pinned to V4 Pro whatever --model says. Compare with solo-pro.",
+  "config": {
+    "maxToolCalls": 150,
+    "orchestratorMode": "lead",
+    "defaultModel": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Pro" },
+    "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
+    "agentOverrides": {
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
+      "implementer": { "model": "tier:cheap", "thinking": "low" }
+    }
+  },
+  "verify": { "commands": ["node --test"] }
+}
