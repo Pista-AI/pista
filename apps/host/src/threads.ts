@@ -33,7 +33,7 @@ import { CHECK_TIMEOUT_MS, judgeGoal, resolveJudgeModel, type SettleKind } from 
 import { bundledExtensionPaths } from "./packages.ts";
 import { resolveProjectTrust } from "./project-trust.ts";
 import { capModel, modelRef, usableModel } from "./models.ts";
-import { buildSession, ENTRY, readCustomEntry, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
+import { buildSession, ENTRY, readCustomEntry, readSliceBoard, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
 import { clip, type TextContent } from "./text.ts";
 import { DEFAULT_MAX_TOOL_CALLS, orchestratorPrompt, roleOf, rolePrompt, validToolCallLimit } from "./roles.ts";
 import { describeDenied, isModelAllowed, pickAllowedModel, restrictsModels } from "./policy-access.ts";
@@ -291,6 +291,7 @@ export class ThreadManager {
         plan: { getPlan: () => thread?.plan, setPlan: (plan) => thread && this.setPlan(thread, plan) },
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
+        sliced: { cwd, config: () => this.store.config.sliced, readBoard: () => readSliceBoard(sessionManager) },
         roles,
         thinkingMode: () => thread?.thinkingMode,
         ...(toolAudit ? { toolAudit } : {}),

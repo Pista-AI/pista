@@ -119,6 +119,7 @@ export function roleGateExtension(role: AgentRoleName, roles: RoleMap = ROLES): 
 /** Tools a top-level thread keeps in orchestrator mode; undefined when the mode is off. */
 export function orchestratorTools(mode: HostConfig["orchestratorMode"]): string[] | undefined {
   if (mode === "delegate") return ["agent", "plan"];
+  // "sliced" is gated dynamically by the sliced extension (plan phase only), so the thread keeps every tool.
   if (mode === "delegate-read") return ["agent", "plan", ...READ_ONLY_TOOLS];
   return undefined;
 }
@@ -143,6 +144,13 @@ export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string
       "## Lead mode",
       "Make small edits yourself. Delegate exploration and large or parallel changes to sub-agents with the `agent` tool.",
       "In a brief, give the goal, the files and the existing helpers to reuse (file and export), not finished code.",
+    ].join("\n");
+  }
+  if (mode === "sliced") {
+    return [
+      "## Sliced mode",
+      "Call `slices` first for any request that changes code; until you do, you can only read files and keep a plan.",
+      "Slice by independently verifiable behaviour. Give each slice an acceptance that is a command when possible. Do not write implementation in the slices: the goal says what, not how.",
     ].join("\n");
   }
   return [
