@@ -46,7 +46,7 @@ export interface RunResult {
   verifyLines: string[];
   /** Tail of the check's output, kept only when the check failed. */
   checkOutput?: string;
-  /** Subtests passed/total from the node test runner's summary lines in the check output; absent when it has none. */
+  /** Subtests passed/total from the node test runner's summary lines in the check output; 0 of 0 when it has none. */
   subtests?: { pass: number; total: number };
   /** The parent's last assistant message (its text, or the provider error), truncated. */
   finalText?: string;
@@ -290,13 +290,19 @@ export const JUDGE_TIMEOUT_MS = 120_000;
 export const DIFF_CHARS = 20_000;
 export const RESULT_MARK = "__EVAL_RESULT__ ";
 
-/** Subtest counts from node's test-runner summary (`ℹ pass N` / `ℹ fail N`, or TAP `# pass N` / `# fail N`); the last summary wins. */
-export function parseSubtests(output: string): { pass: number; total: number } | undefined {
-  const last = (name: string) => [...output.matchAll(new RegExp(`^(?:ℹ|#) ${name} (\\d+)\\s*$`, "gm"))].at(-1)?.[1];
-  const pass = last("pass");
-  const fail = last("fail");
-  if (pass === undefined || fail === undefined) return undefined;
-  return { pass: Number(pass), total: Number(pass) + Number(fail) };
+/**
+ * Subtest counts from node's test-runner summary (`ℹ tests N` / `ℹ pass N` / ..., or TAP `# ...`), ANSI colours stripped; the last summary wins.
+ * `total` is the `tests` line, else pass + fail + cancelled + skipped. Output with no summary (the check crashed) counts as 0 of 0.
+ */
+export function parseSubtests(output: string): { pass: number; total: number } {
+  const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const get = (name: string) => {
+    const v = [...plain.matchAll(new RegExp(`^(?:ℹ|#) ${name} (\\d+)\\s*$`, "gm"))].at(-1)?.[1];
+    return v === undefined ? undefined : Number(v);
+  };
+  const pass = get("pass");
+  if (pass === undefined) return { pass: 0, total: 0 };
+  return { pass, total: get("tests") ?? pass + (get("fail") ?? 0) + (get("cancelled") ?? 0) + (get("skipped") ?? 0) };
 }
 
 function count(rs: RunResult[], re: RegExp): number {
