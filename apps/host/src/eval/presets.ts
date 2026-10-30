@@ -97,8 +97,8 @@ export interface Summary {
   meanDiffLines: number;
   /** Verify-gate outcomes summed over all runs (from the sub-agent results' "Verify: ..." lines). */
   verify: { passed: number; failed: number; skipped: number };
-  /** Means over the runs that have session metrics; undefined when none do. */
-  meanMetrics?: { parentPeakContext: number; compactions: number; parentShare: number; briefsWithCode: number; agentCallsByRole: Record<string, number> };
+  /** Means over the runs that have session metrics; undefined when none do. `parentShare` is the mean of per-run ratios (runs that spent no tokens are skipped), not a share of summed tokens. */
+  meanMetrics?: { parentPeakContext: number; compactions: number; parentShare?: number; briefsWithCode: number; agentCallsByRole: Record<string, number> };
 }
 
 export function loadPreset(root: string, name: string): Preset {
@@ -302,6 +302,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
     const mm = (f: (m: SessionMetrics) => number) => ms.reduce((s, m) => s + f(m), 0) / ms.length;
     const roles: Record<string, number> = {};
     for (const m of ms) for (const [k, v] of Object.entries(m.agentCallsByRole)) roles[k] = (roles[k] ?? 0) + v / ms.length;
+    const shares = ms.flatMap((m) => (m.parentShare === undefined ? [] : [m.parentShare]));
     return {
       preset,
       runs: rs.length,
@@ -317,7 +318,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
         failed: count(rs, /verify: failed/i),
         skipped: count(rs, /verify: skipped/i),
       },
-      meanMetrics: ms.length ? { parentPeakContext: mm((m) => m.parentPeakContext), compactions: mm((m) => m.compactions), parentShare: mm((m) => m.parentShare), briefsWithCode: mm((m) => m.briefsWithCode), agentCallsByRole: roles } : undefined,
+      meanMetrics: ms.length ? { parentPeakContext: mm((m) => m.parentPeakContext), compactions: mm((m) => m.compactions), parentShare: shares.length ? shares.reduce((a, b) => a + b, 0) / shares.length : undefined, briefsWithCode: mm((m) => m.briefsWithCode), agentCallsByRole: roles } : undefined,
     };
   });
 }
@@ -325,7 +326,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
 function metricCells(m: Summary["meanMetrics"]): string {
   if (!m) return "– | – | – | – | –";
   const roles = Object.entries(m.agentCallsByRole).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(", ") || "–";
-  return `${Math.round(m.parentPeakContext)} | ${m.compactions.toFixed(1)} | ${(m.parentShare * 100).toFixed(0)}% | ${m.briefsWithCode.toFixed(1)} | ${roles}`;
+  return `${Math.round(m.parentPeakContext)} | ${m.compactions.toFixed(1)} | ${m.parentShare === undefined ? "–" : `${(m.parentShare * 100).toFixed(0)}%`} | ${m.briefsWithCode.toFixed(1)} | ${roles}`;
 }
 
 export function toMarkdown(report: EvalReport): string {
@@ -493,6 +494,7 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
   });
 
   let warnedSessions = false;
+  let warnedMetrics = false;
   const report: EvalReport = { generatedAt: new Date().toISOString(), fake: !!opts.fake, maxUsd: opts.maxUsd, judged: opts.judge !== undefined, totalCostUsd: 0, results: [], summary: [] };
   try {
     if (!opts.fake) {
@@ -535,7 +537,12 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
             try {
               if (copySessions(dir, join(opts.outDir, rel)) > 0) {
                 result.sessionsDir = rel;
-                result.metrics = sessionMetrics(join(opts.outDir, rel));
+                try {
+                  result.metrics = sessionMetrics(join(opts.outDir, rel));
+                } catch (e) {
+                  if (!warnedMetrics) console.error(`warning: could not compute session metrics: ${(e as Error).message}`);
+                  warnedMetrics = true;
+                }
               }
             } catch (e) {
               if (!warnedSessions) console.error(`warning: could not copy session files: ${(e as Error).message}`);

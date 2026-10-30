@@ -9,8 +9,8 @@ export interface SessionMetrics {
   childCompactions: number;
   parentTokens: number;
   childTokens: number;
-  /** parentTokens / (parentTokens + childTokens); 1 when nothing was spent. */
-  parentShare: number;
+  /** parentTokens / (parentTokens + childTokens); undefined when nothing was spent. */
+  parentShare?: number;
   /** The parent's `agent` calls by role; calls that only carry `continueId` count under "continue". */
   agentCallsByRole: Record<string, number>;
   /** Agent calls whose brief holds a fenced code block. */
@@ -68,7 +68,7 @@ export function sessionMetrics(dir: string): SessionMetrics | undefined {
       const entries = readJsonl(join(dir, f));
       return { entries, isChild: !!entries.find((e) => e.type === "session")?.parentSession };
     })
-    .filter((s) => s.entries.length > 0);
+    .filter((s) => s.entries[0]?.type === "session"); // other *.jsonl (browser traces, ...) sit in the same tree
   if (!sessions.length) return undefined;
 
   const agentCalls = (s: Session) =>
@@ -76,7 +76,7 @@ export function sessionMetrics(dir: string): SessionMetrics | undefined {
   const roots = sessions.filter((s) => !s.isChild);
   const parent = (roots.length ? roots : sessions).reduce((best, s) => (agentCalls(s).length > agentCalls(best).length ? s : best));
 
-  const m: SessionMetrics = { parentPeakContext: 0, compactions: 0, childCompactions: 0, parentTokens: 0, childTokens: 0, parentShare: 1, agentCallsByRole: {}, briefsWithCode: 0, wallClockSeconds: 0 };
+  const m: SessionMetrics = { parentPeakContext: 0, compactions: 0, childCompactions: 0, parentTokens: 0, childTokens: 0, agentCallsByRole: {}, briefsWithCode: 0, wallClockSeconds: 0 };
   let first = Infinity;
   let last = -Infinity;
   for (const s of sessions) {
