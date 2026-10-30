@@ -37,7 +37,7 @@ export function validateSlices(input: unknown): { ok: true; slices: Slice[] } | 
     if (ids.has(s.id)) return { ok: false, error: `duplicate slice id "${s.id}"` };
     ids.add(s.id);
     if (!nonEmpty(s.title) || !nonEmpty(s.goal)) return { ok: false, error: `slice "${s.id}" needs a title and a goal` };
-    if (!strings(s.filesOrAreas) || s.filesOrAreas.length === 0 || !s.filesOrAreas.every(nonEmpty)) return { ok: false, error: `slice "${s.id}" needs a non-empty filesOrAreas list` };
+    if (!strings(s.filesOrAreas) || s.filesOrAreas.length === 0 || !s.filesOrAreas.every((p) => nonEmpty(p) && p.split("/").some((seg) => seg && seg !== "."))) return { ok: false, error: `slice "${s.id}" needs a non-empty filesOrAreas list` };
     if (!nonEmpty(s.acceptance)) return { ok: false, error: `slice "${s.id}" needs a non-empty acceptance` };
     if (s.dependsOn !== undefined && !strings(s.dependsOn)) return { ok: false, error: `slice "${s.id}": dependsOn must be a list of slice ids` };
     slices.push({ id: s.id, title: s.title, goal: s.goal, filesOrAreas: s.filesOrAreas, acceptance: s.acceptance, dependsOn: s.dependsOn ?? [] });

@@ -16,7 +16,7 @@ async function bytesOf(paths: string[], cwd: string): Promise<number> {
     if (BINARY.test(path)) continue;
     try {
       const info = await stat(join(cwd, path));
-      if (info.isFile() && info.size <= MAX_FILE_BYTES) total += info.size;
+      if (info.isFile()) total += Math.min(info.size, MAX_FILE_BYTES);
     } catch {
       // Listed but gone or unreadable: it does not count.
     }
@@ -38,12 +38,12 @@ async function walk(cwd: string): Promise<string[]> {
   return files;
 }
 
-/** Rough token count of the repo at `cwd`: bytes of tracked text files (git ls-files), or of a bounded directory walk without git, over four. */
+/** Rough token count of the repo at `cwd`: bytes of tracked text files (git ls-files; a file over 1 MB counts as 1 MB), or of a bounded directory walk without git, over four. */
 export async function estimateRepoTokens(cwd: string): Promise<number> {
   let paths: string[];
   try {
     const { stdout } = await run("git", ["ls-files", "-z"], { cwd, maxBuffer: 64 * 1024 * 1024 });
-    paths = stdout.split("\0").filter(Boolean);
+    paths = stdout.split("\0").filter((p) => p && !p.split("/").some((s) => SKIP_DIRS.has(s)));
   } catch {
     paths = await walk(cwd);
   }
