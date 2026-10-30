@@ -1,5 +1,5 @@
 {
-  "description": "Lead mode under context pressure: as lead-nebius (parent keeps its tools and delegates large work; explorer and implementer on the cheap tier, V4 Flash, low thinking), with every model's context window capped at 32k so the parent's window fills up unless it delegates. Parent pinned to Flash whatever --model says. Compare with solo-32k.",
+  "description": "Lead mode under context pressure: as lead-nebius (parent keeps its tools and delegates large work; explorer and implementer on the cheap tier, V4 Flash, low thinking), with every model's context window capped at 32k so the parent's window fills up unless it delegates. Parent pinned to Flash whatever --model says. Compare with solo-32k on long-horizon-feature.",
   "config": {
     "contextWindowCap": 32768,
     "maxToolCalls": 150,

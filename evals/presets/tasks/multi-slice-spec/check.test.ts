@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { runReturnsCli } from "./src/cli/returns.ts";
 import { DomainError } from "./src/errors.ts";
 import { OrderStore } from "./src/orders/store.ts";
-import { ReturnService } from "./src/returns/service.ts";
-import { RETURN_STATUSES, canTransition, isReturnStatus, type ReturnStatus } from "./src/returns/types.ts";
+import type { ReturnStatus } from "./src/returns/types.ts";
 
-function setup() {
+/** A test file in test/ that mentions the module and contains at least one assertion call. */
+function hasTest(mod: string): boolean {
+  return readdirSync("test")
+    .filter((f) => f.endsWith(".test.ts"))
+    .some((f) => {
+      const text = readFileSync(`test/${f}`, "utf8");
+      return text.includes(mod) && /\bassert(\.\w+)?\(/.test(text);
+    });
+}
+
+async function setup() {
+  const { ReturnService } = await import("./src/returns/service.ts");
   const store = new OrderStore();
   store.add({ id: "o-1", customerId: "c-1", status: "shipped", lines: [{ sku: "mug-01", qty: 3, unitCents: 1999 }, { sku: "pen-02", qty: 1, unitCents: 250 }] });
   return new ReturnService(store);
@@ -15,7 +24,8 @@ function setup() {
 const fails = (fn: () => unknown, code: string, message: string) =>
   assert.throws(fn, (e: unknown) => e instanceof DomainError && e.code === code && e.message === message, `${code}: ${message}`);
 
-test("part 1: types", () => {
+test("part 1: types", async () => {
+  const { RETURN_STATUSES, canTransition, isReturnStatus } = await import("./src/returns/types.ts");
   assert.deepEqual([...RETURN_STATUSES], ["requested", "approved", "rejected", "received", "refunded"]);
   for (const s of RETURN_STATUSES) assert.equal(isReturnStatus(s), true);
   for (const v of ["", "Requested", 3, null, undefined]) assert.equal(isReturnStatus(v), false);
@@ -23,8 +33,8 @@ test("part 1: types", () => {
   for (const a of RETURN_STATUSES) for (const b of RETURN_STATUSES) assert.equal(canTransition(a, b), ok.has(`${a}>${b}`), `${a} to ${b}`);
 });
 
-test("part 2: service request rules", () => {
-  const s = setup();
+test("part 2: service request rules", async () => {
+  const s = await setup();
   const r = s.request("o-1", "mug-01", 2, "  arrived broken ");
   assert.deepEqual(r, { id: "ret-1", orderId: "o-1", sku: "mug-01", qty: 2, reason: "arrived broken", status: "requested" });
   fails(() => s.request("o-1", "mug-01", 1, "   "), "reason-required", "a reason is required");
@@ -37,8 +47,8 @@ test("part 2: service request rules", () => {
   fails(() => s.request("o-1", "pen-02", 1, "x"), "qty-exceeds-order", "cannot return 1 of pen-02: 0 left to return");
 });
 
-test("part 2: service lifecycle", () => {
-  const s = setup();
+test("part 2: service lifecycle", async () => {
+  const s = await setup();
   const a = s.request("o-1", "mug-01", 3, "x");
   assert.equal(s.approve(a.id).status, "approved");
   fails(() => s.refund(a.id), "bad-transition", "cannot go from approved to refunded");
@@ -50,7 +60,7 @@ test("part 2: service lifecycle", () => {
   fails(() => s.get("ret-99"), "return-not-found", "return not found: ret-99");
   fails(() => s.approve("ret-99"), "return-not-found", "return not found: ret-99");
 
-  const b = setup();
+  const b = await setup();
   const first = b.request("o-1", "mug-01", 3, "x");
   fails(() => b.reject(first.id, "  "), "note-required", "a note is required");
   const rejected = b.reject(first.id, "worn out");
@@ -62,8 +72,9 @@ test("part 2: service lifecycle", () => {
   assert.deepEqual(b.list("approved"), []);
 });
 
-test("part 3: cli", () => {
-  const s = setup();
+test("part 3: cli", async () => {
+  const { runReturnsCli } = await import("./src/cli/returns.ts");
+  const s = await setup();
   const run = (...argv: string[]) => {
     const lines: string[] = [];
     const code = runReturnsCli(argv, s, (l) => lines.push(l));
@@ -89,7 +100,6 @@ test("part 3: cli", () => {
   assert.deepEqual(run("approve", "ret-9"), { code: 1, lines: ["error: return not found: ret-9"] });
 });
 
-test("each part has its own test file", () => {
-  const sources = readdirSync("test").filter((f) => f.endsWith(".test.ts")).map((f) => readFileSync(`test/${f}`, "utf8"));
-  for (const mod of ["returns/types", "returns/service", "cli/returns"]) assert.ok(sources.some((s) => s.includes(mod)), `no test in test/ imports ${mod}`);
-});
+for (const mod of ["returns/types", "returns/service", "cli/returns"]) {
+  test(`own test file with assertions: ${mod}`, () => assert.ok(hasTest(mod), `no test in test/ mentions ${mod} and asserts something`));
+}
