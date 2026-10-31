@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceDiff } from "./diff.ts";
-import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -22,7 +22,7 @@ test("fake run over every task and both presets passes and produces the report s
   assert.match(first.model ?? "", /^[^/]+\/.+/);
   const md = toMarkdown(report);
   assert.match(md, /Parent models: solo = /);
-  assert.match(md, /\| preset \| runs \| pass rate \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| mean quality \(1-5\) \| mean diff lines \| verify pass\/fail\/skip \|/);
+  assert.match(md, /\| preset \| runs \| pass rate \| mean subtest % \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| mean quality \(1-5\) \| mean diff lines \| verify pass\/fail\/skip \| peak parent ctx/);
   assert.match(md, new RegExp(`\\| solo \\| ${n} \\| 100% \\|`));
   assert.match(md, new RegExp(`\\| routed \\| ${n} \\| 100% \\|`));
 });
@@ -203,6 +203,20 @@ test("session files are kept under <outDir>/sessions by default and skipped with
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+test("parseSubtests reads node's reporter summary (spec and TAP) and leaves other output undefined", () => {
+  const spec = "\u2716 failing checks (1.2ms)\n\n\u2139 tests 7\n\u2139 suites 0\n\u2139 pass 5\n\u2139 fail 2\n\u2139 cancelled 0\n\u2139 skipped 0\n";
+  assert.deepEqual(parseSubtests(spec), { pass: 5, total: 7 });
+  assert.deepEqual(parseSubtests("1..3\nok 1 - a\n# tests 3\n# pass 3\n# fail 0\n"), { pass: 3, total: 3 });
+  assert.deepEqual(parseSubtests("Error: Cannot find module"), { pass: 0, total: 0 });
+  assert.deepEqual(parseSubtests("\u001b[31m\u2139 pass 2\u001b[39m\n\u2139 fail 1\n\u2139 cancelled 1\n\u2139 skipped 0\n"), { pass: 2, total: 4 });
+  const base = { task: "t", run: 1, seconds: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0 };
+  const rows = summarize([{ ...base, preset: "a", pass: false, subtests: { pass: 1, total: 2 } }, { ...base, preset: "a", pass: true, subtests: { pass: 4, total: 4 } }, { ...base, preset: "a", pass: true }], ["a"]);
+  assert.equal(rows[0]!.meanSubtestPct, 75);
+  const crashed = summarize([{ ...base, preset: "a", pass: false, subtests: { pass: 0, total: 0 } }, { ...base, preset: "a", pass: true, subtests: { pass: 2, total: 2 } }], ["a"]);
+  assert.equal(crashed[0]!.meanSubtestPct, 50);
+  assert.equal(summarize([{ ...base, preset: "a", pass: true }], ["a"])[0]!.meanSubtestPct, undefined);
 });
 
 test("markdown shows session metrics when present and dashes when absent", () => {

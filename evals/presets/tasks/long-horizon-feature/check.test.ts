@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
+// Every assertion below follows from a sentence of task.md or from a convention visible in the fixture; the source is
+// noted next to it. Conventions: src/billing/order-number.ts (strict parser: exact digit widths, upper-case prefix, no
+// surrounding whitespace, sequence 0 rejected, null otherwise) and src/reports/sales-by-month.ts (`orders` is a count).
+
+
 /** A test file in test/ that mentions the module and contains at least one assertion call. */
 function hasTest(mod: string): boolean {
   return readdirSync("test")
@@ -12,6 +17,7 @@ function hasTest(mod: string): boolean {
     });
 }
 
+// Task item 1: demand = dailyDemand * (leadDays + safetyDays) rounded up, minus available(stock) (src/inventory/stock.ts, never negative), floored at 0.
 test("1 inventory: reorderQuantity", async () => {
   const { reorderQuantity } = await import("./src/inventory/reorder.ts");
   assert.equal(reorderQuantity({ onHand: 20, reserved: 5, dailyDemand: 4 }, 5), 13); // 28 needed, 15 available
@@ -20,6 +26,7 @@ test("1 inventory: reorderQuantity", async () => {
   assert.equal(reorderQuantity({ onHand: 100, reserved: 0, dailyDemand: 1 }, 3), 0);
 });
 
+// Task item 2: tiers 5/10/15% at 10/50/100 units, highest tier reached, per-line discount rounded down, summed.
 test("2 orders: bulkDiscountCents", async () => {
   const { bulkDiscountCents } = await import("./src/orders/bulk-discount.ts");
   const line = (qty: number, unitCents: number) => ({ sku: "x", qty, unitCents });
@@ -32,6 +39,8 @@ test("2 orders: bulkDiscountCents", async () => {
   assert.equal(bulkDiscountCents([line(10, 100), line(50, 100), line(2, 100)]), 50 + 500);
 });
 
+// Task item 3 gives the format, the six-digit padding, the 1..999999 range and "null for anything else". Which strings
+// count as "anything else" (wrong digit width, lower-case, surrounding whitespace) is the convention of parseOrderNumber.
 test("3 billing: invoice numbers", async () => {
   const { formatInvoiceNumber, parseInvoiceNumber } = await import("./src/billing/invoice-number.ts");
   assert.equal(formatInvoiceNumber(2026, 42), "INV-2026-000042");
@@ -41,6 +50,7 @@ test("3 billing: invoice numbers", async () => {
   for (const bad of ["", "INV-2026-42", "inv-2026-000042", "INV-2026-000000", "INV-2026-0000421", " INV-2026-000042"]) assert.equal(parseInvoiceNumber(bad), null, bad);
 });
 
+// Task item 4: spaces inside braces, HTML-escaped String(value) (escapeHtml in src/notifications/escape.ts escapes & < > " '), exact error message.
 test("4 notifications: renderTemplate", async () => {
   const { renderTemplate } = await import("./src/notifications/render.ts");
   assert.equal(renderTemplate("Hi {{name}}!", { name: "Ada" }), "Hi Ada!");
@@ -50,6 +60,7 @@ test("4 notifications: renderTemplate", async () => {
   assert.throws(() => renderTemplate("Hi {{name}}", { other: 1 }), (e: Error) => e.message === "missing variable: name");
 });
 
+// Task item 5: cancelled ignored, per UTC day (dayOf in src/reports/dates.ts), ascending. `orders` is a count: salesByMonth's convention.
 test("5 reports: salesByDay", async () => {
   const { salesByDay } = await import("./src/reports/sales-by-day.ts");
   const rows = salesByDay([
@@ -63,6 +74,7 @@ test("5 reports: salesByDay", async () => {
   assert.deepEqual(salesByDay([]), []);
 });
 
+// Task intro: "needs its own test file in test/"; the check only requires a file that mentions the module and asserts something.
 for (const mod of ["inventory/reorder", "orders/bulk-discount", "billing/invoice-number", "notifications/render", "reports/sales-by-day"]) {
   test(`own test file with assertions: ${mod}`, () => assert.ok(hasTest(mod), `no test in test/ mentions ${mod} and asserts something`));
 }
