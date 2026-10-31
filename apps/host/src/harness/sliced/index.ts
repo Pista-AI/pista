@@ -5,6 +5,7 @@ import { slicedExtension } from "./extension.ts";
 import type { SliceBoard } from "./board.ts";
 import type { HostConfig } from "@pista/protocol";
 import { defineHarness } from "../types.ts";
+import { slicedEval } from "./eval.ts";
 
 /** The sliced orchestrator mode behind the harness interface; `slicedExtension` stays where it is. */
 export const slicedHarness = defineHarness({
@@ -20,4 +21,5 @@ export const slicedHarness = defineHarness({
     }),
   validateConfig: validSliced,
   entries: [ENTRY.slices],
+  eval: slicedEval,
 });
