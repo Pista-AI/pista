@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { looksLikeCode } from "../brief.ts";
 
 /** Orchestration metrics derived from a run's kept Pi session files. */
 export interface SessionMetrics {
@@ -79,7 +80,7 @@ function slicedMetrics(entries: Entry[]): SlicedMetrics {
   return { dispatched, slices: board?.slices?.length ?? 0, done: count("done"), failed: count("failed"), skipped: count("skipped") };
 }
 
-const assistantUsage =(e: Entry) => (e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined);
+const assistantUsage = (e: Entry) => (e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined);
 const total = (u: Usage) => (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
 
 /** Walks `dir` for session JSONL files; undefined when there are none. The parent is the session without a `parentSession` that makes the most agent calls (ties: the first file). */
@@ -128,7 +129,9 @@ export function sessionMetrics(dir: string): SessionMetrics | undefined {
     const a = call.arguments ?? {};
     const role = typeof a.role === "string" && a.role ? a.role : "continue";
     m.agentCallsByRole[role] = (m.agentCallsByRole[role] ?? 0) + 1;
-    if (typeof a.brief === "string" && a.brief.includes("```")) m.briefsWithCode++;
+    const pointers = Array.isArray(a.pointers) ? a.pointers.filter((p): p is string => typeof p === "string") : [];
+    // `brief` is the pre-structured parameter; old sessions still carry it.
+    if ([a.goal, a.constraints, a.brief, pointers.join("\n")].some((t) => typeof t === "string" && looksLikeCode(t))) m.briefsWithCode++;
   }
   if (calls(parent, "slices").length) m.sliced = slicedMetrics(parent.entries);
   const spent = m.parentTokens + m.childTokens;

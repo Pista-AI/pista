@@ -20,7 +20,7 @@ export interface SliceBoard {
   status: Record<string, SliceStatus>;
   /** How often the harness has had to remind the parent to call `slices`. */
   nudges: number;
-  /** How often the harness has asked the parent to mention failed or skipped slices; absent in boards saved before step 4. */
+  /** How often the harness has asked the parent to mention failed or skipped slices; absent in older saved boards. */
   integrateNudges?: number;
   /** The user prompt that started this plan, verbatim (capped); children see it next to their slice goal. */
   request?: string;

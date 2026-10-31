@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fauxModels, liveOf as liveMap, makeManager, setupHome } from "../../test-helpers.ts";
 
 const { projectDir } = setupHome("sliced-ext");
@@ -257,4 +259,27 @@ test("a prompt with a code fence does not make the slices fail", async () => {
   faux.setResponses([slicesCall([slice("a"), slice("b")]), report, report, piAi.fauxAssistantMessage("done")]);
   await session(id).prompt("Fix:\n```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```");
   assert.deepEqual(board(id)?.status, { a: "done", b: "done" });
+});
+
+test("the window used for the solo decision is the smaller of the model window and contextWindowCap", async () => {
+  // About 10k tokens of repo: well under half the model's window, over half of a 4k cap.
+  const file = join(projectDir, "big.txt");
+  writeFileSync(file, "x".repeat(40_000));
+  const fitsSolo = (id: string) => piAi.fauxAssistantMessage(piAi.fauxToolCall("slices", { slices: [slice("a"), slice("b")], fits_solo: true, reason: "r" }));
+  const report = piAi.fauxAssistantMessage("## Changed\nx\n\n## Ran\nnone\n\n## Assumptions\nnone\n\n## Open questions\nnone");
+  try {
+    const uncapped = await newThread();
+    faux.setResponses([fitsSolo(uncapped), piAi.fauxAssistantMessage("done")]);
+    await session(uncapped).prompt("go");
+    assert.match(results(uncapped)[0]!, /Proceed solo: small task in a small repo/);
+
+    store.patchConfig({ contextWindowCap: 4000 });
+    const capped = await newThread();
+    faux.setResponses([fitsSolo(capped), report, report, piAi.fauxAssistantMessage("done")]);
+    await session(capped).prompt("go");
+    assert.match(results(capped)[0]!, /Dispatch finished/);
+  } finally {
+    store.patchConfig({ contextWindowCap: undefined });
+    rmSync(file, { force: true });
+  }
 });
