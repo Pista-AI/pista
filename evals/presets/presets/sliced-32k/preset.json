@@ -1,0 +1,16 @@
+{
+  "description": "Harness-driven slicing under context pressure: compare with solo-32k on long-horizon-feature and multi-slice-spec",
+  "config": {
+    "contextWindowCap": 32768,
+    "maxToolCalls": 150,
+    "orchestratorMode": "sliced",
+    "sliced": { "maxParallel": 1 },
+    "defaultModel": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" },
+    "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
+    "agentOverrides": {
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
+      "implementer": { "model": "tier:cheap", "thinking": "low" }
+    }
+  },
+  "verify": { "commands": ["node --test"] }
+}

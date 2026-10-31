@@ -1,0 +1,56 @@
+{
+  "slices": [
+    {
+      "id": "reorder",
+      "title": "Reorder quantity",
+      "goal": "Add reorderQuantity in src/inventory/reorder.ts with a test",
+      "files_or_areas": [
+        "src/inventory/reorder.ts",
+        "test/reorder.test.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass"
+    },
+    {
+      "id": "bulk-discount",
+      "title": "Bulk discount",
+      "goal": "Add bulkDiscountCents in src/orders/bulk-discount.ts with a test",
+      "files_or_areas": [
+        "src/orders/bulk-discount.ts",
+        "test/bulk-discount.test.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass"
+    },
+    {
+      "id": "invoice-number",
+      "title": "Invoice numbers",
+      "goal": "Add formatInvoiceNumber and parseInvoiceNumber in src/billing/invoice-number.ts with a test",
+      "files_or_areas": [
+        "src/billing/invoice-number.ts",
+        "test/invoice-number.test.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass"
+    },
+    {
+      "id": "render",
+      "title": "Template rendering",
+      "goal": "Add renderTemplate in src/notifications/render.ts with a test",
+      "files_or_areas": [
+        "src/notifications/render.ts",
+        "test/render.test.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass"
+    },
+    {
+      "id": "sales-by-day",
+      "title": "Sales by day",
+      "goal": "Add salesByDay in src/reports/sales-by-day.ts with a test",
+      "files_or_areas": [
+        "src/reports/sales-by-day.ts",
+        "test/sales-by-day.test.ts"
+      ],
+      "acceptance": "node --test and the typecheck pass"
+    }
+  ],
+  "fits_solo": false,
+  "reason": "Five independent features in five domains of a large repo"
+}

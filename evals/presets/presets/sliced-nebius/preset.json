@@ -1,0 +1,14 @@
+{
+  "description": "Harness-driven slicing on Nebius: the parent splits the request with the slices tool and the harness runs one implementer (V4 Flash, low thinking) per slice, then integrates; compare with lead-nebius and solo on long-horizon-feature and multi-slice-spec",
+  "config": {
+    "maxToolCalls": 150,
+    "orchestratorMode": "sliced",
+    "sliced": { "maxParallel": 1 },
+    "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
+    "agentOverrides": {
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
+      "implementer": { "model": "tier:cheap", "thinking": "low" }
+    }
+  },
+  "verify": { "commands": ["node --test"] }
+}

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChatMessage } from "@pista/protocol";
 import { spawnGroup } from "../process-group.ts";
-import { sessionMetrics, type SessionMetrics } from "./session-metrics.ts";
+import { sessionMetrics, type SessionMetrics, type SlicedMetrics } from "./session-metrics.ts";
 
 export interface Preset {
   name: string;
@@ -103,6 +103,8 @@ export interface Summary {
   meanDiffLines: number;
   /** Verify-gate outcomes summed over all runs (from the sub-agent results' "Verify: ..." lines). */
   verify: { passed: number; failed: number; skipped: number };
+  /** Sliced-mode runs among those with session metrics: how many dispatched, and slice outcomes summed over them. */
+  sliced?: { runs: number; dispatched: number; slices: number; done: number; failed: number; skipped: number };
   /** Means over the runs that have session metrics; undefined when none do. `parentShare` is the mean of per-run ratios (runs that spent no tokens are skipped), not a share of summed tokens. */
   meanMetrics?: { parentPeakContext: number; compactions: number; parentShare?: number; briefsWithCode: number; agentCallsByRole: Record<string, number> };
 }
@@ -324,6 +326,8 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
     const mm = (f: (m: SessionMetrics) => number) => ms.reduce((s, m) => s + f(m), 0) / ms.length;
     const roles: Record<string, number> = {};
     for (const m of ms) for (const [k, v] of Object.entries(m.agentCallsByRole)) roles[k] = (roles[k] ?? 0) + v / ms.length;
+    const slicedRuns = ms.flatMap((m) => (m.sliced ? [m.sliced] : []));
+    const sum = (f: (x: SlicedMetrics) => number) => slicedRuns.reduce((a, x) => a + f(x), 0);
     const shares = ms.flatMap((m) => (m.parentShare === undefined ? [] : [m.parentShare]));
     return {
       preset,
@@ -341,6 +345,7 @@ export function summarize(results: RunResult[], presets: string[]): Summary[] {
         failed: count(rs, /verify: failed/i),
         skipped: count(rs, /verify: skipped/i),
       },
+      sliced: slicedRuns.length ? { runs: slicedRuns.length, dispatched: slicedRuns.filter((x) => x.dispatched).length, slices: sum((x) => x.slices), done: sum((x) => x.done), failed: sum((x) => x.failed), skipped: sum((x) => x.skipped) } : undefined,
       meanMetrics: ms.length ? { parentPeakContext: mm((m) => m.parentPeakContext), compactions: mm((m) => m.compactions), parentShare: shares.length ? shares.reduce((a, b) => a + b, 0) / shares.length : undefined, briefsWithCode: mm((m) => m.briefsWithCode), agentCallsByRole: roles } : undefined,
     };
   });
@@ -352,15 +357,19 @@ function metricCells(m: Summary["meanMetrics"]): string {
   return `${Math.round(m.parentPeakContext)} | ${m.compactions.toFixed(1)} | ${m.parentShare === undefined ? "–" : `${(m.parentShare * 100).toFixed(0)}%`} | ${m.briefsWithCode.toFixed(1)} | ${roles}`;
 }
 
+function slicedCell(s: Summary["sliced"]): string {
+  return s ? `${s.dispatched}/${s.runs} dispatched; ${s.done}/${s.failed}/${s.skipped} of ${s.slices}` : "–";
+}
+
 export function toMarkdown(report: EvalReport): string {
   const lines = [
     `# Preset eval${report.fake ? " (fake model)" : ""}`,
     "",
-    "| preset | runs | pass rate | mean subtest % | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip | peak parent ctx | compactions | parent token share | briefs with code | agent calls by role |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| preset | runs | pass rate | mean subtest % | mean cost (USD) | mean tokens | mean time (s) | mean sub-agent calls | mean quality (1-5) | mean diff lines | verify pass/fail/skip | peak parent ctx | compactions | parent token share | briefs with code | agent calls by role | sliced (dispatched; done/failed/skipped of slices) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...report.summary.map(
       (s) =>
-        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanSubtestPct?.toFixed(0) ?? "–"} | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} | ${metricCells(s.meanMetrics)} |`,
+        `| ${s.preset} | ${s.runs} | ${(s.passRate * 100).toFixed(0)}% | ${s.meanSubtestPct?.toFixed(0) ?? "–"} | ${s.meanCostUsd.toFixed(4)} | ${Math.round(s.meanTokens)} | ${s.meanSeconds.toFixed(1)} | ${s.meanSubAgentCalls.toFixed(1)} | ${s.meanQuality?.toFixed(2) ?? "–"} | ${s.meanDiffLines.toFixed(0)} | ${s.verify.passed}/${s.verify.failed}/${s.verify.skipped} | ${metricCells(s.meanMetrics)} | ${slicedCell(s.sliced)} |`,
     ),
     "",
     `Total reported cost: ${report.totalCostUsd.toFixed(4)} USD${report.maxUsd !== undefined ? ` (cap ${report.maxUsd})` : ""}.`,

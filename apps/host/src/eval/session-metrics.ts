@@ -17,6 +17,17 @@ export interface SessionMetrics {
   briefsWithCode: number;
   /** First to last timestamp across all session files. */
   wallClockSeconds: number;
+  /** Sliced orchestrator mode: set when the parent called `slices`; counts come from its last persisted board. */
+  sliced?: SlicedMetrics;
+}
+
+export interface SlicedMetrics {
+  /** The harness ran implementers for the slices (false when it went solo). */
+  dispatched: boolean;
+  slices: number;
+  done: number;
+  failed: number;
+  skipped: number;
 }
 
 interface Usage {
@@ -34,6 +45,8 @@ interface Part {
 
 interface Entry {
   type?: string;
+  customType?: string;
+  data?: { slices?: unknown[]; phase?: string; status?: Record<string, string> };
   timestamp?: string;
   parentSession?: string;
   message?: { role?: string; usage?: Usage; content?: Part[] };
@@ -57,7 +70,16 @@ function readJsonl(file: string): Entry[] {
   return out;
 }
 
-const assistantUsage = (e: Entry) => (e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined);
+/** Counts from the last `pista.slices` board entry the parent persisted. */
+function slicedMetrics(entries: Entry[]): SlicedMetrics {
+  const board = entries.findLast((e) => e.type === "custom" && e.customType === "pista.slices")?.data;
+  const status = Object.values(board?.status ?? {});
+  const count = (s: string) => status.filter((x) => x === s).length;
+  const dispatched = !!board && board.phase !== "solo" && board.phase !== "plan" && status.some((x) => x !== "pending");
+  return { dispatched, slices: board?.slices?.length ?? 0, done: count("done"), failed: count("failed"), skipped: count("skipped") };
+}
+
+const assistantUsage =(e: Entry) => (e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined);
 const total = (u: Usage) => (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
 
 /** Walks `dir` for session JSONL files; undefined when there are none. The parent is the session without a `parentSession` that makes the most agent calls (ties: the first file). */
@@ -71,10 +93,13 @@ export function sessionMetrics(dir: string): SessionMetrics | undefined {
     .filter((s) => s.entries[0]?.type === "session"); // other *.jsonl (browser traces, ...) sit in the same tree
   if (!sessions.length) return undefined;
 
-  const agentCalls = (s: Session) =>
-    s.entries.flatMap((e) => (e.type === "message" && e.message?.role === "assistant" && Array.isArray(e.message.content) ? e.message.content.filter((p) => p.type === "toolCall" && p.name === "agent") : []));
+  const calls = (s: Session, ...names: string[]) =>
+    s.entries.flatMap((e) => (e.type === "message" && e.message?.role === "assistant" && Array.isArray(e.message.content) ? e.message.content.filter((p) => p.type === "toolCall" && names.includes(p.name ?? "")) : []));
+  const agentCalls = (s: Session) => calls(s, "agent");
+  // A `slices` call dispatches work like an `agent` call, so a sliced parent still outranks its children.
+  const dispatches = (s: Session) => calls(s, "agent", "slices").length;
   const roots = sessions.filter((s) => !s.isChild);
-  const parent = (roots.length ? roots : sessions).reduce((best, s) => (agentCalls(s).length > agentCalls(best).length ? s : best));
+  const parent = (roots.length ? roots : sessions).reduce((best, s) => (dispatches(s) > dispatches(best) ? s : best));
 
   const m: SessionMetrics = { parentPeakContext: 0, compactions: 0, childCompactions: 0, parentTokens: 0, childTokens: 0, agentCallsByRole: {}, briefsWithCode: 0, wallClockSeconds: 0 };
   let first = Infinity;
@@ -105,6 +130,7 @@ export function sessionMetrics(dir: string): SessionMetrics | undefined {
     m.agentCallsByRole[role] = (m.agentCallsByRole[role] ?? 0) + 1;
     if (typeof a.brief === "string" && a.brief.includes("```")) m.briefsWithCode++;
   }
+  if (calls(parent, "slices").length) m.sliced = slicedMetrics(parent.entries);
   const spent = m.parentTokens + m.childTokens;
   if (spent > 0) m.parentShare = m.parentTokens / spent;
   if (last > first) m.wallClockSeconds = (last - first) / 1000;

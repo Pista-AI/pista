@@ -291,7 +291,7 @@ export class ThreadManager {
         plan: { getPlan: () => thread?.plan, setPlan: (plan) => thread && this.setPlan(thread, plan) },
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
-        sliced: { cwd, config: () => this.store.config.sliced, readBoard: () => readSliceBoard(sessionManager) },
+        sliced: { cwd, config: () => this.store.config.sliced, windowCap: () => this.store.config.contextWindowCap, readBoard: () => readSliceBoard(sessionManager) },
         roles,
         thinkingMode: () => thread?.thinkingMode,
         ...(toolAudit ? { toolAudit } : {}),
