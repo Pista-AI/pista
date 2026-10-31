@@ -103,9 +103,9 @@ export interface Summary {
   meanDiffLines: number;
   /** Verify-gate outcomes summed over all runs (from the sub-agent results' "Verify: ..." lines). */
   verify: { passed: number; failed: number; skipped: number };
-  /** Means over the runs that have session metrics; undefined when none do. `parentShare` is the mean of per-run ratios (runs that spent no tokens are skipped), not a share of summed tokens. */
   /** Sliced-mode runs among those with session metrics: how many dispatched, and slice outcomes summed over them. */
   sliced?: { runs: number; dispatched: number; slices: number; done: number; failed: number; skipped: number };
+  /** Means over the runs that have session metrics; undefined when none do. `parentShare` is the mean of per-run ratios (runs that spent no tokens are skipped), not a share of summed tokens. */
   meanMetrics?: { parentPeakContext: number; compactions: number; parentShare?: number; briefsWithCode: number; agentCallsByRole: Record<string, number> };
 }
 

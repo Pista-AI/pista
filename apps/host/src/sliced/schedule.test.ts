@@ -193,3 +193,48 @@ test("capRequest cuts a request over the cap and marks it", () => {
   assert.equal(out, `${"r".repeat(REQUEST_CHARS)}\n[truncated]`);
   assert.equal(capRequest("short"), "short");
 });
+
+test("a runner that throws inside a parallel wave leaves the sibling done", async () => {
+  const { board } = await runSchedule({
+    cwd, board: boardOf([slice("a"), slice("b")]),
+    waves: [["a", "b"]],
+    runAgent: async (p) => {
+      if (p.goal === "goal a") throw new Error("boom");
+      return outcome({ edited: true });
+    },
+    persist: () => {},
+  });
+  assert.deepEqual(board.status, { a: "failed", b: "done" });
+});
+
+test("the abort signal is passed to the runner", async () => {
+  const ac = new AbortController();
+  let seen: AbortSignal | undefined;
+  await runSchedule({
+    cwd, board: boardOf([slice("a")]),
+    waves: [["a"]],
+    runAgent: async (_p, signal) => {
+      seen = signal;
+      return outcome();
+    },
+    persist: () => {},
+    signal: ac.signal,
+  });
+  assert.equal(seen, ac.signal);
+});
+
+test("notes carry the verify line, and an unedited unverified slice is flagged", async () => {
+  const { results } = await runSchedule({
+    cwd, board: boardOf([slice("a"), slice("b"), slice("c")]),
+    waves: [["a"], ["b"], ["c"]],
+    runAgent: async (p) => {
+      if (p.goal === "goal a") return outcome({ verify: "failed", verifyNote: "failed after 2 attempts (pnpm test)", edited: true });
+      if (p.goal === "goal b") return outcome({ verify: "none", edited: false });
+      return outcome({ verify: "passed", edited: true });
+    },
+    persist: () => {},
+  });
+  assert.equal(results.a?.note, "verify failed after 2 attempts (pnpm test)");
+  assert.equal(results.b?.note, "unverified: no edits");
+  assert.equal(results.c?.note, undefined);
+});

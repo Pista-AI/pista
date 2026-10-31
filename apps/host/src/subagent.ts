@@ -71,6 +71,10 @@ export interface AgentToolDetails {
 /** How a run ended, for callers that act on it (the sliced scheduler) rather than read the text. */
 export interface AgentOutcome {
   verify: "passed" | "failed" | "skipped" | "none";
+  /** The Verify line without its prefix, e.g. "failed after 2 attempts (pnpm test)"; absent when nothing was verified. */
+  verifyNote?: string;
+  /** True when the child changed files through `edit` or `write`. */
+  edited?: boolean;
   /** The child's final message (or the abort notice). */
   report: string;
   threadId?: string;
@@ -291,7 +295,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
           return {
             content: text(`${report}${verifyLine ? `\n\n${verifyLine}` : ""}\n\n${footer}`),
             details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead },
-            outcome: { verify: verifyStatus, report, threadId: childId, aborted: false },
+            outcome: { verify: verifyStatus, verifyNote: verifyLine.replace(/^Verify: /, "") || undefined, edited, report, threadId: childId, aborted: false },
           };
         } catch (error) {
           if (!logged) logResult("error", error instanceof Error ? error.message : String(error));
@@ -319,7 +323,7 @@ export const describe = (roles: AgentRole[]) => [
     .join(" ")}`,
   "The sub-agent sees nothing of this conversation, only what you pass. Give a goal (what done looks like), pointers (files, symbols or commands to start from), acceptance (the command that must pass; required for an implementer) and constraints (what not to touch). The sub-agent reads the code and writes the implementation: a brief containing code is rejected. It replies with a report: Changed (or Findings), Ran, Assumptions, Open questions.",
   "Delegate when the work is large or would bloat your context (wide exploration, changes across many files), or to run independent tasks in parallel (at most 3 at once). Do not use it for a step you can do in a few tool calls.",
-  "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time.",
+  "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time (this applies to your own agent calls; the slices tool schedules its own).",
   "Set continueId to a thread id from an earlier result to send a follow-up to that sub-agent, which keeps its context.",
   "Give a short reason for each delegation: it is shown to the user in the decision log.",
 ].join(" ");

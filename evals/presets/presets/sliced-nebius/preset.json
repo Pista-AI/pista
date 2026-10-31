@@ -3,30 +3,12 @@
   "config": {
     "maxToolCalls": 150,
     "orchestratorMode": "sliced",
-    "modelTiers": {
-      "cheap": {
-        "provider": "nebius",
-        "id": "deepseek-ai/DeepSeek-V4-Flash-0731"
-      }
-    },
+    "sliced": { "maxParallel": 1 },
+    "modelTiers": { "cheap": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" } },
     "agentOverrides": {
-      "explorer": {
-        "model": "tier:cheap",
-        "thinking": "low",
-        "maxToolCalls": 150
-      },
-      "implementer": {
-        "model": "tier:cheap",
-        "thinking": "low"
-      }
-    },
-    "sliced": {
-      "maxParallel": 1
+      "explorer": { "model": "tier:cheap", "thinking": "low", "maxToolCalls": 150 },
+      "implementer": { "model": "tier:cheap", "thinking": "low" }
     }
   },
-  "verify": {
-    "commands": [
-      "node --test"
-    ]
-  }
+  "verify": { "commands": ["node --test"] }
 }

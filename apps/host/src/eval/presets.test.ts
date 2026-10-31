@@ -232,10 +232,12 @@ test("markdown shows session metrics when present and dashes when absent", () =>
 test("a fake sliced run dispatches one implementer per slice and the report says so", async () => {
   const out = mkdtempSync(join(tmpdir(), "pista-eval-sliced-"));
   try {
-    const report = await runEval({ ...base, presets: ["sliced-32k", "solo-32k"], tasks: "multi-slice-spec", runs: 1, fake: true, outDir: out });
-    for (const r of report.results) assert.ok(r.pass, `${r.preset}: ${r.error ?? "check failed"}`);
-    assert.equal(report.results[0]!.finalText, "Done: all slices verified.");
-    assert.deepEqual(report.summary[0]!.sliced, { runs: 1, dispatched: 1, slices: 3, done: 3, failed: 0, skipped: 0 });
+    const report = await runEval({ ...base, presets: ["sliced-32k", "solo-32k"], tasks: "multi-slice-spec,long-horizon-feature", runs: 1, fake: true, outDir: out });
+    for (const r of report.results) assert.ok(r.pass, `${r.preset}/${r.task}: ${r.error ?? "check failed"}`);
+    const sliced = report.results.filter((r) => r.preset === "sliced-32k");
+    assert.equal(sliced.length, 2);
+    for (const r of sliced) assert.equal(r.finalText, "Done: all slices verified.", r.task);
+    assert.deepEqual(report.summary[0]!.sliced, { runs: 2, dispatched: 2, slices: 8, done: 8, failed: 0, skipped: 0 });
     assert.equal(report.summary[1]!.sliced, undefined);
   } finally {
     rmSync(out, { recursive: true, force: true });
