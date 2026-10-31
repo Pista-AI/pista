@@ -490,6 +490,13 @@ export interface ManagedPolicy {
     /** `false` removes packages employees added themselves and keeps them out. Default true. */
     allowUserPackages?: boolean;
   };
+  /** Which agent harnesses may run. A harness that is not allowed falls back to solo and is audited. */
+  harnesses?: {
+    /** Harness ids that may run (built-in or from a package); any other id is denied. Absent: all built-ins. An empty list denies every non-solo harness. Package harnesses also need their package in `extensions.packages`. */
+    allow?: string[];
+    /** `false` allows a harness only when the managed (locked) `harness` setting selects it. Default true. */
+    allowUserHarnesses?: boolean;
+  };
   /** Outbound network settings for corporate networks. Policy wins over the HTTPS_PROXY / HTTP_PROXY / NO_PROXY / NODE_EXTRA_CA_CERTS environment. */
   network?: {
     /** Proxy URL for all outbound requests (model providers, MCP over HTTP, OIDC). */
