@@ -68,10 +68,10 @@ function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
   return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
 }
 
-/** The standalone invoice-fetch thread (a role without a parent; `isChild` is true for it too) saves its PDFs and manifest without a prompt: only the `write` tool, only under `<project>/invoices/`. Bash and every other path still ask. */
+/** The standalone invoice-fetch thread (a role without a parent; `isChild` is true for it too) saves its PDFs and manifest without a prompt: only the `write` tool, only under `<project>/invoices/` or `<project>/.pista/` (its own notes). Bash and every other path still ask. */
 export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => boolean) | undefined {
   if (kind.role !== "invoice-fetch" || kind.hasParent || !cwd) return undefined;
-  return (toolName, input) => toolName === "write" && typeof input.path === "string" && isInvoicesPath(cwd, input.path);
+  return (toolName, input) => toolName === "write" && typeof input.path === "string" && (isInvoicesPath(cwd, input.path) || isInvoicesPath(cwd, input.path, ".pista"));
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */

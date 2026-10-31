@@ -33,11 +33,11 @@ export function resolveInProject(root: string, relPath: string): string {
   return real;
 }
 
-/** True when `path` (absolute, or relative to the project) lies under the project's `invoices/` folder, with symlinks resolved. */
-export function isInvoicesPath(root: string, path: string): boolean {
+/** True when `path` (absolute, or relative to the project) lies under the project's `invoices/` folder (or `folder`), with symlinks resolved. */
+export function isInvoicesPath(root: string, path: string, folder: string = INVOICES_DIR): boolean {
   try {
     const base = realpathSync(root);
-    const dir = realpathLoose(join(base, INVOICES_DIR));
+    const dir = realpathLoose(join(base, folder));
     return isInside(base, dir) && isInside(dir, realpathLoose(resolve(base, path)));
   } catch {
     return false;

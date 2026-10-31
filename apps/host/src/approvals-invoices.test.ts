@@ -24,16 +24,18 @@ test("invoice-fetch may write under invoices/ without a prompt", async () => {
   const s = setup("invoice-fetch");
   await s.call("write", { path: "invoices/2026-09/adobe-2026-09-03-59.99.pdf", content: "x" });
   await s.call("write", { path: join(s.cwd, "invoices", "manifest.json"), content: "[]" });
+  await s.call("write", { path: ".pista/PLAN.md", content: "x" });
   assert.equal(s.asked(), 0);
 });
 
 test("invoice-fetch still asks for writes elsewhere, for bash and for edit", async () => {
   const s = setup("invoice-fetch");
   await s.call("write", { path: "notes.txt", content: "x" });
+  await s.call("write", { path: ".pista/../notes.txt", content: "x" });
   await s.call("write", { path: "invoices/../notes.txt", content: "x" });
   await s.call("bash", { command: "echo hi > invoices/a.txt" });
   await s.call("edit", { path: "invoices/a.txt" });
-  assert.equal(s.asked(), 4);
+  assert.equal(s.asked(), 5);
 });
 
 test("other roles and role-less threads still ask for invoices/ writes", async () => {
