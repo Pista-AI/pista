@@ -32,8 +32,9 @@ Getting the file: call browser_download with the path above and either the url o
 Call it found only when browser_download reports a saved file with a size above zero.
 
 ### Step 4: manifest and summary
-Finish invoices/manifest.json (already written in Step 1): a list with one entry per transaction: vendor, date, amount, currency, status, file (path or empty) and note (one line). Status is one of: pending, found, missing, needs_login, not_supported. No entry may stay pending at the end.
-Finish with a short plain table for the owner: vendor, date, amount, status. Add one line about what they need to do next, if anything.`;
+Finish invoices/manifest.json (already written in Step 1). Write a JSON array at the top level, no wrapper object, no extra keys: one object per transaction with exactly these keys: vendor, date (YYYY-MM-DD), amount (a number, absolute value, no minus sign), currency, status, file (relative path, or "" if none) and note (one line, or ""). Status is one of: pending, found, missing, needs_login, not_supported. No entry may stay pending at the end. Example:
+[{"vendor":"acme","date":"2026-01-15","amount":49,"currency":"USD","status":"found","file":"invoices/2026-01/acme-2026-01-15-49.00.pdf","note":""}]
+Finish with a short plain table for the owner: vendor, date, amount (shown without a minus sign), status. Add one line about what they need to do next, if anything.`;
 
 export const INVOICE_FETCH_ROLE: AgentRole = {
   name: "invoice-fetch",
