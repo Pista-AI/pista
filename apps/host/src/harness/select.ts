@@ -1,4 +1,10 @@
 import type { HostConfig } from "@pista/protocol";
+import type { Harness, HarnessContext } from "./types.ts";
+
+/** Tool allowlist of a top-level thread: the harness's own (when it returns one), else the legacy orchestrator list; undefined means no restriction from either. */
+export function threadTools(kind: { harness?: Harness; orchestratorTools?: string[] }, host: HarnessContext): string[] | undefined {
+  return kind.harness?.tools?.(host) ?? kind.orchestratorTools;
+}
 
 /** The harness id for top-level threads: `harness`, else "sliced" for the legacy `orchestratorMode: "sliced"`, else "solo". */
 export function harnessIdOf(config: Pick<HostConfig, "harness" | "orchestratorMode">): string {

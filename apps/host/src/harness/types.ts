@@ -6,7 +6,7 @@ export interface HarnessHost {
   cwd: string;
   /** Runs one child agent; shared with the `agent` tool, so both count against the same child limit. */
   runAgent: SliceRunner;
-  /** This harness's settings block (for sliced: `config.sliced`), read per call, not cached. */
+  /** This harness's settings block (`harnessConfig[id]`, falling back to the legacy `sliced` key for the sliced harness), read per call, not cached. */
   config<T>(): T | undefined;
   /** `HostConfig.contextWindowCap`: the window the thread is held to, whatever the model advertises. */
   windowCap(): number | undefined;
@@ -55,6 +55,7 @@ export interface HarnessEval {
 export interface Harness {
   id: string;
   prompt?(host: HarnessContext): string | undefined;
+  /** Tool allowlist for the thread; returning undefined (or omitting) means no restriction from the harness. */
   tools?(host: HarnessContext): string[] | undefined;
   /** Absent when the harness only adds nothing (solo). */
   extension?(host: HarnessHost): InlineExtension;

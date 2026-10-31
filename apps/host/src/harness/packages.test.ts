@@ -101,3 +101,16 @@ test("a bare-string manifest is rejected", async () => {
   assert.equal(await loadPackageHarness("bare", opts()), undefined);
   assert.ok(warnings.some((w) => w.includes("bare") && w.includes("object")));
 });
+
+test("a harness with a malformed eval block is rejected with a warning", async () => {
+  install("bad-eval", h("badeval", "./h.mjs"), { "h.mjs": `export default { id: "badeval", eval: { metrics: () => undefined, column: { header: 1, cell: () => "" } } };` });
+  settings(["npm:bad-eval@1.0.0"]);
+  resetHarnessPackageCache();
+  warnings.length = 0;
+  assert.equal(await loadPackageHarness("badeval", opts()), undefined);
+  assert.ok(warnings.some((w) => w.includes("bad-eval") && w.includes("eval")));
+  install("good-eval", h("goodeval", "./h.mjs"), { "h.mjs": `export default { id: "goodeval", eval: { metrics: () => ({}), column: { header: "X", cell: () => "" } } };` });
+  settings(["npm:good-eval@1.0.0"]);
+  resetHarnessPackageCache();
+  assert.equal((await loadPackageHarness("goodeval", opts()))?.id, "goodeval");
+});
