@@ -5,6 +5,8 @@ export interface BriefFields {
   pointers?: string[];
   acceptance?: string;
   constraints?: string;
+  /** Text appended after the whole brief (harness-read file contents); not checked by `briefProblem`. */
+  attachments?: string;
 }
 
 export const CODE_IN_BRIEF_ERROR =
@@ -36,6 +38,7 @@ export function composeBrief(fields: BriefFields, followUp = false): string {
   if (fields.acceptance?.trim()) parts.push(`## Acceptance\n${fields.acceptance.trim()}`);
   if (fields.constraints?.trim()) parts.push(`## Constraints\n${fields.constraints.trim()}`);
   if (!followUp) parts.push(STANDING_LINE);
+  if (!followUp && fields.attachments?.trim()) parts.push(fields.attachments.trim());
   return parts.join("\n\n");
 }
 

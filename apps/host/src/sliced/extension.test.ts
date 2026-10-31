@@ -100,8 +100,7 @@ test("a valid list above minSlices dispatches one implementer per slice and ends
   assert.match(result, /Dispatch finished/);
   assert.match(result, /did slice one/);
   assert.match(result, /did slice two/);
-  assert.match(result, /Check the reports against the request/);
-  assert.equal(board(id)?.phase, "done", "nothing failed, so the run settles straight to done");
+    assert.equal(board(id)?.phase, "done", "nothing failed, so the run settles straight to done");
   assert.deepEqual(board(id)?.status, { a: "done", b: "done" });
   assert.equal(await blocked(id, "bash"), false);
 });
@@ -195,4 +194,22 @@ test("integrate with pending slices survives a user message; after done the next
   faux.setResponses([piAi.fauxAssistantMessage("ok")]);
   await session(id).prompt("next");
   assert.equal(board(id)?.slices.length, 0, "reset");
+});
+
+test("the user's prompt is stored on the board and reaches each child brief; the integrate instruction says verify, not rewrite", async () => {
+  const id = await newThread();
+  const report = piAi.fauxAssistantMessage("## Changed\nx\n\n## Ran\nnone\n\n## Assumptions\nnone\n\n## Open questions\nnone");
+  const firstUser: string[] = [];
+  const child = (ctx: { messages: { role: string; content: unknown }[] }) => {
+    firstUser.push(JSON.stringify(ctx.messages.find((m) => m.role === "user")?.content));
+    return report;
+  };
+  faux.setResponses([slicesCall([slice("a"), slice("b")]), child, child, piAi.fauxAssistantMessage("done")]);
+  await session(id).prompt("Please rename widget to gadget everywhere");
+  assert.equal(board(id)?.request, "Please rename widget to gadget everywhere");
+  assert.equal(firstUser.length, 2);
+  for (const u of firstUser) assert.match(u, /Original request\\nPlease rename widget to gadget everywhere\\n\\n### Your slice/);
+  const result = results(id)[0]!;
+  assert.match(result, /Verify, do not rewrite/);
+  assert.match(result, /Make a change only when a check fails or two slices conflict/);
 });

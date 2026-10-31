@@ -1,5 +1,6 @@
 import type { AgentOutcome, AgentToolParams } from "../subagent.ts";
 import type { SliceBoard } from "./board.ts";
+import { prereadSection } from "./preread.ts";
 import { renderBoard } from "./render.ts";
 
 /** The part of the agent runner the scheduler needs; tests stub it. */
@@ -13,6 +14,8 @@ export interface SliceResult {
 
 export interface ScheduleParams {
   board: SliceBoard;
+  /** Working directory the slices' pointers resolve against. */
+  cwd: string;
   /** Ids per wave, from `decide`; slices in one wave run concurrently. */
   waves: string[][];
   runAgent: SliceRunner;
@@ -24,9 +27,21 @@ export interface ScheduleParams {
 
 const STANDARD_CONSTRAINTS = "Read the code before deciding details; follow the conventions of neighbouring code; state assumptions in your report. Stay inside this slice's files unless the acceptance command needs more.";
 
+/** Longest user request copied into a child brief. */
+export const REQUEST_CHARS = 6000;
+
+/** The user's request capped for the board, with a marker when cut. */
+export const capRequest = (text: string): string => (text.length > REQUEST_CHARS ? `${text.slice(0, REQUEST_CHARS)}\n[truncated]` : text);
+
+/** The child's goal: the user's request verbatim, then the parent's slice goal. Without a request it is the slice goal alone. */
+export function childGoal(request: string | undefined, sliceGoal: string): string {
+  const text = request?.trim();
+  return text ? `### Original request\n${text}\n\n### Your slice\n${sliceGoal}` : sliceGoal;
+}
+
 /** Runs the waves in order with one implementer child per slice. A slice that depends on a failed or skipped one is skipped; a failed slice does not stop independent ones. */
 export async function runSchedule(params: ScheduleParams): Promise<{ board: SliceBoard; results: Record<string, SliceResult> }> {
-  const { waves, runAgent, persist, signal, onUpdate } = params;
+  const { waves, runAgent, persist, signal, onUpdate, cwd } = params;
   let board = params.board;
   const results: Record<string, SliceResult> = {};
   const total = board.slices.length;
@@ -48,8 +63,9 @@ export async function runSchedule(params: ScheduleParams): Promise<{ board: Slic
     let result: SliceResult;
     let failed: boolean;
     try {
+      const attachments = await prereadSection(cwd, slice.filesOrAreas);
       const { outcome } = await runAgent(
-        { role: "implementer", goal: slice.goal, pointers: slice.filesOrAreas, acceptance: slice.acceptance, constraints: `${STANDARD_CONSTRAINTS}\n\nSlice board:\n${renderBoard(board)}` },
+        { role: "implementer", goal: childGoal(board.request, slice.goal), pointers: slice.filesOrAreas, acceptance: slice.acceptance, constraints: `${STANDARD_CONSTRAINTS}\n\nSlice board:\n${renderBoard(board)}`, attachments },
         signal,
       );
       result = { verify: outcome.verify, report: outcome.report, threadId: outcome.threadId };

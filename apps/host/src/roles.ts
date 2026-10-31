@@ -152,7 +152,7 @@ export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string
     return [
       "## Sliced mode",
       "Call `slices` first for any request that changes code; until you do, you can only read files and keep a plan.",
-      "Slice by independently verifiable behaviour. Give each slice an acceptance that is a command when possible. Do not write implementation in the slices: the goal says what, not how.",
+      "Slice by independently verifiable behaviour. Give each slice an acceptance that is a command when possible. Do not write implementation in the slices: the goal says what, not how. List the exact files each slice touches in files_or_areas: the harness reads them into the implementer's brief, and the implementer starts from them.",
     ].join("\n");
   }
   return [

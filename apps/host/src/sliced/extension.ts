@@ -8,7 +8,7 @@ import { validateSlices, type SliceBoard, type SliceStatus } from "./board.ts";
 import { decide, resolveSlicedConfig } from "./decide.ts";
 import { estimateRepoTokens } from "./estimate.ts";
 import { renderBoard } from "./render.ts";
-import { runSchedule, type SliceRunner } from "./schedule.ts";
+import { capRequest, runSchedule, type SliceRunner } from "./schedule.ts";
 
 export interface SlicedDeps {
   cwd: string;
@@ -32,7 +32,8 @@ const MESSAGE_TYPE = "pista.sliced";
 const PLAN_TOOLS = ["slices", "plan", ...READ_ONLY_TOOLS];
 // `agent` stays so the parent can re-dispatch a fix to an earlier child with continueId.
 const INTEGRATE_READ_ONLY_TOOLS = ["agent", "plan", ...READ_ONLY_TOOLS];
-const INTEGRATE_PROMPT = "Check the reports against the request. Report failed or skipped slices honestly. Fix small things yourself; re-dispatch larger fixes.";
+export const INTEGRATE_PROMPT =
+  "Verify, do not rewrite: run the project's own checks (tests, typecheck) and read the diffs of the changed files against the request. Make a change only when a check fails or two slices conflict; do not re-implement a slice that passes. Report failed or skipped slices honestly.";
 /** Times the harness asks the parent to mention failed or skipped slices in its final answer. */
 const MAX_INTEGRATE_NUDGES = 1;
 
@@ -89,7 +90,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
           execute: async (_id, params, signal, onUpdate, ctx) => {
             const checked = validateSlices(params.slices.map(({ files_or_areas, depends_on, ...rest }) => ({ ...rest, filesOrAreas: files_or_areas, dependsOn: depends_on })));
             if (!checked.ok) return text(`Error: ${checked.error}. Call \`slices\` again with a corrected list.`);
-            const next: SliceBoard = { slices: checked.slices, fitsSolo: params.fits_solo, reason: params.reason, phase: "plan", status: Object.fromEntries(checked.slices.map((s) => [s.id, "pending" as const])), nudges: current().nudges, integrateNudges: 0 };
+            const next: SliceBoard = { slices: checked.slices, fitsSolo: params.fits_solo, reason: params.reason, phase: "plan", status: Object.fromEntries(checked.slices.map((s) => [s.id, "pending" as const])), nudges: current().nudges, integrateNudges: 0, request: current().request };
             const cap = deps.windowCap?.();
             const window = Math.min(ctx.model?.contextWindow || Infinity, cap ?? Infinity);
             const decision = decide(next, resolveSlicedConfig(deps.config()), await estimateRepoTokens(deps.cwd), Number.isFinite(window) ? window : 0);
@@ -100,6 +101,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
             save({ ...next, phase: "dispatch" });
             const { board: done, results } = await runSchedule({
               board: { ...next, phase: "dispatch" },
+              cwd: deps.cwd,
               waves: decision.waves,
               runAgent: deps.runAgent,
               persist: save,
@@ -119,9 +121,11 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
         blockedThisRun = false;
         const b = current();
         if (b.phase !== "solo" && b.phase !== "done" && !Object.values(b.status).every((s) => TERMINAL.includes(s))) return;
+        // The prompt that starts a plan is kept verbatim so every child brief can quote it.
+        const request = capRequest(event.prompt);
         const pristine = b.phase === "plan" && b.slices.length === 0 && b.nudges === 0;
-        if (pristine) board = b;
-        else save(emptyBoard());
+        if (pristine) save({ ...b, request });
+        else save({ ...emptyBoard(), request });
       });
 
       pi.on("tool_call", (event) => {

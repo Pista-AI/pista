@@ -43,6 +43,8 @@ export interface AgentToolParams {
   acceptance?: string;
   /** Limits, e.g. files not to touch. */
   constraints?: string;
+  /** Set by the harness only (not in the tool schema): text appended after the composed brief. */
+  attachments?: string;
   continueId?: string;
   /** Why delegate this, in one sentence; logged with the dispatch. */
   reason?: string;
