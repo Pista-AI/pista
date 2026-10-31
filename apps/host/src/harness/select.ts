@@ -10,3 +10,8 @@ export function harnessIdOf(config: Pick<HostConfig, "harness" | "orchestratorMo
 export function harnessConfigOf(config: Pick<HostConfig, "harnessConfig" | "sliced">, id: string): unknown {
   return config.harnessConfig?.[id] ?? (id === "sliced" ? config.sliced : undefined);
 }
+
+/** Whether the harness choice is locked by managed policy (as opposed to chosen by the user). */
+export function selectedByPolicy(config: Pick<HostConfig, "harness">, locked: readonly string[]): boolean {
+  return locked.includes(config.harness ? "harness" : "orchestratorMode");
+}

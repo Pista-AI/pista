@@ -18,8 +18,8 @@ import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import type { Harness, HarnessContext } from "./harness/types.ts";
-import { resolveHarness } from "./harness/registry.ts";
-import { harnessIdOf } from "./harness/select.ts";
+import { harnessSource, resolveHarness } from "./harness/registry.ts";
+import { harnessIdOf, selectedByPolicy } from "./harness/select.ts";
 import { harnessDecision } from "./harness/gate.ts";
 import { type AuditSink, noopAudit } from "./audit.ts";
 import { emitHarnessDecision, scopeAudit } from "./audit-events.ts";
@@ -149,9 +149,8 @@ export class Children {
       }
       return undefined;
     }
-    const locked = this.store.policy.locked;
-    const selectedByPolicy = locked.includes(config.harness ? "harness" : "orchestratorMode");
-    const decision = harnessDecision({ id, policy: this.store.managedPolicy ?? undefined, selectedByPolicy, source: "builtin" });
+    const selected = selectedByPolicy(config, this.store.policy.locked);
+    const decision = harnessDecision({ id, policy: this.store.managedPolicy ?? undefined, selectedByPolicy: selected, source: harnessSource(id) });
     if (decision.allow) return harness;
     const key = `${id}:${decision.rule}`;
     if (!warnedHarnesses.has(key)) {
