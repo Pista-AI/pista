@@ -1,0 +1,8 @@
+{
+  "description": "Expensive baseline: DeepSeek V4 Pro does everything itself, no delegation, full context window. Parent pinned to V4 Pro whatever --model says. Compare with lead-pro for cost arbitrage.",
+  "config": {
+    "maxToolCalls": 150,
+    "defaultModel": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Pro" }
+  },
+  "verify": { "commands": ["node --test"] }
+}

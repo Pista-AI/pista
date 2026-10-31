@@ -422,6 +422,8 @@ export interface HostConfig {
   browserEnabled?: boolean;
   /** Tool calls one run of a top-level thread may make before the loop guard stops it (positive integer up to 1000; default 60). Sub-agents use `agentOverrides[role].maxToolCalls`. */
   maxToolCalls?: number;
+  /** Testing and evals: treat every model's context window as at most this many tokens. The entry point that registers providers applies the cap to the models (see `registerNebiusProvider`); the host scales compaction thresholds to the capped window for all models, as it does for local ones. */
+  contextWindowCap?: number;
   /** Local model servers (LM Studio, Ollama, llama.cpp) added as providers. */
   localServers: LocalServer[];
   /** Built-in llama.cpp runtime (`llama-server` in router mode). Downloaded only once the user enables it. */
