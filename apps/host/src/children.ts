@@ -18,7 +18,7 @@ import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import type { Harness, HarnessContext } from "./harness/types.ts";
-import { slicedHarness } from "./harness/sliced.ts";
+import { slicedHarness } from "./harness/sliced/index.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, createAgentRunner, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";

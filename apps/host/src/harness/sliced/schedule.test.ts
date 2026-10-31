@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { AgentOutcome, AgentToolParams } from "../subagent.ts";
+import type { AgentOutcome, AgentToolParams } from "../../subagent.ts";
 import type { Slice, SliceBoard } from "./board.ts";
-import { briefProblem, composeBrief } from "../brief.ts";
+import { briefProblem, composeBrief } from "../../brief.ts";
 import { PREREAD_FILE_CHARS, PREREAD_TOTAL_CHARS, prereadSection } from "./preread.ts";
 import { REQUEST_CHARS, capRequest, runSchedule } from "./schedule.ts";
 

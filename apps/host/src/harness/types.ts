@@ -1,5 +1,5 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import type { SliceRunner } from "../sliced/schedule.ts";
+import type { SliceRunner } from "./sliced/schedule.ts";
 
 /** What the host gives a harness: the thread's own facts, never the host's internals. */
 export interface HarnessHost {

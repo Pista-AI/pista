@@ -3,8 +3,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
-import { topoOrder } from "../sliced/board.ts";
-import { resolveSlicedConfig } from "../sliced/decide.ts";
+import { topoOrder } from "../harness/sliced/board.ts";
+import { resolveSlicedConfig } from "../harness/sliced/decide.ts";
 
 export interface FakeFile {
   /** Path relative to the workspace. */

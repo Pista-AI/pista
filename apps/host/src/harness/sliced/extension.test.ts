@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fauxModels, liveOf as liveMap, makeManager, setupHome } from "../test-helpers.ts";
+import { fauxModels, liveOf as liveMap, makeManager, setupHome } from "../../test-helpers.ts";
 
 const { projectDir } = setupHome("sliced-ext");
 // Loaded after setupHome: session.ts reads PISTA_HOME at import, so a static import would use (and write) the real ~/.pista config.
-const { ENTRY, readSliceBoard } = await import("../session.ts");
+const { ENTRY, readSliceBoard } = await import("../../session.ts");
 const { piAi, faux, models, ref } = await fauxModels();
 const { manager, store, project } = await makeManager({ projectDir, models });
 // Pin the mode: the approval gate would otherwise ask a UI that does not exist and block bash.
