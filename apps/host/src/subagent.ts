@@ -43,6 +43,10 @@ export interface AgentToolParams {
   acceptance?: string;
   /** Limits, e.g. files not to touch. */
   constraints?: string;
+  /** Set by the harness only (not in the tool schema): text appended after the composed brief. */
+  attachments?: string;
+  /** Set by the harness only: the user's original request, shown before the goal. */
+  context?: string;
   continueId?: string;
   /** Why delegate this, in one sentence; logged with the dispatch. */
   reason?: string;
@@ -352,7 +356,9 @@ export function agentToolExtension(opts: AgentToolOptions, runner?: AgentRunner)
             reason: Type.Optional(Type.String({ description: "One sentence on why you are delegating this (the why, not the what), e.g. 'Reading the whole module would flood my context, so an explorer summarises it.'" })),
           }),
           execute: async (_id, params, signal, onUpdate) => {
-            const { content, details } = await run(params as AgentToolParams, signal, onUpdate as UpdateFn | undefined);
+            // Harness-only fields are not in the schema; drop them so a model cannot smuggle code past briefProblem.
+            const { attachments: _a, context: _c, ...safe } = params as AgentToolParams;
+            const { content, details } = await run(safe, signal, onUpdate as UpdateFn | undefined);
             return { content, details };
           },
         }),

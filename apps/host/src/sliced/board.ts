@@ -22,6 +22,8 @@ export interface SliceBoard {
   nudges: number;
   /** How often the harness has asked the parent to mention failed or skipped slices; absent in boards saved before step 4. */
   integrateNudges?: number;
+  /** The user prompt that started this plan, verbatim (capped); children see it next to their slice goal. */
+  request?: string;
 }
 
 const nonEmpty = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
