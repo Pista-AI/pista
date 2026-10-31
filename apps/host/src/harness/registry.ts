@@ -1,4 +1,4 @@
-import { slicedHarness } from "./sliced.ts";
+import { slicedHarness } from "./sliced/index.ts";
 import { defineHarness, type Harness } from "./types.ts";
 
 /** Today's default: contributes no prompt, no tools and no extension. */

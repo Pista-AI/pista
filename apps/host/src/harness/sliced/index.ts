@@ -1,10 +1,10 @@
-import { orchestratorPrompt } from "../roles.ts";
-import { validSliced } from "../policy.ts";
-import { ENTRY } from "../session.ts";
-import { slicedExtension } from "../sliced/extension.ts";
-import type { SliceBoard } from "../sliced/board.ts";
+import { orchestratorPrompt } from "../../roles.ts";
+import { validSliced } from "../../policy.ts";
+import { ENTRY } from "../../session.ts";
+import { slicedExtension } from "./extension.ts";
+import type { SliceBoard } from "./board.ts";
 import type { HostConfig } from "@pista/protocol";
-import { defineHarness } from "./types.ts";
+import { defineHarness } from "../types.ts";
 
 /** The sliced orchestrator mode behind the harness interface; `slicedExtension` stays where it is. */
 export const slicedHarness = defineHarness({
