@@ -277,6 +277,7 @@ export class ThreadManager {
           managedPackages,
           policy: this.store.managedPolicy ?? undefined,
           selectedByPolicy: selectedByPolicy(this.store.config, this.store.policy.locked),
+          audit: scopeAudit(this.audit, () => ({ "session.id": ref.threadId, "project.id": projectId })),
         });
       } catch (error) {
         console.warn(`[pista-host] harness package lookup failed: ${(error as Error).message}; running solo`);

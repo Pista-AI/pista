@@ -3,6 +3,8 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ManagedPolicy } from "@pista/protocol";
+import { type AuditSink, noopAudit } from "../audit.ts";
+import { emitHarnessDecision } from "../audit-events.ts";
 import { harnessDecision } from "./gate.ts";
 import { registerHarness } from "./registry.ts";
 import type { Harness } from "./types.ts";
@@ -21,6 +23,8 @@ export interface PackageSourceOpts {
 export interface LoadOpts extends PackageSourceOpts {
   policy: ManagedPolicy | undefined;
   selectedByPolicy: boolean;
+  /** Where policy denials are reported; defaults to none. */
+  audit?: AuditSink;
 }
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -117,6 +121,7 @@ export async function loadPackageHarness(id: string, opts: LoadOpts): Promise<Ha
       const decision = harnessDecision({ id, policy: opts.policy, selectedByPolicy: opts.selectedByPolicy, source: { package: source, managedPackage: managed } });
       if (!decision.allow) {
         warnOnce(source, `denied by policy (${decision.rule}); not loaded`);
+        emitHarnessDecision(opts.audit ?? noopAudit, id, decision.rule, source);
         continue;
       }
       const mod = (await import(pathToFileURL(found.entry).href)) as { default?: unknown };

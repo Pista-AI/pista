@@ -84,6 +84,16 @@ test("a policy-denied package is not imported; a managed one is", async () => {
   assert.equal(existsSync(marker), true);
 });
 
+test("a policy-denied package emits one audit event with the package source", async () => {
+  install("audited-pkg", h("audited", "./h.mjs"), { "h.mjs": `export default { id: "audited" };` });
+  settings(["npm:audited-pkg@1.0.0"]);
+  const events: Array<{ name: string; attrs: Record<string, unknown> }> = [];
+  const audit = { emit: (name: string, attrs: Record<string, unknown>) => void events.push({ name, attrs }), flush: async () => {}, dispose: async () => {}, includePrompts: false, includeToolArgs: false, secrets: [] } as never;
+  resetHarnessPackageCache();
+  assert.equal(await loadPackageHarness("audited", { ...opts([], { version: 1, harnesses: { allow: ["solo"] } }), audit }), undefined);
+  assert.deepEqual(events, [{ name: "pista.harness.decision", attrs: { "harness.id": "audited", decision: "deny", "decision.rule": "harnesses.allow", "decision.source": "policy", "harness.package": "npm:audited-pkg@1.0.0" } }]);
+});
+
 test("a package with a different id is never imported", async () => {
   const marker = join(agentDir, "other.txt");
   install("other-pkg", h("other", "./h.mjs"), { "h.mjs": `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "x"); export default { id: "other" };` });
