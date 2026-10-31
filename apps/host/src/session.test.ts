@@ -48,3 +48,20 @@ test("compaction overrides survive a settings save once reapplied", async () => 
   assert.equal(settings.getCompactionReserveTokens(model), 6144);
   assert.equal(settings.getCompactionKeepRecentTokens(model), 5940);
 });
+
+test("contextWindowCap lowers the registered window and compaction scales to it", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+  const { registerNebiusProvider } = await import("./nebius.ts");
+  const { buildSettings } = await import("./session.ts");
+  const runtime = await ModelRuntime.create({ allowModelNetwork: false });
+  registerNebiusProvider(runtime, 32768);
+  const model = runtime.getModel("nebius", "deepseek-ai/DeepSeek-V4-Flash-0731")!;
+  assert.equal(model.contextWindow, 32768);
+  const dir = mkdtempSync(join(tmpdir(), "pista-cap-"));
+  const settings = buildSettings(dir, dir, runtime, (m) => m.provider === "nebius");
+  assert.equal(settings.getCompactionReserveTokens(model), 7209);
+  assert.equal(settings.getCompactionKeepRecentTokens(model), 10813);
+});

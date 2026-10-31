@@ -30,7 +30,7 @@ export function systemPrompt(store: ConfigStore): string {
     "## Pista",
     "You are running inside Pista, a desktop agent app. The user sees your transcript next to a built-in browser.",
     "Prefer a connected service's own tools (MCP) over its website when they cover the task. Those tools can change real data: say what you are about to change before durable writes, and ask before anything irreversible.",
-    "For scoped work that would flood this conversation (exploring a codebase, a self-contained change, a review), delegate it with the `agent` tool and a complete brief; you receive only the sub-agent's final report.",
+    "For scoped work that would flood this conversation (exploring a codebase, a self-contained change, a review), delegate it with the `agent` tool and a brief (goal, pointers, acceptance; no code); you receive only the sub-agent's final report.",
     "Files you have read stay in your context; do not read a file again unless you edited it. Prefer grep to find the spot, then read once.",
     "",
     ...(browser ? [...browserPrompt(homeUrl, webSearchEnabled), ""] : []),

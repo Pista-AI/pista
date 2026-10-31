@@ -1,4 +1,5 @@
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
+import { reportFormatPrompt } from "./brief.ts";
 import type { AgentOverride, AgentRole, AgentRoleName, BuiltinAgentRoleName, HostConfig } from "@pista/protocol";
 
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -93,6 +94,7 @@ export function rolePrompt(role: AgentRoleName, roles: RoleMap = ROLES): string 
     r.excludeTools?.length ? `You may not use these tools: ${r.excludeTools.join(", ")}.` : "",
     "Files you have read stay in your context; do not read a file again unless you edited it. Prefer grep to find the spot, then read once.",
     "Your final message is returned to the parent agent as your only output: make it a complete, concise report.",
+    reportFormatPrompt(role),
     r.prompt ?? "",
   ]
     .filter(Boolean)
@@ -139,11 +141,12 @@ export function orchestratorGateExtension(allowed: readonly string[]): InlineExt
 
 /** System-prompt section for an orchestrator top-level thread; children never get it. */
 export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string {
+  if (mode === "sliced") return ""; // its prompt section arrives with the mode's tools; this is not the delegate text
   if (mode === "lead") {
     return [
       "## Lead mode",
       "Make small edits yourself. Delegate exploration and large or parallel changes to sub-agents with the `agent` tool.",
-      "In a brief, give the goal, the files and the existing helpers to reuse (file and export), not finished code.",
+      "In a brief, give the goal, pointers (files, helpers to reuse) and acceptance; never code. The sub-agent reads the code and writes it.",
     ].join("\n");
   }
   if (mode === "sliced") {
@@ -158,7 +161,7 @@ export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string
     mode === "delegate-read"
       ? "You can read files but not edit them or run commands; sub-agents make changes through the `agent` tool and you get their reports."
       : "You cannot read or edit files yourself; sub-agents do the work through the `agent` tool and you get their reports.",
-    "For a change: send an explorer to locate it, then an implementer with the explorer's findings (exact files, what to change, what must not change). An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
+    "For a change: send an explorer to locate it, then an implementer with the explorer's findings (as pointers), a goal and an acceptance command; never code. An explorer's report is not the result: do not end your turn until an implementer has made the change and reported, or you have told the user why it cannot be done.",
     "If a report is incomplete or a check failed, send a follow-up with continueId.",
     ...(mode === "delegate-read"
       ? ["Before you end, read the changed lines and compare them with the request (names, scope, what must not change); if they differ, send the implementer a follow-up."]
