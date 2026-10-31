@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ENTRY, readSliceBoard } from "../session.ts";
 import { fauxModels, liveOf as liveMap, makeManager, setupHome } from "../test-helpers.ts";
 
 const { projectDir } = setupHome("sliced-ext");
+// Loaded after setupHome: session.ts reads PISTA_HOME at import, so a static import would use (and write) the real ~/.pista config.
+const { ENTRY, readSliceBoard } = await import("../session.ts");
 const { piAi, faux, models, ref } = await fauxModels();
 const { manager, store, project } = await makeManager({ projectDir, models });
-store.patchConfig({ defaultModel: ref, orchestratorMode: "sliced", sliced: { minSlices: 2 } });
+// Pin the mode: the approval gate would otherwise ask a UI that does not exist and block bash.
+store.patchConfig({ defaultModel: ref, orchestratorMode: "sliced", approvalMode: "full-access", sliced: { minSlices: 2 } });
 
 type Live = { session: { messages: { role: string; content?: unknown }[]; sessionManager: never; extensionRunner: { emitToolCall(e: never): Promise<{ block?: boolean } | undefined> }; prompt(text: string): Promise<void> } };
 const liveOf = () => liveMap<Live>(manager);
