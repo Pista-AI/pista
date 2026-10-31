@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Resolves `requested` under `root` (the project folder) or throws. The deepest existing parent is resolved with realpath, so a symlink cannot lead out. */
@@ -19,6 +19,11 @@ export function confineToFolder(root: string, requested: string): string {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       ancestor = dirname(ancestor);
     }
+  }
+  try {
+    if (lstatSync(target).isSymbolicLink()) throw new Error("path must not be a symbolic link");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   return join(realRoot, relative(realRoot, target));
 }

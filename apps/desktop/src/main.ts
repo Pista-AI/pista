@@ -168,13 +168,22 @@ interface LoadError {
   url: string;
 }
 
+interface DownloadResult {
+  bytes: number;
+  contentType?: string;
+  url: string;
+  urlChain: string[];
+}
+
 interface DownloadRequest {
   path: string;
   taken: boolean;
   started: Promise<void>;
   markStarted: () => void;
-  result: Promise<{ bytes: number; contentType?: string }>;
-  finish: (r: { bytes: number; contentType?: string }) => void;
+  item?: Electron.DownloadItem;
+  expiry?: NodeJS.Timeout;
+  result: Promise<DownloadResult>;
+  finish: (r: DownloadResult) => void;
   fail: (e: Error) => void;
 }
 
@@ -194,8 +203,8 @@ class BrowserPane {
     this.view.setBorderRadius(11);
     neutralizePaneDragRegions(this.view.webContents);
     const wc = this.view.webContents;
-    // Popups and target=_blank stay in the pane instead of spawning windows.
     this.hookDownloads();
+    // Popups and target=_blank stay in the pane instead of spawning windows.
     wc.setWindowOpenHandler(({ url }) => {
       void wc.loadURL(url);
       return { action: "deny" };
@@ -274,16 +283,18 @@ class BrowserPane {
       const armed = this.armed;
       if (!armed || armed.taken) return item.cancel();
       armed.taken = true;
+      armed.item = item;
       armed.markStarted();
       item.setSavePath(armed.path);
       item.once("done", (_e, state) =>
-        state === "completed" ? armed.finish({ bytes: item.getReceivedBytes(), contentType: item.getMimeType() || undefined }) : armed.fail(new Error(`download failed: ${state}`)),
+        state === "completed" ? armed.finish({ bytes: item.getReceivedBytes(), contentType: item.getMimeType() || undefined, url: item.getURL(), urlChain: item.getURLChain() }) : armed.fail(new Error(`download failed: ${state}`)),
       );
     });
   }
 
   armDownload(savePath: string, url?: string) {
     if (!path.isAbsolute(savePath)) throw new Error("download failed: the path must be absolute");
+    if (this.armed) throw new Error("another download is in progress");
     const request = {} as DownloadRequest;
     request.path = savePath;
     request.taken = false;
@@ -291,6 +302,10 @@ class BrowserPane {
     request.result = new Promise((resolve, reject) => ((request.finish = resolve), (request.fail = reject)));
     request.result.catch(() => undefined);
     this.armed = request;
+    // An arm nobody waits for must not capture a later stray download.
+    request.expiry = setTimeout(() => {
+      if (this.armed === request) this.armed = undefined;
+    }, 90_000);
     if (url) this.view.webContents.downloadURL(url);
   }
 
@@ -302,9 +317,10 @@ class BrowserPane {
     const timers: NodeJS.Timeout[] = [];
     try {
       await Promise.race([request.started, limit(15_000, "no download started within 15 s")]);
-      return await Promise.race([request.result, limit(60_000, "download failed: not finished within 60 s")]);
+      return await Promise.race([request.result, limit(60_000, "download failed: not finished within 60 s").catch((e) => (request.item?.cancel(), Promise.reject(e)))]);
     } finally {
       timers.forEach(clearTimeout);
+      clearTimeout(request.expiry);
       if (this.armed === request) this.armed = undefined;
     }
   }

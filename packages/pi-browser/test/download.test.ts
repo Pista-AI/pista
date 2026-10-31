@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { guardDriver } from "../src/domains.ts";
 import { confineToFolder } from "../src/download.ts";
 import type { BrowserDriver } from "../src/driver.ts";
 import { registerBrowserTools } from "../src/tools.ts";
@@ -26,6 +27,23 @@ test("confinement: a symlinked parent that leads outside is rejected, also below
   mkdirSync(join(folder, "real"));
   symlinkSync(join(folder, "real"), join(folder, "alias"));
   assert.ok(confineToFolder(folder, "alias/x.pdf"));
+});
+
+test("confinement: an existing symlink as the file itself is rejected", () => {
+  symlinkSync(join(outside, "target.pdf"), join(folder, "file-link.pdf"));
+  assert.throws(() => confineToFolder(folder, "file-link.pdf"), /symbolic link/);
+});
+
+test("download guard: a redirect hop outside the allowlist deletes the file and refuses", async () => {
+  const file = join(folder, "got.pdf");
+  const inner = {
+    navigate: async () => ({ url: "https://ok.test/", title: "", loading: false }),
+    state: async () => ({ url: "https://ok.test/", title: "", loading: false }),
+    download: async () => (writeFileSync(file, "x"), { bytes: 1, urlChain: ["https://ok.test/a", "https://evil.test/b.pdf"] }),
+  } as unknown as BrowserDriver;
+  const guarded = guardDriver(inner, { allowedDomains: ["ok.test"] });
+  await assert.rejects(guarded.download!({ path: file, url: "https://ok.test/a" }), /policy/);
+  assert.equal(existsSync(file), false);
 });
 
 test("browser_download: needs exactly one of url or ref, and a driver that can download", async () => {

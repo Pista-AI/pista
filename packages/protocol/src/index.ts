@@ -712,7 +712,7 @@ export interface BrowserResult {
   text?: string;
   value?: unknown;
   image?: { data: string; mimeType: string };
-  download?: { bytes: number; contentType?: string };
+  download?: { bytes: number; contentType?: string; url?: string; urlChain?: string[] };
   note?: string;
 }
 
