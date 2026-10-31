@@ -334,7 +334,7 @@ export const actions = {
       // No thread yet: App shows this instead of the empty state until the thread exists.
       set({ startingMessage: optimistic });
       try {
-        const snapshot = await host.call("thread.create", { projectId, role });
+        const snapshot = await host.call("thread.create", { projectId, role: role ?? (get().config?.focusedMode ? "invoice-fetch" : undefined) });
         applySnapshot(snapshot);
         threadId = snapshot.summary.id;
         fresh = true;

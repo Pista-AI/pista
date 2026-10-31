@@ -733,7 +733,7 @@ export interface Methods {
   "projects.add": { params: { path: string; name?: string }; result: Project };
   "projects.setTrusted": { params: { projectId: string; trusted: boolean }; result: Project };
   /** Reads a text file under the project folder (at most 1 MB); a path outside the folder is rejected. */
-  "project.readFile": { params: { projectId: string; relPath: string }; result: { exists: boolean; content?: string } };
+  "project.readFile": { params: { projectId: string; relPath: string }; result: { exists: boolean; content?: string; /** Last change, ms since the epoch. */ modified?: number } };
   /** Shows the project's `invoices` folder in the OS file manager (selecting it, never opening it). */
   "project.reveal": { params: { projectId: string }; result: void };
   "projects.remove": { params: { projectId: string }; result: void };

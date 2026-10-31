@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -267,7 +267,7 @@ export function describeTool(name: string, args: Record<string, unknown>): { ver
 // Components
 // ---------------------------------------------------------------------------
 
-export function Transcript({ view, threadId }: { view: ThreadView; threadId: string }) {
+export function Transcript({ view, threadId, footer }: { view: ThreadView; threadId: string; footer?: ReactNode }) {
   const allApprovals = useApp((s) => s.approvals);
   const threads = useApp((s) => s.threads);
   // Approvals from sub-agent threads of this thread are surfaced here, tagged with the child's role.
@@ -319,6 +319,7 @@ export function Transcript({ view, threadId }: { view: ThreadView; threadId: str
         {approvals.map(({ approval, from }) => (
           <ApprovalCard key={approval.approvalId} approval={approval} from={from} />
         ))}
+        {footer}
       </div>
     </div>
     </GroundingContext.Provider>

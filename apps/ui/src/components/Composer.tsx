@@ -42,7 +42,7 @@ function readImage(file: File): Promise<Attachment> {
   });
 }
 
-export function Composer({ autoFocusKey, seed, placeholder, simple }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string; /** Hides the add, permissions and model controls (focused mode). */ simple?: boolean }) {
+export function Composer({ autoFocusKey, seed, placeholder, simple, tall }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string; /** Hides the add, permissions and model controls (focused mode). */ simple?: boolean; /** Roomy text box for pasting (focused mode, empty thread). */ tall?: boolean }) {
   const { activeThreadId, views, models, config, pageContext } = useApp();
   const approvalField = useConfigField("approvalMode");
   const view = activeThreadId ? views[activeThreadId] : undefined;
@@ -64,7 +64,7 @@ export function Composer({ autoFocusKey, seed, placeholder, simple }: { autoFocu
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-  }, [text]);
+  }, [text, tall]);
 
   const currentModel = view?.model ?? config?.defaultModel;
   const modelInfo = models.find((m) => m.provider === currentModel?.provider && m.id === currentModel?.id);
@@ -128,7 +128,7 @@ export function Composer({ autoFocusKey, seed, placeholder, simple }: { autoFocu
             {queued > 0 && <span className="queue-hint">{queued} queued</span>}
           </div>
         )}
-        <div className="composer">
+        <div className={`composer ${tall ? "tall" : ""}`}>
           {(images.length > 0 || pageContext) && (
             <div className="attachments">
               {pageContext && (

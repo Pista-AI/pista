@@ -16,7 +16,9 @@ function fixture() {
 
 test("reads a file inside the project and reports a missing one", () => {
   const { root } = fixture();
-  assert.deepEqual(readProjectFile(root, "invoices/manifest.json"), { exists: true, content: "[]" });
+  const read = readProjectFile(root, "invoices/manifest.json");
+  assert.equal(read.content, "[]");
+  assert.equal(typeof read.modified, "number");
   assert.deepEqual(readProjectFile(root, "invoices/nope.json"), { exists: false });
 });
 

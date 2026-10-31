@@ -38,7 +38,7 @@ import { SettingsDialog } from "./components/Settings.tsx";
 import { AuthPromptDialog } from "./components/AuthPrompt.tsx";
 import { GoalDialog } from "./components/GoalControls.tsx";
 import { VersionBlock } from "./components/VersionBlock.tsx";
-import { FocusedShell } from "./focused/FocusedShell.tsx";
+import { JobCard, JobFooter, JobStrip, useFocusedMode } from "./focused/Job.tsx";
 import { MenuItem, Popover } from "./components/Popover.tsx";
 
 const SUGGESTIONS = [
@@ -49,7 +49,7 @@ const SUGGESTIONS = [
 
 export function App() {
   const { activeThreadId, threads, projects, views, panel, sidebarOpen, sidebarWidth, connected, toasts, draftProjectId, pinned, startingMessage, info, versionBlockMessage } = useApp();
-  const focused = useApp((s) => s.config?.focusedMode === true);
+  const focused = useFocusedMode();
   const gate = info?.versionGate;
   const blocked = (gate && gate.status !== "ok") || versionBlockMessage !== null;
   const thread = threadById(threads, activeThreadId);
@@ -60,6 +60,11 @@ export function App() {
   const [renaming, setRenaming] = useState(false);
   const chatRef = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState<null | "split" | "sidebar">(null);
+
+  // Focused mode starts with the sidebar out of the way.
+  useEffect(() => {
+    if (focused) actions.setSidebar(false);
+  }, [focused]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -168,8 +173,6 @@ export function App() {
     "--chat-w": `${panel.chatWidth}px`,
     "--sidebar-w-peek": `${sidebarWidth}px`,
   } as CSSProperties;
-
-  if (focused) return <FocusedShell />;
 
   return (
     <div className={`app ${sidebarOpen ? "has-sidebar" : ""} ${split ? "has-split" : ""} ${maximized ? "panel-max" : ""}`} style={appVars}>
@@ -305,7 +308,10 @@ export function App() {
           {blocked ? (
             <VersionBlock gate={gate} message={versionBlockMessage} />
           ) : thread && view ? (
-            <Transcript view={view} threadId={thread.id} />
+            <>
+              {focused && <JobStrip thread={thread} />}
+              <Transcript view={view} threadId={thread.id} footer={focused ? <JobFooter thread={thread} view={view} /> : undefined} />
+            </>
           ) : startingMessage?.role === "user" ? (
             <div className="transcript">
               <div className="transcript-inner">
@@ -315,7 +321,8 @@ export function App() {
           ) : (
             <>
               <div className="empty">
-                <h1>What should we do today?</h1>
+                {focused ? <JobCard /> : <h1>What should we do today?</h1>}
+                {!focused && (
                 <Popover
                   placement="bottom-start"
                   trigger={({ toggle }) => (
@@ -342,7 +349,9 @@ export function App() {
                     </>
                   )}
                 </Popover>
+                )}
               </div>
+              {!focused && (
               <div className="suggestions">
                 {SUGGESTIONS.map((s) => (
                   <button key={s.text} className="suggestion" onClick={() => setSeed({ text: s.text, n: Date.now() })}>
@@ -351,9 +360,10 @@ export function App() {
                   </button>
                 ))}
               </div>
+              )}
             </>
           )}
-          {!blocked && <Composer autoFocusKey={activeThreadId ?? "new"} seed={seed} />}
+          {!blocked && <Composer autoFocusKey={activeThreadId ?? "new"} seed={seed} {...(focused ? { simple: true, tall: !thread, placeholder: thread ? "Reply here (for example: done)" : "Paste your transactions here" } : {})} />}
         </main>
       )}
 
