@@ -130,6 +130,6 @@ test("model tiers: allowlist with overrides, role-file models, unmapped tiers an
   assert.match(warnings[before]!, /cheap/);
 });
 
-test("sliced mode adds no orchestrator prompt of its own yet", () => {
-  assert.equal(orchestratorPrompt("sliced"), "");
+test("sliced mode has its own prompt section that names the slices tool", () => {
+  assert.match(orchestratorPrompt("sliced"), /Sliced mode[\s\S]*`slices`/);
 });

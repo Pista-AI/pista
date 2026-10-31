@@ -17,6 +17,7 @@ import { abortLabelExtension } from "./abort-label.ts";
 import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
+import { slicedExtension } from "./sliced/extension.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";
@@ -51,6 +52,8 @@ export interface ExtensionDeps {
   roles?: RoleMap;
   /** Tool audit for this thread; absent when the policy has no `audit` block. */
   toolAudit?: ToolAudit;
+  /** Backs the sliced extension of top-level threads in "sliced" mode. */
+  sliced?: Parameters<typeof slicedExtension>[0];
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
@@ -74,6 +77,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record, verify: { store }, ...(deps.roles ? { roles: deps.roles } : {}) })]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
     ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
+    ...(!isChild && kind.orchestratorMode === "sliced" && deps.sliced ? [slicedExtension(deps.sliced)] : []),
     ...(kind.orchestratorTools ? [watch(orchestratorGateExtension(kind.orchestratorTools), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),
     abortLabelExtension(),
