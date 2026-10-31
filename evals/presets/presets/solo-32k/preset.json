@@ -1,0 +1,9 @@
+{
+  "description": "Baseline under context pressure: one thread, no delegation, DeepSeek V4 Flash with its context window capped at 32k (compaction scaled to it) so it behaves like a small-context model on tasks too big to hold in one window. Parent pinned to Flash whatever --model says. 150-call loop-guard cap.",
+  "config": {
+    "contextWindowCap": 32768,
+    "maxToolCalls": 150,
+    "defaultModel": { "provider": "nebius", "id": "deepseek-ai/DeepSeek-V4-Flash-0731" }
+  },
+  "verify": { "commands": ["node --test"] }
+}
