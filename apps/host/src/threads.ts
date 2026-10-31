@@ -33,9 +33,9 @@ import { CHECK_TIMEOUT_MS, judgeGoal, resolveJudgeModel, type SettleKind } from 
 import { bundledExtensionPaths } from "./packages.ts";
 import { resolveProjectTrust } from "./project-trust.ts";
 import { capModel, modelRef, usableModel } from "./models.ts";
-import { buildSession, ENTRY, readCustomEntry, readSliceBoard, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
+import { buildSession, ENTRY, readCustomEntry, reapplyCompactionOverrides, writeCustomEntry } from "./session.ts";
 import { clip, type TextContent } from "./text.ts";
-import { DEFAULT_MAX_TOOL_CALLS, orchestratorPrompt, roleOf, rolePrompt, validToolCallLimit } from "./roles.ts";
+import { DEFAULT_MAX_TOOL_CALLS, orchestratorPrompt, READ_ONLY_TOOLS, roleOf, rolePrompt, validToolCallLimit } from "./roles.ts";
 import { describeDenied, isModelAllowed, pickAllowedModel, restrictsModels } from "./policy-access.ts";
 import { isLocalProvider } from "./local.ts";
 import { deleteFile } from "./retention.ts";
@@ -267,6 +267,15 @@ export class ThreadManager {
     this.auditTrust(projectId, trust.trusted, trust.reason, trust.reason === "project marked trusted" ? "user" : "default", false, audit);
     if (!trust.trusted && existsSync(join(cwd, ".pi"))) console.info(`[pista-host] ${cwd}: skipped .pi/ (project untrusted: ${trust.reason})`);
     const startModel = await this.allowedStartModel(model ?? this.store.config.defaultModel);
+    // `extensionsFor` adds the shared runner.
+    const harnessHost = {
+      cwd,
+      config: <T,>() => this.store.config.sliced as T | undefined,
+      windowCap: () => this.store.config.contextWindowCap,
+      readOnlyTools: READ_ONLY_TOOLS,
+      state: { read: <T,>(entryKind: string) => readCustomEntry<T>(sessionManager, entryKind) },
+    };
+    const harnessPrompt = kind.harness?.prompt?.(harnessHost);
     const session = await buildSession({
       cwd,
       projectTrusted: trust.trusted,
@@ -281,7 +290,7 @@ export class ThreadManager {
       sessionManager,
       // The orchestrator allowlist is only ever set for top-level threads, so it takes precedence over any role.
       ...(kind.orchestratorTools ? { tools: kind.orchestratorTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
-      appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : []), ...(kind.orchestratorMode ? [orchestratorPrompt(kind.orchestratorMode)] : [])],
+      appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : []), ...(kind.orchestratorMode && !kind.harness ? [orchestratorPrompt(kind.orchestratorMode)] : []), ...(harnessPrompt ? [harnessPrompt] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {
         store: this.store,
@@ -291,7 +300,7 @@ export class ThreadManager {
         plan: { getPlan: () => thread?.plan, setPlan: (plan) => thread && this.setPlan(thread, plan) },
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
-        sliced: { cwd, config: () => this.store.config.sliced, windowCap: () => this.store.config.contextWindowCap, readBoard: () => readSliceBoard(sessionManager) },
+        harness: harnessHost,
         roles,
         thinkingMode: () => thread?.thinkingMode,
         ...(toolAudit ? { toolAudit } : {}),
