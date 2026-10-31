@@ -400,7 +400,11 @@ export interface HostConfig {
    * `agent` and `plan`; `"delegate-read"` adds the read-only tools. `"lead"` keeps every tool and only adds a prompt section telling it to delegate exploration and large work. Sub-agents keep their role's tools. Absent is `"off"`.
    */
   orchestratorMode?: "off" | "delegate" | "delegate-read" | "lead" | "sliced";
-  /** Settings for `orchestratorMode: "sliced"`, where the harness decides and drives delegation from the parent's slice list. */
+  /** Id of the harness for top-level threads (`"solo"` by default; `"sliced"` is built in). When set, including `"solo"`, it overrides `orchestratorMode`; absent falls back to `orchestratorMode: "sliced"`, else solo. */
+  harness?: string;
+  /** Per-harness settings keyed by harness id. For sliced the legacy `sliced` key is still read when `harnessConfig.sliced` is absent. */
+  harnessConfig?: Record<string, unknown>;
+  /** Legacy alias of `harnessConfig.sliced`: settings for `orchestratorMode: "sliced"`, where the harness decides and drives delegation from the parent's slice list. */
   sliced?: {
     /** Fewer slices than this run solo (positive integer; default 3). */
     minSlices?: number;

@@ -1,5 +1,5 @@
 import { orchestratorPrompt } from "../../roles.ts";
-import { validSliced } from "../../policy.ts";
+import { validSliced } from "./validate.ts";
 import { ENTRY } from "../../session.ts";
 import { slicedExtension } from "./extension.ts";
 import type { SliceBoard } from "./board.ts";

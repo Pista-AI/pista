@@ -10,6 +10,8 @@ import { normalizeDomainPattern } from "@pista/pi-browser/domains";
 import { auditSection } from "./audit-policy.ts";
 import { validToolCallLimit } from "./roles.ts";
 import { isTierRef, TIER_NAME } from "./model-tiers.ts";
+import { validSliced } from "./harness/sliced/validate.ts";
+import { HARNESS_CONFIG_VALIDATORS } from "./harness/validators.ts";
 import { isRecord, looksLikeSecret } from "./secrets.ts";
 import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
 
@@ -104,6 +106,8 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   defaultThinkingMode: "enum",
   orchestratorMode: "enum",
   sliced: "object",
+  harness: "string",
+  harnessConfig: "object",
   instructions: "string",
   linkTarget: "enum",
   memoryEnabled: "boolean",
@@ -144,17 +148,6 @@ const validOverride = (v: unknown): boolean =>
   (v.maxToolCalls === undefined || validToolCallLimit(v.maxToolCalls) !== undefined) &&
   (v.disabled === undefined || typeof v.disabled === "boolean");
 
-export const validSliced = (v: unknown): boolean => {
-  if (!isRecord(v) || !Object.keys(v).every((k) => ["minSlices", "maxParallel", "integrateTools", "repoSizeFraction"].includes(k))) return false;
-  const { minSlices, maxParallel, integrateTools, repoSizeFraction } = v;
-  return (
-    (minSlices === undefined || positiveInt(minSlices)) &&
-    (maxParallel === undefined || (positiveInt(maxParallel) && maxParallel <= 3)) &&
-    (integrateTools === undefined || integrateTools === "read-only" || integrateTools === "full") &&
-    (repoSizeFraction === undefined || (typeof repoSizeFraction === "number" && repoSizeFraction > 0 && repoSizeFraction <= 1))
-  );
-};
-
 /** Checks the shape of the nested settings; the top-level kind has been checked already. */
 function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
@@ -162,7 +155,9 @@ function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelSpec(v.model));
   if (key === "modelTiers") return !Array.isArray(value) && Object.entries(value as Record<string, unknown>).every(([name, v]) => TIER_NAME.test(name) && isRecord(v) && isNonEmpty(v.provider) && isNonEmpty(v.id));
   if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(validOverride);
+  if (key === "harness") return isNonEmpty(value);
   if (key === "sliced") return validSliced(value);
+  if (key === "harnessConfig") return Object.entries(value as Record<string, unknown>).every(([id, v]) => isRecord(v) && (HARNESS_CONFIG_VALIDATORS[id]?.(v) ?? true));
   return true;
 }
 
