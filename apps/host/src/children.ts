@@ -15,7 +15,7 @@ import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
 import { abortLabelExtension } from "./abort-label.ts";
 import { resolveRoleModel } from "./model-tiers.ts";
-import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
+import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension, roleOf } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import type { Harness, HarnessContext } from "./harness/types.ts";
 import { slicedHarness } from "./harness/sliced.ts";
@@ -60,6 +60,10 @@ export interface ExtensionDeps {
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
+function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
+  return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
+}
+
 export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExtension[] {
   const { role, restricted, isChild } = kind;
   const { store, hub, ref } = deps;
@@ -69,9 +73,9 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
   const runner = isChild ? undefined : createAgentRunner(agentOpts);
   const watch = <T extends InlineExtension>(ext: T, source: DecisionSource): InlineExtension => (tools ? observeBlocks(ext, source, tools) : ext);
   return [
-    // Restricted roles and orchestrators get no codemode, tool search, MCP or browser.
+    // Restricted roles and orchestrators get no codemode, tool search, MCP or browser, unless the role lists browser tools itself.
     ...(restricted
-      ? []
+      ? wantsBrowser(role, deps) ? [browserExtension(hub, ref, store.managedPolicy?.browser)] : []
       : [
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),

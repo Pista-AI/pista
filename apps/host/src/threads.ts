@@ -231,10 +231,21 @@ export class ThreadManager {
 
   // -- Lifecycle ---------------------------------------------------------------
 
-  async create(projectId: string): Promise<ThreadSnapshot> {
+  async create(projectId: string, role?: string): Promise<ThreadSnapshot> {
     const project = this.store.project(projectId);
-    const thread = await this.load(projectId, SessionManager.create(project.path));
-    return this.snapshot(thread);
+    const sessionManager = SessionManager.create(project.path);
+    if (role === undefined) return this.snapshot(await this.load(projectId, sessionManager));
+    const roles = this.agentRoles.forProject(project.path);
+    if (typeof role !== "string" || !Object.hasOwn(roles, role) || roles[role]!.disabled) throw new Error(`Unknown agent role: ${String(role)}`);
+    // Recorded before the first load, like a child's role; `parentId` stays unset, so the thread is still top-level.
+    const id = sessionManager.getSessionId();
+    this.store.setThreadMeta(id, { role });
+    try {
+      return this.snapshot(await this.load(projectId, sessionManager));
+    } catch (error) {
+      this.store.deleteThreadMeta(id);
+      throw error;
+    }
   }
 
   async open(threadId: string): Promise<ThreadSnapshot> {

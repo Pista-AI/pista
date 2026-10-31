@@ -147,7 +147,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
   },
 
   "threads.list": () => threads.list(),
-  "thread.create": ({ projectId }) => threads.create(projectId),
+  "thread.create": ({ projectId, role }) => threads.create(projectId, role),
   "thread.open": ({ threadId }) => threads.open(threadId),
   "thread.prompt": ({ threadId, text, images, delivery }) => threads.prompt(threadId, text, images, delivery),
   "thread.abort": ({ threadId }) => threads.abort(threadId),
