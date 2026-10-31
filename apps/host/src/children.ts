@@ -59,11 +59,11 @@ export interface ExtensionDeps {
   harness?: HarnessContext;
 }
 
-/** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
 function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
   return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
 }
 
+/** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
 export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExtension[] {
   const { role, restricted, isChild } = kind;
   const { store, hub, ref } = deps;
@@ -127,12 +127,12 @@ export class Children {
     return this.store.getThreadMeta(threadId)?.parentId ?? this.host.summary(threadId)?.parentId;
   }
 
-  /** Child by role or by parent link. Depth is 1, so a child never gets the agent tool. */
+  /** True for a thread with a role or a parent link: it never gets the agent tool (depth is 1). A role without a parent is a standalone thread, not a sub-agent. */
   isChildThread(threadId: string): boolean {
     return Boolean(this.store.getThreadMeta(threadId)?.role || this.parentOf(threadId));
   }
 
-  /** Child threads keep their role across restarts: it is recorded in threadMeta before the first load. */
+  /** A thread keeps its role across restarts: it is recorded in threadMeta before the first load. */
   kindOf(threadId: string, roles?: RoleMap): ThreadKind {
     const role = this.store.getThreadMeta(threadId)?.role;
     const isChild = this.isChildThread(threadId);

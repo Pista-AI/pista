@@ -237,6 +237,7 @@ export class ThreadManager {
     if (role === undefined) return this.snapshot(await this.load(projectId, sessionManager));
     const roles = this.agentRoles.forProject(project.path);
     if (typeof role !== "string" || !Object.hasOwn(roles, role) || roles[role]!.disabled) throw new Error(`Unknown agent role: ${String(role)}`);
+    if (roles[role]!.standalone && this.store.config.browserEnabled === false) throw new Error("The invoice job needs the browser; enable it in settings.");
     // Recorded before the first load, like a child's role; `parentId` stays unset, so the thread is still top-level.
     const id = sessionManager.getSessionId();
     this.store.setThreadMeta(id, { role });
