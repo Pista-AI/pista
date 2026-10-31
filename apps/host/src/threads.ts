@@ -172,6 +172,7 @@ export class ThreadManager {
         summaries: () => this.summaries(),
       },
       (projectId) => this.agentRoles.forProject(this.store.project(projectId).path),
+      this.audit,
     );
   }
 

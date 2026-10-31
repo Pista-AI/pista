@@ -447,6 +447,32 @@ function extensionsSection(raw: unknown, warnings: string[]): ManagedPolicy["ext
   return out;
 }
 
+/** Validates the `harnesses` section; a bad entry is dropped with a warning. */
+function harnessesSection(raw: unknown, warnings: string[]): ManagedPolicy["harnesses"] {
+  if (!isRecord(raw)) {
+    warnings.push('"harnesses" must be an object, ignored');
+    return undefined;
+  }
+  for (const key of Object.keys(raw)) if (!["allow", "allowUserHarnesses"].includes(key)) warnings.push(`harnesses.${key}: unknown setting, ignored`);
+  const out: NonNullable<ManagedPolicy["harnesses"]> = {};
+  if (raw.allowUserHarnesses !== undefined) {
+    if (typeof raw.allowUserHarnesses === "boolean") out.allowUserHarnesses = raw.allowUserHarnesses;
+    else warnings.push("harnesses.allowUserHarnesses: must be a boolean, treated as true");
+  }
+  if (raw.allow !== undefined) {
+    out.allow = [];
+    if (!Array.isArray(raw.allow)) warnings.push("harnesses.allow: must be an array of strings, treated as empty (denies all non-solo harnesses)");
+    else {
+      for (const entry of raw.allow) {
+        const id = typeof entry === "string" ? entry.trim() : "";
+        if (!id) warnings.push("harnesses.allow: entry must be a non-empty string, ignored");
+        else if (!out.allow.includes(id)) out.allow.push(id);
+      }
+    }
+  }
+  return out;
+}
+
 /** Startup log suffix; empty without an `extensions` section. */
 export function extensionsSummary(policy: ManagedPolicy | null): string {
   const section = policy?.extensions;
@@ -658,7 +684,7 @@ export function parsePolicy(text: string, source: string, sourceKind: PolicySour
   }
   if (kindOf(parsed) !== "object" || (parsed as { version?: unknown }).version !== 1) return fail(`${source}: "version" must be 1`);
   const file = parsed as Record<string, unknown>;
-  for (const key of Object.keys(file)) if (!["version", "locked", "defaults", "providers", "models", "mcp", "extensions", "tools", "network", "telemetry", "browser", "updates", "audit", "retention", "policySource"].includes(key)) warnings.push(`${key}: unknown top-level key, ignored`);
+  for (const key of Object.keys(file)) if (!["version", "locked", "defaults", "providers", "models", "mcp", "extensions", "harnesses", "tools", "network", "telemetry", "browser", "updates", "audit", "retention", "policySource"].includes(key)) warnings.push(`${key}: unknown top-level key, ignored`);
   const policy: ManagedPolicy = { version: 1, locked: section(file.locked, "locked", warnings), defaults: section(file.defaults, "defaults", warnings) };
   if (file.providers !== undefined) {
     const section = providers(file.providers, warnings);
@@ -677,6 +703,10 @@ export function parsePolicy(text: string, source: string, sourceKind: PolicySour
   if (file.extensions !== undefined) {
     const section = extensionsSection(file.extensions, warnings);
     if (section) policy.extensions = section;
+  }
+  if (file.harnesses !== undefined) {
+    const section = harnessesSection(file.harnesses, warnings);
+    if (section) policy.harnesses = section;
   }
   if (file.tools !== undefined) policy.tools = toolsSection(file.tools, warnings);
   const problems: string[] = [];
