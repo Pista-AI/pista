@@ -399,7 +399,18 @@ export interface HostConfig {
    * Limits the top-level thread's own tools so it must delegate through the `agent` tool. `"delegate"` leaves it
    * `agent` and `plan`; `"delegate-read"` adds the read-only tools. `"lead"` keeps every tool and only adds a prompt section telling it to delegate exploration and large work. Sub-agents keep their role's tools. Absent is `"off"`.
    */
-  orchestratorMode?: "off" | "delegate" | "delegate-read" | "lead";
+  orchestratorMode?: "off" | "delegate" | "delegate-read" | "lead" | "sliced";
+  /** Settings for `orchestratorMode: "sliced"`, where the harness decides and drives delegation from the parent's slice list. */
+  sliced?: {
+    /** Fewer slices than this run solo (positive integer; default 3). */
+    minSlices?: number;
+    /** Slices that may run at once when their areas are disjoint (1 to 3; default 1). */
+    maxParallel?: number;
+    /** Tools the parent keeps while integrating the slices' results (default `"full"`). */
+    integrateTools?: "read-only" | "full";
+    /** A parent-declared small task runs solo only while the repo is under this fraction of the context window (greater than 0, at most 1; default 0.5). */
+    repoSizeFraction?: number;
+  };
   /** Extra system-prompt text appended for every thread. */
   instructions: string;
   linkTarget: LinkTarget;

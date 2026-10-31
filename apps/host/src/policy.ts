@@ -103,6 +103,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   modelTiers: "object",
   defaultThinkingMode: "enum",
   orchestratorMode: "enum",
+  sliced: "object",
   instructions: "string",
   linkTarget: "enum",
   memoryEnabled: "boolean",
@@ -120,7 +121,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
 const ENUMS: Partial<Record<keyof HostConfig, readonly string[]>> = {
   approvalMode: ["full-access", "ask-writes", "read-only"],
   linkTarget: ["builtin", "home", "external"],
-  orchestratorMode: ["off", "delegate", "delegate-read", "lead"],
+  orchestratorMode: ["off", "delegate", "delegate-read", "lead", "sliced"],
   defaultThinkingMode: ["auto", "off", "minimal", "low", "medium", "high", "xhigh"],
 };
 const ROLES = ["explorer", "implementer", "reviewer"];
@@ -143,6 +144,17 @@ const validOverride = (v: unknown): boolean =>
   (v.maxToolCalls === undefined || validToolCallLimit(v.maxToolCalls) !== undefined) &&
   (v.disabled === undefined || typeof v.disabled === "boolean");
 
+const validSliced = (v: unknown): boolean => {
+  if (!isRecord(v) || !Object.keys(v).every((k) => ["minSlices", "maxParallel", "integrateTools", "repoSizeFraction"].includes(k))) return false;
+  const { minSlices, maxParallel, integrateTools, repoSizeFraction } = v;
+  return (
+    (minSlices === undefined || positiveInt(minSlices)) &&
+    (maxParallel === undefined || (positiveInt(maxParallel) && maxParallel <= 3)) &&
+    (integrateTools === undefined || integrateTools === "read-only" || integrateTools === "full") &&
+    (repoSizeFraction === undefined || (typeof repoSizeFraction === "number" && repoSizeFraction > 0 && repoSizeFraction <= 1))
+  );
+};
+
 /** Checks the shape of the nested settings; the top-level kind has been checked already. */
 function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
@@ -150,6 +162,7 @@ function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelSpec(v.model));
   if (key === "modelTiers") return !Array.isArray(value) && Object.entries(value as Record<string, unknown>).every(([name, v]) => TIER_NAME.test(name) && isRecord(v) && isNonEmpty(v.provider) && isNonEmpty(v.id));
   if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(validOverride);
+  if (key === "sliced") return validSliced(value);
   return true;
 }
 

@@ -13,6 +13,7 @@ import {
 import type { ManagedPolicy, ModelRef } from "@pista/protocol";
 import { capModel } from "./models.ts";
 import { piAgentDir } from "./pi-env.ts";
+import type { SliceBoard } from "./sliced/board.ts";
 
 export interface BuildSessionOptions {
   cwd: string;
@@ -216,6 +217,8 @@ export const ENTRY = {
   /** `{ goal: GoalState | null }`; `null` records a clear. */
   goal: "pista.goal",
   plan: "pista.plan",
+  /** The sliced-mode `SliceBoard`; one entry per update, the latest wins. */
+  slices: "pista.slices",
   /** One entry per decision: a `DecisionEntry`. */
   decision: "pista.decision",
   thinkingMode: "pista.thinking-mode",
@@ -230,6 +233,9 @@ export function readCustomEntry<T>(sessionManager: SessionManager, kind: string)
   }
   return undefined;
 }
+
+/** The thread's latest slice board, or undefined. */
+export const readSliceBoard = (sessionManager: SessionManager) => readCustomEntry<SliceBoard>(sessionManager, ENTRY.slices);
 
 /** Every custom entry of `kind`, oldest first. */
 export function readCustomEntries<T>(sessionManager: SessionManager, kind: string): T[] {

@@ -140,6 +140,7 @@ export function orchestratorGateExtension(allowed: readonly string[]): InlineExt
 
 /** System-prompt section for an orchestrator top-level thread; children never get it. */
 export function orchestratorPrompt(mode: HostConfig["orchestratorMode"]): string {
+  if (mode === "sliced") return ""; // its prompt section arrives with the mode's tools; this is not the delegate text
   if (mode === "lead") {
     return [
       "## Lead mode",
