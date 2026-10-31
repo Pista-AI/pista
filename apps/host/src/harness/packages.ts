@@ -7,7 +7,7 @@ import { harnessDecision } from "./gate.ts";
 import { registerHarness } from "./registry.ts";
 import type { Harness } from "./types.ts";
 
-// Loads harnesses shipped by Pi packages: package.json declares `"pista": { "harness": "./dist/harness.js" }`,
+// Loads harnesses shipped by Pi packages: package.json declares `"pista": { "harness": { "id": "...", "entry": "./dist/harness.js" } }`,
 // an ES module whose default export is a Harness (or a function returning one). Loading runs package code in the
 // host process, so the policy gate (allow list + managed package) decides whether the result may run.
 
@@ -73,6 +73,12 @@ function asHarness(value: unknown): Harness {
   if (!h || typeof h !== "object" || typeof h.id !== "string" || !ID.test(h.id)) throw new Error("default export is not a harness (id missing or invalid)");
   if (![h.extension, h.prompt, h.tools, h.validateConfig].every(isFn)) throw new Error("harness hooks must be functions");
   if (h.entries !== undefined && !(Array.isArray(h.entries) && h.entries.every((e) => typeof e === "string"))) throw new Error("harness entries must be strings");
+  const ev = (h as { eval?: unknown }).eval as { metrics?: unknown; column?: { header?: unknown; cell?: unknown } } | undefined;
+  if (ev !== undefined) {
+    const col = ev && typeof ev === "object" ? ev.column : null;
+    const colOk = col === undefined || (!!col && typeof col === "object" && typeof col.header === "string" && typeof col.cell === "function");
+    if (!ev || typeof ev !== "object" || typeof ev.metrics !== "function" || !colOk) throw new Error("harness eval must be { metrics(), column?: { header, cell() } }");
+  }
   return h as Harness;
 }
 

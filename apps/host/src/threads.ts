@@ -42,7 +42,7 @@ import { deleteFile } from "./retention.ts";
 import { autoLevel, fallbackNeedsThinking, judgeNeedsThinking, recentHistory } from "./thinking.ts";
 
 import type { Hub } from "./hub.ts";
-import { harnessConfigOf, harnessIdOf, selectedByPolicy } from "./harness/select.ts";
+import { harnessConfigOf, harnessIdOf, selectedByPolicy, threadTools } from "./harness/select.ts";
 import { loadPackageHarness, resetHarnessPackageCache } from "./harness/packages.ts";
 import { resolveHarness } from "./harness/registry.ts";
 import { piAgentDir } from "./pi-env.ts";
@@ -300,6 +300,7 @@ export class ThreadManager {
       state: { read: <T,>(entryKind: string) => readCustomEntry<T>(sessionManager, entryKind) },
     };
     const harnessPrompt = kind.harness?.prompt?.(harnessHost);
+    const topTools = threadTools(kind, harnessHost);
     const session = await buildSession({
       cwd,
       projectTrusted: trust.trusted,
@@ -313,7 +314,7 @@ export class ThreadManager {
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
       // The orchestrator allowlist is only ever set for top-level threads, so it takes precedence over any role.
-      ...(kind.orchestratorTools ? { tools: kind.orchestratorTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
+      ...(topTools ? { tools: topTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
       appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : []), ...(kind.orchestratorMode && !kind.harness ? [orchestratorPrompt(kind.orchestratorMode)] : []), ...(harnessPrompt ? [harnessPrompt] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {
