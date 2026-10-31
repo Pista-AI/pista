@@ -7,6 +7,8 @@ export interface BriefFields {
   constraints?: string;
   /** Text appended after the whole brief (harness-read file contents); not checked by `briefProblem`. */
   attachments?: string;
+  /** The user's original request, shown before the goal; not checked by `briefProblem`. */
+  context?: string;
 }
 
 export const CODE_IN_BRIEF_ERROR =
@@ -33,6 +35,7 @@ export function briefProblem(fields: Pick<BriefFields, "goal" | "constraints" | 
 /** The child's first user message. A follow-up (`continueId`) carries the goal as the message and skips the standing line. */
 export function composeBrief(fields: BriefFields, followUp = false): string {
   const parts = [followUp ? fields.goal.trim() : `## Goal\n${fields.goal.trim()}`];
+  if (!followUp && fields.context?.trim()) parts.unshift(`## Original request\n${fields.context.trim()}`);
   const pointers = (fields.pointers ?? []).map((p) => p.trim()).filter(Boolean);
   if (pointers.length) parts.push(`## Start from\n${pointers.map((p) => `- ${p}`).join("\n")}`);
   if (fields.acceptance?.trim()) parts.push(`## Acceptance\n${fields.acceptance.trim()}`);

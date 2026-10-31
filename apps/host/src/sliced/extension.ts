@@ -32,8 +32,9 @@ const MESSAGE_TYPE = "pista.sliced";
 const PLAN_TOOLS = ["slices", "plan", ...READ_ONLY_TOOLS];
 // `agent` stays so the parent can re-dispatch a fix to an earlier child with continueId.
 const INTEGRATE_READ_ONLY_TOOLS = ["agent", "plan", ...READ_ONLY_TOOLS];
-export const INTEGRATE_PROMPT =
-  "Verify, do not rewrite: run the project's own checks (tests, typecheck) and read the diffs of the changed files against the request. Make a change only when a check fails or two slices conflict; do not re-implement a slice that passes. Report failed or skipped slices honestly.";
+/** `readOnly`: the parent cannot run commands, so it has an agent run the checks. */
+export const integratePrompt = (readOnly: boolean) =>
+  `Verify, do not rewrite: ${readOnly ? "have an agent run the project's own checks (tests, typecheck) and read" : "run the project's own checks (tests, typecheck) and read"} the diffs of the changed files against the request. Make a change only when a check fails or two slices conflict; do not re-implement a slice that passes. Report failed or skipped slices honestly.`;
 /** Times the harness asks the parent to mention failed or skipped slices in its final answer. */
 const MAX_INTEGRATE_NUDGES = 1;
 
@@ -110,7 +111,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
             });
             save({ ...done, phase: "integrate" });
             const reports = done.slices.map((s) => `## ${s.id} ${done.status[s.id]}\n${clip(results[s.id]?.report ?? "", REPORT_CLIP)}`);
-            return text(`Dispatch finished.\n${renderBoard(done)}\n\n${reports.join("\n\n")}\n\n${INTEGRATE_PROMPT}`);
+            return text(`Dispatch finished.\n${renderBoard(done)}\n\n${reports.join("\n\n")}\n\n${integratePrompt(deps.config()?.integrateTools === "read-only")}`);
           },
         }),
       );

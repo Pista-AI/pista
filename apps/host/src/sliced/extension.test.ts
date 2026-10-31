@@ -208,8 +208,16 @@ test("the user's prompt is stored on the board and reaches each child brief; the
   await session(id).prompt("Please rename widget to gadget everywhere");
   assert.equal(board(id)?.request, "Please rename widget to gadget everywhere");
   assert.equal(firstUser.length, 2);
-  for (const u of firstUser) assert.match(u, /Original request\\nPlease rename widget to gadget everywhere\\n\\n### Your slice/);
+  for (const u of firstUser) assert.match(u, /## Original request\\nPlease rename widget to gadget everywhere\\n\\n## Goal/);
   const result = results(id)[0]!;
   assert.match(result, /Verify, do not rewrite/);
   assert.match(result, /Make a change only when a check fails or two slices conflict/);
+});
+
+test("a prompt with a code fence does not make the slices fail", async () => {
+  const id = await newThread();
+  const report = piAi.fauxAssistantMessage("## Changed\nx\n\n## Ran\nnone\n\n## Assumptions\nnone\n\n## Open questions\nnone");
+  faux.setResponses([slicesCall([slice("a"), slice("b")]), report, report, piAi.fauxAssistantMessage("done")]);
+  await session(id).prompt("Fix:\n```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```");
+  assert.deepEqual(board(id)?.status, { a: "done", b: "done" });
 });

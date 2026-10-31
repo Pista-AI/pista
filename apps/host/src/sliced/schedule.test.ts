@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentOutcome, AgentToolParams } from "../subagent.ts";
 import type { Slice, SliceBoard } from "./board.ts";
-import { composeBrief } from "../brief.ts";
-import { PREREAD_FILE_CHARS } from "./preread.ts";
-import { runSchedule } from "./schedule.ts";
+import { briefProblem, composeBrief } from "../brief.ts";
+import { PREREAD_FILE_CHARS, PREREAD_TOTAL_CHARS, prereadSection } from "./preread.ts";
+import { REQUEST_CHARS, capRequest, runSchedule } from "./schedule.ts";
 
 const cwd = process.cwd();
 
@@ -42,17 +42,19 @@ test("sequential waves run in order and every transition is persisted", async ()
 test("a parallel wave starts both slices before either finishes", async () => {
   const started: string[] = [];
   const release: (() => void)[] = [];
+  let bothStartedNow!: () => void;
+  const bothStarted = new Promise<void>((r) => (bothStartedNow = r));
   const run = runSchedule({
     cwd, board: boardOf([slice("a"), slice("b")]),
     waves: [["a", "b"]],
     runAgent: (p) => {
       started.push(p.goal);
+      if (started.length === 2) bothStartedNow();
       return new Promise((resolve) => release.push(() => resolve(outcome())));
     },
     persist: () => {},
   });
-  // The pointers are read from disk before each child starts, so give both a few turns.
-  for (let i = 0; i < 50 && started.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  await bothStarted;
   assert.equal(started.length, 2);
   release.forEach((r) => r());
   assert.deepEqual((await run).board.status, { a: "done", b: "done" });
@@ -132,7 +134,7 @@ test("the child brief carries the pointer files and directories read by the harn
   assert.ok(brief.indexOf("## Files read by the harness") > brief.indexOf("## Constraints"), "appended after the composed brief");
   assert.match(brief, /```path=src\/x\.ts\nexport const x = 1;/);
   assert.match(brief, /```path=src\/ \(directory\)\n[\s\S]*sub\/[\s\S]*x\.ts/);
-  assert.match(brief, /\[truncated: 500 more characters\]/);
+  assert.match(brief, /\[truncated: file is \d+ bytes\]/);
   assert.doesNotMatch(brief, /path=src\/bin\.dat/, "binary skipped");
   const attached = brief.slice(brief.indexOf("## Files read by the harness"));
   assert.doesNotMatch(attached, /TOPSECRET|secret\.txt|escape/, "outside cwd skipped");
@@ -156,5 +158,38 @@ test("the original request appears verbatim under the slice goal in every child 
     persist: () => {},
   });
   assert.equal(briefs.length, 2);
-  for (const b of briefs) assert.match(b, /## Goal\n### Original request\nRename foo to bar\.\nKeep the tests green\.\n\n### Your slice\ngoal [ab]/);
+  for (const b of briefs) assert.match(b, /## Original request\nRename foo to bar\.\nKeep the tests green\.\n\n## Goal\ngoal [ab]/);
+});
+
+test("a request with code fences does not trip briefProblem and still reaches the brief", async () => {
+  const request = "Fix this:\n```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```";
+  let params: AgentToolParams | undefined;
+  await runSchedule({ cwd, board: { ...boardOf([slice("a")]), request }, waves: [["a"]], runAgent: async (p) => ((params = p), outcome()), persist: () => {} });
+  assert.equal(briefProblem({ goal: params!.goal, constraints: params!.constraints, pointers: params!.pointers }), undefined);
+  assert.match(composeBrief(params!), /## Original request\nFix this:\n```ts/);
+});
+
+test("a symlink inside cwd that points outside is not read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sliced-link-"));
+  const outside = mkdtempSync(join(tmpdir(), "sliced-linkout-"));
+  writeFileSync(join(outside, "secret.txt"), "TOPSECRET");
+  symlinkSync(join(outside, "secret.txt"), join(dir, "link.txt"));
+  symlinkSync(outside, join(dir, "linkdir"));
+  assert.equal(await prereadSection(dir, ["link.txt", "linkdir"]), undefined);
+});
+
+test("the pre-read section stays under the total cap and says how many pointers were dropped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sliced-cap-"));
+  const names = Array.from({ length: 8 }, (_, i) => `f${i}.txt`);
+  for (const n of names) writeFileSync(join(dir, n), "x".repeat(PREREAD_FILE_CHARS * 2));
+  const section = (await prereadSection(dir, names))!;
+  assert.ok(section.length <= PREREAD_TOTAL_CHARS, `${section.length}`);
+  assert.match(section, /\[\d+ pointers omitted: budget\]/);
+});
+
+test("capRequest cuts a request over the cap and marks it", () => {
+  const long = "r".repeat(REQUEST_CHARS + 100);
+  const out = capRequest(long);
+  assert.equal(out, `${"r".repeat(REQUEST_CHARS)}\n[truncated]`);
+  assert.equal(capRequest("short"), "short");
 });
