@@ -10,7 +10,7 @@ import { normalizeDomainPattern } from "@pista/pi-browser/domains";
 import { auditSection } from "./audit-policy.ts";
 import { validToolCallLimit } from "./roles.ts";
 import { isTierRef, TIER_NAME } from "./model-tiers.ts";
-import { validSliced } from "./harness/sliced/validate.ts";
+import { positiveInt, validSliced } from "./harness/sliced/validate.ts";
 import { HARNESS_CONFIG_VALIDATORS } from "./harness/validators.ts";
 import { isRecord, looksLikeSecret } from "./secrets.ts";
 import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
@@ -175,8 +175,6 @@ const RESERVED_PROVIDER_IDS: readonly string[] = ["nebius", "llama.cpp", ...SERV
 const GATEWAY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
-
-const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 
 /** The URL without a trailing slash when it is usable, else null: https (http for local hosts only), no credentials, query or fragment. */
 function cleanBaseUrl(raw: string): string | null {

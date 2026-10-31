@@ -1,6 +1,6 @@
 import { isRecord } from "../../secrets.ts";
 
-const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+export const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 
 /** Shape check for the sliced harness settings; a leaf module so the policy and the registry can both import it. */
 export const validSliced = (v: unknown): boolean => {
