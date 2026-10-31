@@ -604,7 +604,7 @@ export class ThreadManager {
     const thread = await this.ensure(threadId);
     const { session } = thread;
     if (!session.sessionName && !session.messages.some((m) => m.role === "user")) {
-      const title = titleFrom(text);
+      const title = this.store.getThreadMeta(threadId)?.role === "invoice-fetch" ? `Invoices ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : titleFrom(text);
       session.setSessionName(title);
       this.touch(thread, { title });
     }

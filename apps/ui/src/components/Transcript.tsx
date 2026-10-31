@@ -50,7 +50,7 @@ interface Turn {
  * Codex-style layout: commentary stays inline as prose, and each run of consecutive
  * tool calls collapses into one summary line ("Edited a file, read files, ran commands").
  */
-function buildTurns(messages: ChatMessage[]): Turn[] {
+function buildTurns(messages: ChatMessage[], hideErrors = false): Turn[] {
   const turns: Turn[] = [];
   let turn: Turn | undefined;
   const begin = (ts: number) => {
@@ -80,7 +80,7 @@ function buildTurns(messages: ChatMessage[]): Turn[] {
         else if (block.type === "toolCall" && block.name === "agent") t.items.push({ kind: "agent", call: block });
         else if (block.type === "toolCall") group(t).steps.push({ kind: "tool", call: block });
       }
-      if (m.stopReason === "error") t.items.push({ kind: "error", text: m.errorMessage ?? "The model returned an error." });
+      if (m.stopReason === "error" && !hideErrors) t.items.push({ kind: "error", text: m.errorMessage ?? "The model returned an error." });
       if (m.stopReason === "aborted") t.items.push({ kind: "note", text: "Stopped" });
     } else if (m.role === "compactionSummary") {
       t.items.push({ kind: "note", text: "Context compacted" });
@@ -267,7 +267,7 @@ export function describeTool(name: string, args: Record<string, unknown>): { ver
 // Components
 // ---------------------------------------------------------------------------
 
-export function Transcript({ view, threadId, footer }: { view: ThreadView; threadId: string; footer?: ReactNode }) {
+export function Transcript({ view, threadId, footer, hideErrors }: { view: ThreadView; threadId: string; footer?: ReactNode; /** A footer card replaces the raw error block (focused mode). */ hideErrors?: boolean }) {
   const allApprovals = useApp((s) => s.approvals);
   const threads = useApp((s) => s.threads);
   // Approvals from sub-agent threads of this thread are surfaced here, tagged with the child's role.
@@ -279,7 +279,7 @@ export function Transcript({ view, threadId, footer }: { view: ThreadView; threa
   }, [allApprovals, threads, threadId]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  const turns = useMemo(() => buildTurns(view.messages), [view.messages]);
+  const turns = useMemo(() => buildTurns(view.messages, hideErrors), [view.messages, hideErrors]);
   const homeUrl = useApp((s) => s.config?.homeUrl);
   const grounded = useMemo(() => groundedHosts(view.messages, homeUrl), [view.messages, homeUrl]);
   const results = useMemo(() => {

@@ -38,7 +38,7 @@ import { SettingsDialog } from "./components/Settings.tsx";
 import { AuthPromptDialog } from "./components/AuthPrompt.tsx";
 import { GoalDialog } from "./components/GoalControls.tsx";
 import { VersionBlock } from "./components/VersionBlock.tsx";
-import { JobCard, JobFooter, JobStrip, useFocusedMode } from "./focused/Job.tsx";
+import { JOB_ROLE, JobCard, JobFooter, JobStrip, useFocusedMode } from "./focused/Job.tsx";
 import { MenuItem, Popover } from "./components/Popover.tsx";
 
 const SUGGESTIONS = [
@@ -310,7 +310,7 @@ export function App() {
           ) : thread && view ? (
             <>
               {focused && <JobStrip thread={thread} />}
-              <Transcript view={view} threadId={thread.id} footer={focused ? <JobFooter thread={thread} view={view} /> : undefined} />
+              <Transcript view={view} threadId={thread.id} footer={focused ? <JobFooter thread={thread} view={view} /> : undefined} hideErrors={focused && thread.role === JOB_ROLE} />
             </>
           ) : startingMessage?.role === "user" ? (
             <div className="transcript">
