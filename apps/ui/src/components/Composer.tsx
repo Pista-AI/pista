@@ -42,7 +42,7 @@ function readImage(file: File): Promise<Attachment> {
   });
 }
 
-export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: { text: string; n: number } }) {
+export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string }) {
   const { activeThreadId, views, models, config, pageContext } = useApp();
   const approvalField = useConfigField("approvalMode");
   const view = activeThreadId ? views[activeThreadId] : undefined;
@@ -154,7 +154,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
             ref={ta}
             rows={1}
             value={text}
-            placeholder={streaming ? "Steer the agent · ⌥↩ to queue a follow-up" : "Ask Pista to do anything"}
+            placeholder={placeholder ?? (streaming ? "Steer the agent · ⌥↩ to queue a follow-up" : "Ask Pista to do anything")}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
             onKeyDown={(e) => {

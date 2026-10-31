@@ -38,6 +38,7 @@ import { SettingsDialog } from "./components/Settings.tsx";
 import { AuthPromptDialog } from "./components/AuthPrompt.tsx";
 import { GoalDialog } from "./components/GoalControls.tsx";
 import { VersionBlock } from "./components/VersionBlock.tsx";
+import { FocusedShell } from "./focused/FocusedShell.tsx";
 import { MenuItem, Popover } from "./components/Popover.tsx";
 
 const SUGGESTIONS = [
@@ -48,6 +49,7 @@ const SUGGESTIONS = [
 
 export function App() {
   const { activeThreadId, threads, projects, views, panel, sidebarOpen, sidebarWidth, connected, toasts, draftProjectId, pinned, startingMessage, info, versionBlockMessage } = useApp();
+  const focused = useApp((s) => s.config?.focusedMode === true);
   const gate = info?.versionGate;
   const blocked = (gate && gate.status !== "ok") || versionBlockMessage !== null;
   const thread = threadById(threads, activeThreadId);
@@ -166,6 +168,8 @@ export function App() {
     "--chat-w": `${panel.chatWidth}px`,
     "--sidebar-w-peek": `${sidebarWidth}px`,
   } as CSSProperties;
+
+  if (focused) return <FocusedShell />;
 
   return (
     <div className={`app ${sidebarOpen ? "has-sidebar" : ""} ${split ? "has-split" : ""} ${maximized ? "panel-max" : ""}`} style={appVars}>

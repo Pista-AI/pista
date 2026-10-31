@@ -46,6 +46,7 @@ const DEFAULT_CONFIG: HostConfig = {
   webSearchEnabled: true,
   localServers: [],
   llamaEnabled: false,
+  focusedMode: process.env.PISTA_FOCUSED_MODE === "1",
 };
 
 function projectId(path: string): string {

@@ -115,6 +115,7 @@ function General() {
   const linkTarget = useConfigField("linkTarget");
   const webSearch = useConfigField("webSearchEnabled");
   const approval = useConfigField("approvalMode");
+  const focusedMode = useConfigField("focusedMode");
   const maxTokens = useConfigField("maxOutputTokens");
   const custom = useConfigField("instructions");
   const [instructions, setInstructions] = useDraft(custom.value);
@@ -193,6 +194,19 @@ function General() {
           Lets the agent search the web and read pages to check facts instead of guessing. Searches are sent to Exa by default (no API key); other
           providers can be set in <code>~/.pi/agent/web-search.json</code>.
         </span>
+      </div>
+      <div className="field">
+        <label>
+          Focused mode (invoice job) <ManagedBadge field={focusedMode} />
+        </label>
+        <div className="seg">
+          {([true, false] as const).map((on) => (
+            <button key={String(on)} className={(focusedMode.value === true) === on ? "on" : ""} disabled={focusedMode.locked} onClick={() => focusedMode.set(on)}>
+              {on ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
+        <span className="help">Opens the app as one guided job: paste your transactions and Pista collects the matching invoices. Turn it off to get the full app back.</span>
       </div>
       <div className="field">
         <label>

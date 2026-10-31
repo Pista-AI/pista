@@ -430,6 +430,8 @@ export interface HostConfig {
   localServers: LocalServer[];
   /** Built-in llama.cpp runtime (`llama-server` in router mode). Downloaded only once the user enables it. */
   llamaEnabled: boolean;
+  /** Focused mode: the app opens as one guided job (paste transactions, collect invoices) instead of the general projects and chats UI. Absent is off. */
+  focusedMode?: boolean;
   /** Upper clamp on each model's per-response output cap, in tokens; undefined keeps the model's default. */
   maxOutputTokens?: number;
   /** Default verify gate for sub-agents that change files; a trusted project's `.pista/verify.json` wins. */
@@ -730,6 +732,10 @@ export interface Methods {
 
   "projects.add": { params: { path: string; name?: string }; result: Project };
   "projects.setTrusted": { params: { projectId: string; trusted: boolean }; result: Project };
+  /** Reads a text file under the project folder (at most 1 MB); a path outside the folder is rejected. */
+  "project.readFile": { params: { projectId: string; relPath: string }; result: { exists: boolean; content?: string } };
+  /** Shows a file or folder of the project in the OS file manager. */
+  "project.reveal": { params: { projectId: string; relPath: string }; result: void };
   "projects.remove": { params: { projectId: string }; result: void };
 
   "threads.list": { params: {}; result: ThreadSummary[] };
