@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ThreadSummary } from "@pista/protocol";
 import { toast, useApp, type ThreadView } from "../lib/store.ts";
 import { host } from "../lib/host.ts";
-import { ManifestTable, parseManifest, type ManifestRow } from "./ManifestTable.tsx";
+import { ManifestTable } from "./ManifestTable.tsx";
+import { parseManifest, type ManifestRow } from "./manifest.ts";
 
 export const JOB_ROLE = "invoice-fetch";
 const STATUS_WORD: Record<string, string> = { pending: "Waiting", found: "Found", missing: "Missing", needs_login: "Needs your login", not_supported: "Not supported" };

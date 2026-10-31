@@ -1,10 +1,4 @@
-export interface ManifestRow {
-  vendor: string;
-  date: string;
-  amount: string;
-  status: string;
-  note: string;
-}
+import type { ManifestRow } from "./manifest.ts";
 
 const STATUS_LABEL: Record<string, string> = {
   found: "Found",
@@ -12,25 +6,6 @@ const STATUS_LABEL: Record<string, string> = {
   needs_login: "Needs your login",
   not_supported: "Download by hand",
 };
-
-/** Reads invoices/manifest.json as the agent writes it (a list, or an object holding one); null when it is not a list. */
-export function parseManifest(raw: string): ManifestRow[] | null {
-  try {
-    const data: unknown = JSON.parse(raw);
-    const list = Array.isArray(data) ? data : (data as { entries?: unknown })?.entries;
-    if (!Array.isArray(list)) return null;
-    const text = (v: unknown) => (v === undefined || v === null ? "" : String(v));
-    return list.map((e: Record<string, unknown>) => ({
-      vendor: text(e.vendor),
-      date: text(e.date),
-      amount: [text(e.amount), text(e.currency)].filter(Boolean).join(" "),
-      status: text(e.status),
-      note: text(e.note),
-    }));
-  } catch {
-    return null;
-  }
-}
 
 export function ManifestTable({ rows }: { rows: ManifestRow[] }) {
   if (rows.length === 0) return <p>No invoices found.</p>;
