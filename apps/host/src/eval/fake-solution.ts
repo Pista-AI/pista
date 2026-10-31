@@ -3,6 +3,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { HostConfig } from "@pista/protocol";
+import { harnessIdOf } from "../harness/select.ts";
 import { topoOrder } from "../harness/sliced/board.ts";
 import { resolveSlicedConfig } from "../harness/sliced/decide.ts";
 
@@ -50,7 +51,7 @@ export const fakeReport = (id: string, files: FakeFile[]) => `## Changed\n${file
 
 /** True when the fake script should drive sliced mode: the preset asks for it and the task ships `slices.json`. Throws for settings the global fake queue cannot serve. */
 export function slicedFake(config: Partial<HostConfig>, dir: string): boolean {
-  if (config.orchestratorMode !== "sliced" || !existsSync(join(dir, "slices.json"))) return false;
+  if (harnessIdOf(config) !== "sliced" || !existsSync(join(dir, "slices.json"))) return false;
   if (resolveSlicedConfig(config.sliced).maxParallel !== 1) throw new Error("fake sliced runs need sliced.maxParallel 1: the fake model's reply queue is global, so parallel children would consume each other's replies");
   return true;
 }

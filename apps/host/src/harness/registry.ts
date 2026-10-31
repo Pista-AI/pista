@@ -27,6 +27,11 @@ export function resolveHarness(id: string): Harness | undefined {
   return BUILT_IN.find((h) => h.id === id) ?? registered.get(id)?.harness;
 }
 
+/** Built-in harnesses first, then registered package harnesses in registration order. */
+export function listHarnesses(): Harness[] {
+  return [...BUILT_IN, ...[...registered.values()].map((r) => r.harness)];
+}
+
 export function harnessSource(id: string): HarnessSource {
   return registered.get(id)?.source ?? "builtin";
 }
