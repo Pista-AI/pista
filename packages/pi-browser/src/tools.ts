@@ -1,5 +1,6 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { confineToFolder } from "./download.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
@@ -27,6 +28,8 @@ export interface BrowserToolOptions {
   traceDir?: string;
   /** Recorded as `threadId` on each trace line. */
   threadId?: string;
+  /** The project folder `browser_download` saves into (read per call). Without it the tool is not registered. */
+  downloadRoot?: () => string | undefined;
   /** Managed domain rules (see domains.ts). Without any list the driver is used as is. */
   domainRules?: DomainRules;
   /** Called with the reason when a page is refused by `domainRules`. */
@@ -190,6 +193,45 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       },
     }),
   );
+  if (options.downloadRoot) {
+    const root = options.downloadRoot;
+    pi.registerTool(
+      defineTool({
+        name: "browser_download",
+        label: "Browser: download",
+        description:
+          "Save a file from the website straight to disk, using the browser's login session; the file contents never enter the conversation. Give `url` (a direct link, e.g. a PDF link) or `ref` (a snapshot ref of the download link or button to click), and `path` (relative to the project folder, e.g. invoices/2026-01/acme-2026-01-15-49.00.pdf). Returns the saved path and size.",
+        promptSnippet: "browser_download: save a file from the website to the project folder",
+        parameters: Type.Object({
+          url: Type.Optional(Type.String({ description: "Direct URL of the file" })),
+          ref: Type.Optional(Type.String({ description: "Snapshot ref of the element that starts the download when clicked" })),
+          path: Type.String({ description: "Where to save it, relative to the project folder" }),
+        }),
+        execute: async (_id, { url, ref, path }, signal) => {
+          if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
+          const folder = root();
+          if (!folder) throw new Error("browser_download: no project folder is known for this thread.");
+          const target = confineToFolder(folder, path);
+          const d = await driver();
+          if (!d.download) throw new Error("browser_download is not supported with this browser driver (the cdp driver cannot save downloads).");
+          d.setActivity?.(`Downloading ${path}`);
+          const trigger = ref
+            ? async () => {
+                const result = await runPageAction(d, { action: "click", target: ref }, async (action) => {
+                  if (signal?.aborted) return "aborted";
+                  const yes = (await askApproval?.({ toolName: "browser_download", action, signal }).catch(() => false)) === true;
+                  return signal?.aborted ? "aborted" : yes;
+                });
+                if (result.note && /^Stopped|not found|error/i.test(result.note)) throw new Error(`download failed: ${result.note}`);
+              }
+            : undefined;
+          const saved = await d.download({ path: target, ...(url ? { url } : {}), ...(trigger ? { trigger } : {}) });
+          const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}) };
+          return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
+        },
+      }),
+    );
+  }
   pi.registerTool(
     defineTool({
       name: "browser_screenshot",

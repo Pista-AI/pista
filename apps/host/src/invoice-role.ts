@@ -1,6 +1,6 @@
 import type { AgentRole } from "@pista/protocol";
 
-const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_read", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_screenshot", "browser_eval"];
+const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_read", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_screenshot", "browser_eval", "browser_download"];
 
 const PROMPT = `## Invoice fetch
 You help a small-business owner collect the invoices behind their bank or card transactions. Use short sentences and plain words. Do not mention tools, models or how you work inside.
@@ -26,8 +26,8 @@ When a login, 2FA or verification page shows: stop. Say in one short sentence: "
 
 ### Step 3: each invoice
 Find the invoice that matches the date and amount. Save it as invoices/<YYYY-MM>/<vendor>-<date>-<amount>.pdf in the project folder (lowercase vendor, no spaces).
-Getting the file: if the invoice has a PDF link, first try to fetch it from the page with a script (fetch the link with the page's own session, return it as base64) and write the decoded bytes to the file. This only works for small files, so use it only when the PDF is small (about 60 KB or less). If the link is public (no login needed) you may download it from the command line instead. If neither works, do not paste large data around: set status not_supported and put the invoice page address in the note, so the owner can download it by hand.
-Check that the file starts with %PDF before you call it found.
+Getting the file: call browser_download with the path above and either the url of the invoice's PDF link, or the ref (from browser_snapshot) of its download button or link. The file goes straight to disk using the owner's login in the browser pane; its contents never come back to you, so do not try to read or paste it. If a download fails, try once with the other form (url instead of ref, or the reverse). If the page has no downloadable invoice, set status not_supported and put the invoice page address in the note, so the owner can download it by hand.
+Call it found only when browser_download reports a saved file with a size above zero.
 
 ### Step 4: manifest and summary
 Write invoices/manifest.json: a list with one entry per transaction: vendor, date, amount, currency, status, file (path or empty) and note (one line). Status is one of: found, missing, needs_login, not_supported.

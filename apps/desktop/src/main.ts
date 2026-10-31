@@ -168,6 +168,16 @@ interface LoadError {
   url: string;
 }
 
+interface DownloadRequest {
+  path: string;
+  taken: boolean;
+  started: Promise<void>;
+  markStarted: () => void;
+  result: Promise<{ bytes: number; contentType?: string }>;
+  finish: (r: { bytes: number; contentType?: string }) => void;
+  fail: (e: Error) => void;
+}
+
 class BrowserPane {
   /** Electron renders failed loads as a blank page, so failures are reported to the UI. */
   private error: LoadError | undefined;
@@ -185,6 +195,7 @@ class BrowserPane {
     neutralizePaneDragRegions(this.view.webContents);
     const wc = this.view.webContents;
     // Popups and target=_blank stay in the pane instead of spawning windows.
+    this.hookDownloads();
     wc.setWindowOpenHandler(({ url }) => {
       void wc.loadURL(url);
       return { action: "deny" };
@@ -254,6 +265,50 @@ class BrowserPane {
     return this.view.webContents.executeJavaScript(script, true);
   }
 
+  /** The one armed download, if any. Downloads that start while nothing is armed are cancelled. */
+  private armed: DownloadRequest | undefined;
+
+  /** A page must not write files unasked: only an armed request takes a download, anything else is cancelled. */
+  private hookDownloads() {
+    this.view.webContents.session.on("will-download", (_event, item) => {
+      const armed = this.armed;
+      if (!armed || armed.taken) return item.cancel();
+      armed.taken = true;
+      armed.markStarted();
+      item.setSavePath(armed.path);
+      item.once("done", (_e, state) =>
+        state === "completed" ? armed.finish({ bytes: item.getReceivedBytes(), contentType: item.getMimeType() || undefined }) : armed.fail(new Error(`download failed: ${state}`)),
+      );
+    });
+  }
+
+  armDownload(savePath: string, url?: string) {
+    if (!path.isAbsolute(savePath)) throw new Error("download failed: the path must be absolute");
+    const request = {} as DownloadRequest;
+    request.path = savePath;
+    request.taken = false;
+    request.started = new Promise<void>((resolve) => (request.markStarted = resolve));
+    request.result = new Promise((resolve, reject) => ((request.finish = resolve), (request.fail = reject)));
+    request.result.catch(() => undefined);
+    this.armed = request;
+    if (url) this.view.webContents.downloadURL(url);
+  }
+
+  /** Resolves when the armed download completed; the request is disarmed either way. */
+  async waitDownload() {
+    const request = this.armed;
+    if (!request) throw new Error("download failed: nothing is armed");
+    const limit = (ms: number, message: string) => new Promise<never>((_, reject) => (timers.push(setTimeout(() => reject(new Error(message)), ms))));
+    const timers: NodeJS.Timeout[] = [];
+    try {
+      await Promise.race([request.started, limit(15_000, "no download started within 15 s")]);
+      return await Promise.race([request.result, limit(60_000, "download failed: not finished within 60 s")]);
+    } finally {
+      timers.forEach(clearTimeout);
+      if (this.armed === request) this.armed = undefined;
+    }
+  }
+
   /**
    * Trusted input (isTrusted events), so sites that ignore synthetic DOM events still react.
    * Hit-testing needs a laid-out view, so a hidden pane reports false and the UI falls back
@@ -311,6 +366,8 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.handle("browser:readText", (_e, maxChars: number) => pane.readText(maxChars));
   ipcMain.handle("browser:screenshot", () => pane.screenshot());
   ipcMain.handle("browser:evaluate", (_e, script: string) => pane.evaluate(script));
+  ipcMain.handle("browser:armDownload", (_e, p: string, url?: string) => pane.armDownload(p, url));
+  ipcMain.handle("browser:waitDownload", () => pane.waitDownload());
   ipcMain.handle("browser:input", (_e, event: NativeInput) => pane.input(event));
   ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
 }
@@ -353,7 +410,7 @@ async function createWindow() {
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     mainWindow = null;
-    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input"])
+    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload"])
       ipcMain.removeHandler(channel);
     ipcMain.removeAllListeners("browser:setBounds");
     ipcMain.removeAllListeners("browser:openDevTools");

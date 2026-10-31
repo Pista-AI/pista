@@ -105,6 +105,14 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
     evaluate: async (script) => (await check(), inner.evaluate(script)),
     input: async (event) => (await check(), inner.input(event)),
     screenshot: async () => (await check(), inner.screenshot()),
+    download: inner.download
+      ? async (opts) => {
+          const reason = opts.url ? checkUrl(opts.url, rules) : undefined;
+          if (reason) refuse(reason, false);
+          await check();
+          return inner.download!(opts);
+        }
+      : undefined,
     setActivity: inner.setActivity?.bind(inner),
     stats: inner.stats?.bind(inner),
   };

@@ -273,6 +273,7 @@ export class ThreadManager {
     const kind = this.children.kindOf(ref.threadId, roles);
     const { role, restricted } = kind;
     const cwd = role ? sessionManager.getCwd() : project.path;
+    ref.cwd = cwd;
     const trust = resolveProjectTrust(cwd, this.store.projects, WORKSPACE_DIR);
     const audit = scopeAudit(this.audit, () => ({ "session.id": ref.threadId, "project.id": projectId }));
     const toolAudit = this.audit === noopAudit ? undefined : new ToolAudit(audit);
