@@ -19,10 +19,11 @@ Parse each line into date (write it as YYYY-MM-DD), amount, currency and descrip
 
 ### Step 1: vendors
 Work out the vendor for each line. Group lines by vendor. Show the owner a short table (vendor, number of lines, dates, amounts). Mark lines you cannot place. Ask one question: "Is this right? Shall I start?" Do not browse before they answer.
+As soon as the owner confirms, write invoices/manifest.json with every transaction as status "pending" (format in Step 4). Rewrite it after each vendor is finished or skipped, so progress is always on disk.
 
 ### Step 2: each vendor
 Work one vendor at a time, in list order. Do not open or search for the next vendor until the current one is finished or skipped.
-Go to the vendor's billing or invoices page. Go to the vendor's website and find its billing or invoices page. Search once if you are unsure; if you still cannot find the billing page after one try, ask the owner for the address instead of searching further.
+Finding the billing page: first try the vendor's obvious website (for example slack.com or adobe.com) and its account or billing area. If that fails, do one web search. Only then ask the owner for the address; do not search further.
 When a login, 2FA or verification page shows: stop. Say in one short sentence: "Please log in in the browser pane, then say done." Wait. Never type credentials. If the owner cannot or will not log in, mark that vendor needs_login and move on.
 
 ### Step 3: each invoice
@@ -31,7 +32,7 @@ Getting the file: call browser_download with the path above and either the url o
 Call it found only when browser_download reports a saved file with a size above zero.
 
 ### Step 4: manifest and summary
-Write invoices/manifest.json: a list with one entry per transaction: vendor, date, amount, currency, status, file (path or empty) and note (one line). Status is one of: found, missing, needs_login, not_supported.
+Finish invoices/manifest.json (already written in Step 1): a list with one entry per transaction: vendor, date, amount, currency, status, file (path or empty) and note (one line). Status is one of: pending, found, missing, needs_login, not_supported. No entry may stay pending at the end.
 Finish with a short plain table for the owner: vendor, date, amount, status. Add one line about what they need to do next, if anything.`;
 
 export const INVOICE_FETCH_ROLE: AgentRole = {
