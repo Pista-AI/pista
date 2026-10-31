@@ -3,17 +3,24 @@ import type { HostConfig } from "@pista/protocol";
 import { Type } from "typebox";
 import { READ_ONLY_TOOLS } from "../roles.ts";
 import { ENTRY } from "../session.ts";
+import { clip } from "../text.ts";
 import { validateSlices, type SliceBoard, type SliceStatus } from "./board.ts";
 import { decide, resolveSlicedConfig } from "./decide.ts";
 import { estimateRepoTokens } from "./estimate.ts";
 import { renderBoard } from "./render.ts";
+import { runSchedule, type SliceRunner } from "./schedule.ts";
 
 export interface SlicedDeps {
   cwd: string;
   config: () => HostConfig["sliced"];
   /** The thread's latest persisted board (see `readSliceBoard`). */
   readBoard: () => SliceBoard | undefined;
+  /** Runs one implementer child; shared with the `agent` tool. */
+  runAgent: SliceRunner;
 }
+
+/** Longest slice report copied into the dispatch result. */
+const REPORT_CLIP = 1500;
 
 /** Times the harness reminds the parent to call `slices` before it lets the run continue solo. */
 const MAX_NUDGES = 2;
@@ -26,7 +33,7 @@ const emptyBoard = (): SliceBoard => ({ slices: [], fitsSolo: false, reason: "",
 
 /**
  * Sliced orchestrator mode, plan phase: the parent must call `slices` before changing anything, and the harness
- * (not the model) decides from that list whether to continue solo or dispatch. Dispatch itself is not wired yet.
+ * (not the model) decides from that list whether to continue solo or dispatch.
  */
 export function slicedExtension(deps: SlicedDeps): InlineExtension {
   return {
@@ -64,7 +71,7 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
             fits_solo: Type.Boolean({ description: "True when a single agent can do the whole request" }),
             reason: Type.String({ description: "Why it does or does not fit a single agent" }),
           }),
-          execute: async (_id, params, _signal, _onUpdate, ctx) => {
+          execute: async (_id, params, signal, onUpdate, ctx) => {
             const checked = validateSlices(params.slices.map(({ files_or_areas, depends_on, ...rest }) => ({ ...rest, filesOrAreas: files_or_areas, dependsOn: depends_on })));
             if (!checked.ok) return text(`Error: ${checked.error}. Call \`slices\` again with a corrected list.`);
             const next: SliceBoard = { slices: checked.slices, fitsSolo: params.fits_solo, reason: params.reason, phase: "plan", status: Object.fromEntries(checked.slices.map((s) => [s.id, "pending" as const])), nudges: current().nudges };
@@ -73,10 +80,19 @@ export function slicedExtension(deps: SlicedDeps): InlineExtension {
               save({ ...next, phase: "solo" });
               return text(`Proceed solo: ${decision.reason}. Board:\n${renderBoard(next)}`);
             }
-            // TODO(step 3): run `decision.waves` with implementer children and set phase "dispatch". Until then nothing is
-            // dispatched: the parent continues solo and the slices are marked skipped.
-            save({ ...next, phase: "solo", status: Object.fromEntries(checked.slices.map((s) => [s.id, "skipped" as const])) });
-            return text("Dispatch not yet wired in this build; proceed solo.");
+            save({ ...next, phase: "dispatch" });
+            const { board: done, results } = await runSchedule({
+              board: { ...next, phase: "dispatch" },
+              waves: decision.waves,
+              runAgent: deps.runAgent,
+              persist: save,
+              signal,
+              onUpdate: (line) => onUpdate?.({ content: [{ type: "text", text: line }], details: {} }),
+            });
+            // Step 4 gates the integrate phase; until then the parent's tools are not restricted after dispatch.
+            save({ ...done, phase: "integrate" });
+            const reports = done.slices.map((s) => `## ${s.id} ${done.status[s.id]}${results[s.id]?.note ? ` (${results[s.id]!.note})` : ""}\n${clip(results[s.id]?.report ?? "", REPORT_CLIP)}`);
+            return text(`Dispatch finished.\n${renderBoard(done)}\n\n${reports.join("\n\n")}`);
           },
         }),
       );

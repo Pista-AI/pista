@@ -64,7 +64,22 @@ export interface AgentToolDetails {
   aborted?: boolean;
 }
 
-type UpdateFn = (update: { content: { type: "text"; text: string }[]; details: AgentToolDetails }) => void;
+/** How a run ended, for callers that act on it (the sliced scheduler) rather than read the text. */
+export interface AgentOutcome {
+  verify: "passed" | "failed" | "skipped" | "none";
+  /** The Verify line without its prefix, e.g. "failed after 2 attempts (pnpm test)"; absent when nothing was verified. */
+  verifyNote?: string;
+  /** True when the child changed files through `edit` or `write`. */
+  edited?: boolean;
+  /** The child's final message (or the abort notice). */
+  report: string;
+  threadId?: string;
+  aborted: boolean;
+}
+
+export type AgentRunResult = { content: { type: "text"; text: string }[]; details: AgentToolDetails; outcome: AgentOutcome };
+
+export type UpdateFn = (update: { content: { type: "text"; text: string }[]; details: AgentToolDetails }) => void;
 
 /** Appended to an implementer brief when it starts beside a running explorer. */
 const EXPLORER_RUNNING_NOTE = "Note: an explorer is still running; do not repeat its exploration, read only the files you need to edit.";
@@ -96,7 +111,9 @@ export function createAgentRunner(opts: AgentToolOptions) {
   /** Calls in flight with their role and (once spawned) child id, to spot an implementer started beside the explorer it depends on. Registered before any await so same-turn calls see each other. */
   const inflight = new Map<symbol, { role?: AgentRoleName; childId?: string }>();
 
-  return async function runAgent(params: AgentToolParams, signal?: AbortSignal, onUpdate?: UpdateFn) {
+  const aborted = (message: string, details: AgentToolDetails): AgentRunResult => ({ content: text(message), details, outcome: { verify: "none", report: message, threadId: details.childThreadId, aborted: true } });
+
+  return async function runAgent(params: AgentToolParams, signal?: AbortSignal, onUpdate?: UpdateFn): Promise<AgentRunResult> {
     if (active >= MAX_RUNNING_CHILDREN) {
       throw new Error(`Too many sub-agents are running (${MAX_RUNNING_CHILDREN}). Wait for one to finish, or do the work yourself.`);
     }
@@ -105,7 +122,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
     if (!params.continueId && params.role === "implementer" && !params.acceptance?.trim()) throw new Error("acceptance is required for an implementer: give the command that must pass or the behaviour to verify.");
     const problem = briefProblem({ goal: params.goal, constraints: params.constraints, pointers: params.pointers });
     if (problem) throw new Error(problem);
-    if (signal?.aborted) return { content: text("Aborted before the sub-agent started."), details: { aborted: true } as AgentToolDetails };
+    if (signal?.aborted) return aborted("Aborted before the sub-agent started.", { aborted: true });
     active++;
     // getSessionStats is cumulative for the child thread, so a continued child reports its whole thread.
     const tokenLabel = (n: number) => `${params.continueId ? "thread total " : ""}${n} tokens`;
@@ -135,7 +152,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
         let toolCalls = 0;
         const update = (line: string) => onUpdate?.({ content: text(line), details: { childThreadId: childId, role, toolCalls } });
         // The signal aborted while the child was being set up: leave it idle and never send the brief.
-        if (signal?.aborted) return { content: text(`Aborted before the ${who} started (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
+        if (signal?.aborted) return aborted(`Aborted before the ${who} started (thread ${childId}).`, { childThreadId: childId, role, toolCalls, aborted: true });
         update(`Started ${who}.`);
         let brief = composeBrief(params, !!params.continueId);
         if (role === "implementer") {
@@ -216,13 +233,20 @@ export function createAgentRunner(opts: AgentToolOptions) {
 
           // Verify gate: the host runs the configured checks instead of trusting the child's "done".
           let verifyLine = "";
+          let verifyStatus: AgentOutcome["verify"] = "none";
           const verify = opts.verify;
           if (outcome === "finished" && verify && edited) {
             const config = before;
             const skip = (reason: string) => `Verify: skipped (${reason})`;
-            if (verifyKey(resolveVerifyConfig(verify.store, cwd)) !== verifyKey(before)) verifyLine = skip("verify.json changed during run");
+            if (verifyKey(resolveVerifyConfig(verify.store, cwd)) !== verifyKey(before)) {
+              verifyLine = skip("verify.json changed during run");
+              verifyStatus = "skipped";
+            }
             else if (!config) verifyLine = "";
-            else if (verify.store.config.approvalMode === "read-only") verifyLine = skip("read-only approval mode");
+            else if (verify.store.config.approvalMode === "read-only") {
+              verifyLine = skip("read-only approval mode");
+              verifyStatus = "skipped";
+            }
             else {
               for (let attempt = 1; ; attempt++) {
                 const result = await withProjectLock(cwd, () => runVerify(config, cwd, verify.store.toolRules, verify.run ?? shellRunner, verifyAbort.signal));
@@ -236,6 +260,7 @@ export function createAgentRunner(opts: AgentToolOptions) {
                   ...(result.status === "failed" ? { evidence: result.output.slice(0, 300) } : result.status === "skipped" ? { evidence: result.reason } : {}),
                   data: { childThreadId: childId, verify: result.status, attempt },
                 });
+                verifyStatus = result.status;
                 if (result.status === "passed") verifyLine = "Verify: passed";
                 else if (result.status === "skipped") verifyLine = skip(result.reason);
                 else if (attempt >= config.maxAttempts) verifyLine = `Verify: failed after ${attempt} attempts (${result.command})`;
@@ -255,14 +280,19 @@ export function createAgentRunner(opts: AgentToolOptions) {
               throw new Error(`The ${who} did not finish in time and was stopped (thread ${childId}).`);
             }
             logResult("aborted");
-            return { content: text(`Aborted: the ${who} was stopped (thread ${childId}).`), details: { childThreadId: childId, role, toolCalls, aborted: true } as AgentToolDetails };
+            return aborted(`Aborted: the ${who} was stopped (thread ${childId}).`, { childThreadId: childId, role, toolCalls, aborted: true });
           }
           const final = child.session.getLastAssistantText()?.trim();
           if (!final) throw new Error(`The ${who} produced no final message (thread ${childId}).`);
           const { billed: tokens, cacheRead } = usageTotals(child.session.getSessionStats().tokens);
           const footer = `[sub-agent thread ${childId}${tokens ? `, ${tokenLabel(tokens)}` : ""}]`;
           logResult("done", final);
-          return { content: text(`${capReport(final)}${verifyLine ? `\n\n${verifyLine}` : ""}\n\n${footer}`), details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead } as AgentToolDetails };
+          const report = capReport(final);
+          return {
+            content: text(`${report}${verifyLine ? `\n\n${verifyLine}` : ""}\n\n${footer}`),
+            details: { childThreadId: childId, role, toolCalls, tokens, cacheReadTokens: cacheRead },
+            outcome: { verify: verifyStatus, verifyNote: verifyLine.replace(/^Verify: /, "") || undefined, edited, report, threadId: childId, aborted: false },
+          };
         } catch (error) {
           if (!logged) logResult("error", error instanceof Error ? error.message : String(error));
           throw error;
@@ -280,6 +310,8 @@ export function createAgentRunner(opts: AgentToolOptions) {
   };
 }
 
+export type AgentRunner = ReturnType<typeof createAgentRunner>;
+
 export const describe = (roles: AgentRole[]) => [
   "Delegate a scoped task to a sub-agent that runs in its own thread and returns only its final message.",
   `Roles: ${roles
@@ -287,13 +319,14 @@ export const describe = (roles: AgentRole[]) => [
     .join(" ")}`,
   "The sub-agent sees nothing of this conversation, only what you pass. Give a goal (what done looks like), pointers (files, symbols or commands to start from), acceptance (the command that must pass; required for an implementer) and constraints (what not to touch). The sub-agent reads the code and writes the implementation: a brief containing code is rejected. It replies with a report: Changed (or Findings), Ran, Assumptions, Open questions.",
   "Delegate when the work is large or would bloat your context (wide exploration, changes across many files), or to run independent tasks in parallel (at most 3 at once). Do not use it for a step you can do in a few tool calls.",
-  "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time.",
+  "Workflow: dispatch explorers first and wait for their result; put their findings and the exact files to touch into the implementer's brief. Never dispatch an implementer in the same turn as the explorer it depends on, and run one implementer at a time (this applies to your own agent calls; the slices tool schedules its own).",
   "Set continueId to a thread id from an earlier result to send a follow-up to that sub-agent, which keeps its context.",
   "Give a short reason for each delegation: it is shown to the user in the decision log.",
 ].join(" ");
 
-export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
-  const run = createAgentRunner(opts);
+/** `runner` lets the caller share one runner (and its concurrency limit) with another user, such as the sliced scheduler. */
+export function agentToolExtension(opts: AgentToolOptions, runner?: AgentRunner): InlineExtension {
+  const run = runner ?? createAgentRunner(opts);
   const roles = availableRoles(opts.roles ?? ROLES);
   return {
     name: "agent-tool",
@@ -318,7 +351,10 @@ export function agentToolExtension(opts: AgentToolOptions): InlineExtension {
             continueId: Type.Optional(Type.String({ description: "Thread id of an earlier sub-agent to send this goal to as a follow-up instead of starting a new one" })),
             reason: Type.Optional(Type.String({ description: "One sentence on why you are delegating this (the why, not the what), e.g. 'Reading the whole module would flood my context, so an explorer summarises it.'" })),
           }),
-          execute: (_id, params, signal, onUpdate) => run(params as AgentToolParams, signal, onUpdate as UpdateFn | undefined),
+          execute: async (_id, params, signal, onUpdate) => {
+            const { content, details } = await run(params as AgentToolParams, signal, onUpdate as UpdateFn | undefined);
+            return { content, details };
+          },
         }),
       );
     },

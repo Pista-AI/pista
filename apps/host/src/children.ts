@@ -19,7 +19,7 @@ import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestrat
 import { modelRef } from "./models.ts";
 import { slicedExtension } from "./sliced/extension.ts";
 import { stateExtension } from "./state.ts";
-import { agentToolExtension, type ChildThreads } from "./subagent.ts";
+import { agentToolExtension, createAgentRunner, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";
 import { auditToolsExtension, type DecisionSource, observeBlocks, type ToolAudit } from "./audit-events.ts";
 
@@ -53,7 +53,7 @@ export interface ExtensionDeps {
   /** Tool audit for this thread; absent when the policy has no `audit` block. */
   toolAudit?: ToolAudit;
   /** Backs the sliced extension of top-level threads in "sliced" mode. */
-  sliced?: Parameters<typeof slicedExtension>[0];
+  sliced?: Omit<Parameters<typeof slicedExtension>[0], "runAgent">;
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
@@ -61,6 +61,9 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
   const { role, restricted, isChild } = kind;
   const { store, hub, ref } = deps;
   const tools = deps.toolAudit;
+  // One runner serves the `agent` tool and the sliced scheduler, so they share the child limit.
+  const agentOpts = { threads: deps.threads, ref, record: deps.record, verify: { store }, ...(deps.roles ? { roles: deps.roles } : {}) };
+  const runner = isChild ? undefined : createAgentRunner(agentOpts);
   const watch = <T extends InlineExtension>(ext: T, source: DecisionSource): InlineExtension => (tools ? observeBlocks(ext, source, tools) : ext);
   return [
     // Restricted roles and orchestrators get no codemode, tool search, MCP or browser.
@@ -74,10 +77,10 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),
     // Depth is 1: a child never gets the agent tool.
-    ...(isChild ? [] : [agentToolExtension({ threads: deps.threads, ref, record: deps.record, verify: { store }, ...(deps.roles ? { roles: deps.roles } : {}) })]),
+    ...(isChild ? [] : [agentToolExtension(agentOpts, runner)]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
     ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
-    ...(!isChild && kind.orchestratorMode === "sliced" && deps.sliced ? [slicedExtension(deps.sliced)] : []),
+    ...(!isChild && kind.orchestratorMode === "sliced" && deps.sliced ? [slicedExtension({ ...deps.sliced, runAgent: runner! })] : []),
     ...(kind.orchestratorTools ? [watch(orchestratorGateExtension(kind.orchestratorTools), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),
     abortLabelExtension(),

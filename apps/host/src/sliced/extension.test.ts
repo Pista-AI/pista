@@ -92,12 +92,21 @@ test("a valid list below minSlices proceeds solo and lifts the gate", async () =
   assert.equal(await blocked(id, "bash"), false);
 });
 
-test("a valid list above minSlices returns the stub text and continues solo", async () => {
+test("a valid list above minSlices dispatches one implementer per slice and ends in the integrate phase", async () => {
   const id = await newThread();
-  faux.setResponses([slicesCall([slice("a"), slice("b")]), piAi.fauxAssistantMessage("done")]);
+  const report = (what: string) => piAi.fauxAssistantMessage(`## Changed\n${what}\n\n## Ran\nnone\n\n## Assumptions\nnone\n\n## Open questions\nnone`);
+  // One shared faux queue: the parent's call, then each child's report in wave order, then the parent's answer.
+  faux.setResponses([slicesCall([slice("a"), slice("b")]), report("did slice one"), report(`did slice two ${"x".repeat(3000)}END`), piAi.fauxAssistantMessage("done")]);
   await session(id).prompt("go");
-  assert.match(results(id)[0]!, /Dispatch not yet wired/);
-  assert.equal(board(id)?.phase, "solo");
+  const result = results(id)[0]!;
+  assert.match(result, /Dispatch finished/);
+  assert.match(result, /did slice one/);
+  assert.match(result, /did slice two/);
+  assert.doesNotMatch(result, /END/, "reports are clipped");
+  assert.match(result, /## a done \(unverified: no edits\)/);
+  assert.ok(result.indexOf("Title a") < result.indexOf("## a"), "status table comes before the reports");
+  assert.equal(board(id)?.phase, "integrate");
+  assert.deepEqual(board(id)?.status, { a: "done", b: "done" });
   assert.equal(await blocked(id, "bash"), false);
 });
 
