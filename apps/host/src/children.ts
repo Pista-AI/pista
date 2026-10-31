@@ -18,7 +18,8 @@ import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import type { Harness, HarnessContext } from "./harness/types.ts";
-import { slicedHarness } from "./harness/sliced/index.ts";
+import { resolveHarness } from "./harness/registry.ts";
+import { harnessIdOf } from "./harness/select.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, createAgentRunner, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";
@@ -37,6 +38,8 @@ export interface ThreadKind {
   /** Harness of a top-level thread in a harness-backed mode (today "sliced"); absent otherwise. */
   harness?: Harness;
 }
+
+const warnedHarnesses = new Set<string>();
 
 export interface ExtensionDeps {
   store: ConfigStore;
@@ -128,19 +131,34 @@ export class Children {
     return Boolean(this.store.getThreadMeta(threadId)?.role || this.parentOf(threadId));
   }
 
+  /** The configured harness when it is not solo and resolves; an unknown id warns once and runs solo. */
+  private harnessOf(): Harness | undefined {
+    const id = harnessIdOf(this.store.config);
+    if (id === "solo") return undefined;
+    const harness = resolveHarness(id);
+    if (!harness && !warnedHarnesses.has(id)) {
+      warnedHarnesses.add(id);
+      console.warn(`[pista-host] unknown harness ${id}; running solo`);
+    }
+    return harness;
+  }
+
   /** Child threads keep their role across restarts: it is recorded in threadMeta before the first load. */
   kindOf(threadId: string, roles?: RoleMap): ThreadKind {
     const role = this.store.getThreadMeta(threadId)?.role;
     const isChild = this.isChildThread(threadId);
-    const orchestrator = isChild ? undefined : orchestratorTools(this.store.config.orchestratorMode);
-    const mode = isChild ? undefined : this.store.config.orchestratorMode;
+    const harness = isChild ? undefined : this.harnessOf();
+    const configured = this.store.config.orchestratorMode;
+    // A non-solo harness replaces the orchestrator modes; "sliced" without its harness (unknown id) runs solo.
+    const mode = isChild ? undefined : harness ? (harness.id === "sliced" ? "sliced" : undefined) : configured === "sliced" ? undefined : configured;
+    const orchestrator = orchestratorTools(mode);
     return {
       role,
       restricted: orchestrator !== undefined || (role !== undefined && isRestrictedRole(role, roles)),
       isChild,
       ...(orchestrator ? { orchestratorTools: orchestrator } : {}),
       ...(mode && mode !== "off" ? { orchestratorMode: mode } : {}),
-      ...(mode === "sliced" ? { harness: slicedHarness } : {}),
+      ...(harness ? { harness } : {}),
     };
   }
 

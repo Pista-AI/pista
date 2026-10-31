@@ -42,6 +42,7 @@ import { deleteFile } from "./retention.ts";
 import { autoLevel, fallbackNeedsThinking, judgeNeedsThinking, recentHistory } from "./thinking.ts";
 
 import type { Hub } from "./hub.ts";
+import { harnessConfigOf } from "./harness/select.ts";
 
 /** Pi's model object (it carries more than the provider and id, e.g. baseUrl). */
 type PiModel = NonNullable<AgentSession["model"]>;
@@ -270,7 +271,7 @@ export class ThreadManager {
     // `extensionsFor` adds the shared runner.
     const harnessHost = {
       cwd,
-      config: <T,>() => this.store.config.sliced as T | undefined,
+      config: <T,>() => harnessConfigOf(this.store.config, kind.harness?.id ?? "solo") as T | undefined,
       windowCap: () => this.store.config.contextWindowCap,
       readOnlyTools: READ_ONLY_TOOLS,
       state: { read: <T,>(entryKind: string) => readCustomEntry<T>(sessionManager, entryKind) },
