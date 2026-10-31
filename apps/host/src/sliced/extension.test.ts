@@ -105,7 +105,8 @@ test("a valid list above minSlices dispatches one implementer per slice and ends
   assert.doesNotMatch(result, /END/, "reports are clipped");
   assert.match(result, /## a done \(unverified: no edits\)/);
   assert.ok(result.indexOf("Title a") < result.indexOf("## a"), "status table comes before the reports");
-  assert.equal(board(id)?.phase, "integrate");
+  assert.match(result, /Check the reports against the request/);
+  assert.equal(board(id)?.phase, "done", "nothing failed, so the run settles straight to done");
   assert.deepEqual(board(id)?.status, { a: "done", b: "done" });
   assert.equal(await blocked(id, "bash"), false);
 });
@@ -135,4 +136,99 @@ test("a new user message after the board is finished starts a new plan", async (
   await session(id).prompt("next");
   assert.equal(board(id)?.slices.length, 0);
   assert.equal(board(id)?.phase, "solo");
+});
+
+const seed = (id: string, phase: string, status: Record<string, string>) => {
+  const slices = Object.keys(status).map((k) => ({ id: k, title: `Title ${k}`, goal: "g", filesOrAreas: [`src/${k}`], acceptance: "t", dependsOn: [] }));
+  (session(id).sessionManager as unknown as { appendCustomEntry(t: string, d: unknown): void }).appendCustomEntry(ENTRY.slices, { slices, fitsSolo: false, reason: "r", phase, status, nudges: 0 });
+};
+
+test("integrate gate: full leaves every tool open, read-only keeps read tools, plan and agent", async () => {
+  const id = await newThread();
+  seed(id, "integrate", { a: "done", b: "running" });
+  assert.equal(await blocked(id, "bash"), false);
+  store.patchConfig({ sliced: { minSlices: 2, integrateTools: "read-only" } });
+  try {
+    assert.equal(await blocked(id, "bash"), true);
+    assert.equal(await blocked(id, "write"), true);
+    for (const tool of ["read", "grep", "find", "ls", "plan", "agent"]) assert.equal(await blocked(id, tool), false, tool);
+  } finally {
+    store.patchConfig({ sliced: { minSlices: 2 } });
+  }
+});
+
+test("a failed slice the answer never mentions gets one reminder; mentioning it needs none", async () => {
+  const id = await newThread();
+  seed(id, "integrate", { a: "done", b: "failed", c: "running" });
+  let steer = "";
+  faux.setResponses([
+    piAi.fauxAssistantMessage("All good."),
+    (ctx: { messages: unknown[] }) => {
+      steer = JSON.stringify(ctx.messages);
+      return piAi.fauxAssistantMessage("Slice b failed.");
+    },
+  ]);
+  await session(id).prompt("status?");
+  assert.match(steer, /must mention the failed\/skipped slices: b/);
+  assert.equal(board(id)?.integrateNudges, 1);
+  assert.equal(board(id)?.phase, "done");
+
+  const id2 = await newThread();
+  seed(id2, "integrate", { a: "done", b: "skipped", c: "running" });
+  faux.setResponses([piAi.fauxAssistantMessage("Everything but Title b is done.")]);
+  await session(id2).prompt("status?");
+  assert.equal(board(id2)?.integrateNudges ?? 0, 0);
+  assert.equal(board(id2)?.phase, "done");
+});
+
+test("a short id is matched as a whole word, not inside other words", async () => {
+  const id = await newThread();
+  seed(id, "integrate", { a: "failed", b: "running" });
+  faux.setResponses([piAi.fauxAssistantMessage("The cat sat; all fine."), piAi.fauxAssistantMessage("Slice a failed.")]);
+  await session(id).prompt("status?");
+  assert.equal(board(id)?.integrateNudges, 1);
+});
+
+test("a run that does not complete in integrate ends it, and tools are open again in done even when read-only", async () => {
+  store.patchConfig({ sliced: { minSlices: 2, integrateTools: "read-only" } });
+  try {
+    const id = await newThread();
+    seed(id, "integrate", { a: "failed", b: "running" });
+    assert.equal(await blocked(id, "bash"), true, "gate holds in integrate, read from the stored board");
+    faux.setResponses([piAi.fauxAssistantMessage("x", { stopReason: "error", errorMessage: "boom" })]);
+    await session(id).prompt("go").catch(() => undefined);
+    assert.equal(board(id)?.phase, "done");
+    assert.equal(await blocked(id, "bash"), false);
+  } finally {
+    store.patchConfig({ sliced: { minSlices: 2 } });
+  }
+});
+
+test("an integrate board is not wiped by a user message even when every slice is terminal", async () => {
+  const id = await newThread();
+  seed(id, "integrate", { a: "done", b: "failed" });
+  faux.setResponses([piAi.fauxAssistantMessage("Slice b failed."), piAi.fauxAssistantMessage("unused")]);
+  await session(id).prompt("hm");
+  assert.equal(board(id)?.slices.length, 2);
+});
+
+test("the reminder is sent once even when the answer still omits the slice", async () => {
+  const id = await newThread();
+  seed(id, "integrate", { a: "failed", b: "running" });
+  faux.setResponses([piAi.fauxAssistantMessage("fine"), piAi.fauxAssistantMessage("still fine"), piAi.fauxAssistantMessage("unused")]);
+  await session(id).prompt("status?");
+  assert.equal(board(id)?.integrateNudges, 1);
+  assert.equal(board(id)?.phase, "done");
+});
+
+test("integrate with pending slices survives a user message; after done the next message resets", async () => {
+  const id = await newThread();
+  seed(id, "integrate", { a: "done", b: "pending" });
+  faux.setResponses([piAi.fauxAssistantMessage("ok")]);
+  await session(id).prompt("hm");
+  assert.equal(board(id)?.slices.length, 2, "kept");
+  assert.equal(board(id)?.phase, "done");
+  faux.setResponses([piAi.fauxAssistantMessage("ok")]);
+  await session(id).prompt("next");
+  assert.equal(board(id)?.slices.length, 0, "reset");
 });
