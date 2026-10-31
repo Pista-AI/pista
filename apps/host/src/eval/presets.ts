@@ -30,6 +30,8 @@ export interface Task {
 }
 
 export interface RunResult {
+  /** The parent thread's model ("provider/id"), after a preset's own `defaultModel` pin. */
+  model?: string;
   preset: string;
   task: string;
   run: number;
@@ -346,6 +348,9 @@ export function toMarkdown(report: EvalReport): string {
   if (report.judged) lines.push("", `Reviewer cost (included in the total): ${judgeCost.toFixed(4)} USD.`);
   const errors = report.results.filter((r) => r.error);
   if (errors.length) lines.push("", `Runs with errors: ${errors.length} of ${report.results.length} (${[...new Set(errors.map((r) => r.error))].join("; ")})`);
+  const models = new Map<string, Set<string>>();
+  for (const r of report.results) if (r.model) (models.get(r.preset) ?? models.set(r.preset, new Set()).get(r.preset)!).add(r.model);
+  if (models.size) lines.push("", `Parent models: ${[...models].map(([p, m]) => `${p} = ${[...m].join(", ")}`).join("; ")}.`);
   if (report.aborted) lines.push("", `Aborted: ${report.aborted}`);
   return lines.join("\n") + "\n";
 }

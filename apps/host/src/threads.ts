@@ -275,7 +275,7 @@ export class ThreadManager {
       // Only an allowed default is written to Pi's settings, so Pi never falls back to a disallowed model.
       ...(this.store.config.defaultModel && isModelAllowed(this.store.managedPolicy, this.store.config.defaultModel) ? { defaultModel: this.store.config.defaultModel } : {}),
       ...(this.store.config.maxOutputTokens !== undefined ? { maxOutputTokens: this.store.config.maxOutputTokens } : {}),
-      isLocal: (m) => this.isLocal(m as PiModel),
+      isLocal: (m) => this.scalesCompaction(m as PiModel),
       packages: this.store.packageSync(),
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
@@ -439,6 +439,11 @@ export class ThreadManager {
   /** Sends a session event to the UI. */
   private emitEvent(threadId: string, event: AgentEvent): void {
     this.hub.emit({ type: "thread.event", threadId, event });
+  }
+
+  /** Local models, and every model while a `contextWindowCap` is set, get compaction thresholds scaled to their window. */
+  private scalesCompaction(model: PiModel): boolean {
+    return this.store.config.contextWindowCap !== undefined || this.isLocal(model);
   }
 
   private isLocal(model: PiModel): boolean {
@@ -777,7 +782,7 @@ export class ThreadManager {
 
   /** Pi saves settings on setModel, which drops the in-memory compaction overrides; put them back. */
   private reapplyCompaction(thread: LiveThread): void {
-    reapplyCompactionOverrides(thread.session.settingsManager, this.models, (m) => this.isLocal(m as PiModel));
+    reapplyCompactionOverrides(thread.session.settingsManager, this.models, (m) => this.scalesCompaction(m as PiModel));
   }
 
   /**
