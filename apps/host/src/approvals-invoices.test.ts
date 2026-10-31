@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { setupHome } from "./test-helpers.ts";
+
+setupHome("approvals-invoices-test", { cleanup: "exit" });
+const { approvalExtension } = await import("./extensions.ts");
+const { invoiceWriteGate } = await import("./children.ts");
+
+function setup(role: string | undefined) {
+  const cwd = mkdtempSync(join(tmpdir(), "pista-inv-"));
+  let asked = 0;
+  const hub = { ask: async () => (asked++, { allow: true }) } as never;
+  const store = { config: { approvalMode: "ask-writes" }, toolRules: undefined } as never;
+  const ext = approvalExtension(hub, store, { threadId: "t" } as never, undefined, invoiceWriteGate({ role, restricted: true, isChild: false } as never, cwd));
+  const handlers = new Map<string, (e: any, c: any) => Promise<any>>();
+  (ext as unknown as { factory: (pi: unknown) => void }).factory({ on: (n: string, h: never) => handlers.set(n, h), getAllTools: () => [] });
+  return { cwd, asked: () => asked, call: (toolName: string, input: Record<string, unknown>) => handlers.get("tool_call")!({ toolName, input }, {}) };
+}
+
+test("invoice-fetch may write under invoices/ without a prompt", async () => {
+  const s = setup("invoice-fetch");
+  await s.call("write", { path: "invoices/2026-09/adobe-2026-09-03-59.99.pdf", content: "x" });
+  await s.call("write", { path: join(s.cwd, "invoices", "manifest.json"), content: "[]" });
+  assert.equal(s.asked(), 0);
+});
+
+test("invoice-fetch still asks for writes elsewhere, for bash and for edit", async () => {
+  const s = setup("invoice-fetch");
+  await s.call("write", { path: "notes.txt", content: "x" });
+  await s.call("write", { path: "invoices/../notes.txt", content: "x" });
+  await s.call("bash", { command: "echo hi > invoices/a.txt" });
+  await s.call("edit", { path: "invoices/a.txt" });
+  assert.equal(s.asked(), 4);
+});
+
+test("other roles and role-less threads still ask for invoices/ writes", async () => {
+  for (const role of [undefined, "implementer"]) {
+    const s = setup(role);
+    await s.call("write", { path: "invoices/a.pdf", content: "x" });
+    assert.equal(s.asked(), 1);
+  }
+});

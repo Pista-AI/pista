@@ -2817,3 +2817,9 @@ select:focus-visible {
   border-bottom: 1px solid var(--pane-border);
   vertical-align: top;
 }
+.focused-hint {
+  margin: 0;
+  padding: 0 16px 8px;
+  color: var(--text-2);
+  font-size: 14px;
+}

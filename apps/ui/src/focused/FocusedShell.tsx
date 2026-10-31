@@ -21,6 +21,8 @@ export function FocusedShell() {
   const [text, setText] = useState("");
   const [starting, setStarting] = useState(false);
   const [rows, setRows] = useState<ManifestRow[] | null>(null);
+  const [startFailed, setStartFailed] = useState(false);
+  const reattached = useRef(false);
   // The manifest text at the start of this job, so an older run's results are not shown as this one's.
   const baseline = useRef<string | null>(null);
   const status = thread?.status;
@@ -47,6 +49,17 @@ export function FocusedShell() {
     };
   }, [thread?.id, status, thread?.updatedAt, project?.id]);
 
+  // Coming back to the app: pick up the latest invoice job if it is still running or already has results.
+  useEffect(() => {
+    if (reattached.current || activeThreadId) return;
+    const last = threads.filter((t) => t.role === ROLE && !t.parentId).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (!last) return;
+    reattached.current = true;
+    void (async () => {
+      if (last.status === "running" || (await readManifest(last.projectId)) !== null) await actions.openThread(last.id);
+    })().catch(() => {});
+  }, [threads, activeThreadId]);
+
   // The agent drives the browser through the panel, so make sure it has a tab to show.
   useEffect(() => {
     if (thread && !useApp.getState().panel.tabs.some((t) => t.kind === "web")) actions.newWebTab();
@@ -54,7 +67,9 @@ export function FocusedShell() {
 
   const start = async () => {
     if (!project || !text.trim() || starting) return;
+    reattached.current = true;
     setStarting(true);
+    setStartFailed(false);
     try {
       baseline.current = await readManifest(project.id);
       setRows(null);
@@ -62,20 +77,37 @@ export function FocusedShell() {
       await actions.send(text.trim(), undefined, undefined, ROLE);
       setText("");
     } catch (e) {
-      toast((e as Error).message, "error");
+      setStartFailed(true);
     } finally {
       setStarting(false);
     }
   };
 
   const startOver = () => {
+    reattached.current = true;
+    if (rows) setText("");
     setRows(null);
-    setText("");
+    setStartFailed(false);
     actions.newThread(project?.id);
   };
 
   let body;
-  if (!thread || !view) {
+  if (startFailed || (thread && status === "error")) {
+    body = (
+      <div className="focused-step">
+        <h1>Something went wrong</h1>
+        <p>Something went wrong. Open settings to check your AI connection, then try again.</p>
+        <div className="focused-actions">
+          <button className="pill-btn primary focused-go" onClick={() => useApp.setState({ settingsOpen: "providers" })}>
+            Open settings
+          </button>
+          <button className="link-btn" onClick={startOver}>
+            Start over
+          </button>
+        </div>
+      </div>
+    );
+  } else if (!thread || !view) {
     body = (
       <div className="focused-step">
         <h1>Paste your transactions</h1>
@@ -84,6 +116,7 @@ export function FocusedShell() {
         <button className="pill-btn primary focused-go" disabled={!text.trim() || starting || !project} onClick={() => void start()}>
           {starting ? "Starting..." : "Start"}
         </button>
+        {!project && <p>No workspace folder is available yet. Open settings to add one.</p>}
       </div>
     );
   } else if (rows) {
@@ -92,7 +125,7 @@ export function FocusedShell() {
         <h1>Results</h1>
         <ManifestTable rows={rows} />
         <div className="focused-actions">
-          <button className="pill-btn primary focused-go" onClick={() => host.call("project.reveal", { projectId: thread.projectId, relPath: "invoices" }).catch((e: Error) => toast(e.message, "error"))}>
+          <button className="pill-btn primary focused-go" onClick={() => host.call("project.reveal", { projectId: thread.projectId }).catch((e: Error) => toast(e.message, "error"))}>
             Open folder
           </button>
           <button className="link-btn" onClick={startOver}>
@@ -111,8 +144,9 @@ export function FocusedShell() {
               Start over
             </button>
           </div>
+          <p className="focused-hint">When a website asks you to log in, do it in the panel on the right, then type done below.</p>
           <Transcript view={view} threadId={thread.id} />
-          <Composer autoFocusKey={thread.id} placeholder="Reply here (for example: done)" />
+          <Composer autoFocusKey={thread.id} placeholder="Reply here (for example: done)" simple />
         </section>
         <div className="focused-side">
           <WorkspaceTabs />

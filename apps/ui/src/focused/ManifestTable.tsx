@@ -33,6 +33,7 @@ export function parseManifest(raw: string): ManifestRow[] | null {
 }
 
 export function ManifestTable({ rows }: { rows: ManifestRow[] }) {
+  if (rows.length === 0) return <p>No invoices found.</p>;
   return (
     <table className="focused-table">
       <thead>

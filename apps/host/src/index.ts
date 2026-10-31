@@ -18,7 +18,7 @@ import {
   type Methods,
 } from "@pista/protocol";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
-import { readProjectFile, revealProjectPath } from "./project-files.ts";
+import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
 import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
 import { extensionsSummary } from "./policy.ts";
 import { describeMcp } from "./policy-mcp.ts";
@@ -150,7 +150,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     return project;
   },
   "project.readFile": ({ projectId, relPath }) => readProjectFile(projectPath(projectId), relPath),
-  "project.reveal": ({ projectId, relPath }) => revealProjectPath(projectPath(projectId), relPath),
+  "project.reveal": ({ projectId }) => revealProjectInvoices(projectPath(projectId)),
   "projects.remove": async ({ projectId }) => {
     await threads.removeProject(projectId);
   },

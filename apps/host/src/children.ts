@@ -1,3 +1,4 @@
+import { isInvoicesPath } from "./project-files.ts";
 import {
   createCodemodeExtension,
   createMcpExtension,
@@ -57,10 +58,18 @@ export interface ExtensionDeps {
   toolAudit?: ToolAudit;
   /** Backs the harness extension of top-level threads; `runAgent` is filled in here with the shared runner. */
   harness?: HarnessContext;
+  /** The thread's project folder. */
+  cwd?: string;
 }
 
 function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
   return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
+}
+
+/** The invoice-fetch job saves its PDFs and manifest without a prompt: only the `write` tool, only under `<project>/invoices/`. Bash and every other path still ask. */
+export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => boolean) | undefined {
+  if (kind.role !== "invoice-fetch" || kind.isChild || !cwd) return undefined;
+  return (toolName, input) => toolName === "write" && typeof input.path === "string" && isInvoicesPath(cwd, input.path);
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
@@ -95,7 +104,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     contextPruneExtension(store),
     // Children share the parent's cwd, so only role-less threads may write the plan file.
     ...(role ? [] : [planTool({ ...deps.plan, record: deps.record })]),
-    watch(approvalExtension(hub, store, ref, deps.alwaysAllowed), "approval"),
+    watch(approvalExtension(hub, store, ref, deps.alwaysAllowed, invoiceWriteGate(kind, deps.cwd)), "approval"),
     // Last, so it sees the input as every other extension left it and nothing runs after its block.
     ...(store.toolRules ? [policyGateExtension(store.toolRules, tools ? (name, input, denial, id) => tools.decision(id, name, input, "deny", { source: "policy", rule: denial.rule }) : undefined)] : []),
     // After every gate, so it only sees calls that were allowed.

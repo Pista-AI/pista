@@ -42,7 +42,7 @@ function readImage(file: File): Promise<Attachment> {
   });
 }
 
-export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string }) {
+export function Composer({ autoFocusKey, seed, placeholder, simple }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string; /** Hides the add, permissions and model controls (focused mode). */ simple?: boolean }) {
   const { activeThreadId, views, models, config, pageContext } = useApp();
   const approvalField = useConfigField("approvalMode");
   const view = activeThreadId ? views[activeThreadId] : undefined;
@@ -166,6 +166,7 @@ export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: st
             }}
           />
           <div className="composer-row">
+            {!simple && (
             <Popover
               trigger={({ toggle }) => (
                 <button className="icon-btn round" title="Add" onClick={toggle}>
@@ -191,6 +192,7 @@ export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: st
                 </>
               )}
             </Popover>
+            )}
             <input
               ref={file}
               type="file"
@@ -204,6 +206,7 @@ export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: st
               }}
             />
 
+            {!simple && (
             <Popover
               trigger={({ toggle }) => (
                 <>
@@ -240,12 +243,14 @@ export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: st
                 })
               }
             </Popover>
+            )}
 
             <div className="spacer" />
             {view?.contextUsage?.percent != null && view.contextUsage.percent > 40 && (
               <span className="context-ring">{Math.round(view.contextUsage.percent)}%</span>
             )}
 
+            {!simple && (
             <Popover
               placement="top-end"
               trigger={({ toggle }) => (
@@ -310,6 +315,7 @@ export function Composer({ autoFocusKey, seed, placeholder }: { autoFocusKey: st
                 </>
               )}
             </Popover>
+            )}
 
             {streaming && !text.trim() ? (
               <button className="send-btn" title="Stop (Esc)" onClick={() => actions.abort()}>

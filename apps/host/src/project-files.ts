@@ -1,19 +1,47 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const MAX_READ_BYTES = 1_000_000;
+/** The only folder the UI may ask the OS to show. */
+export const INVOICES_DIR = "invoices";
 
-/** Resolves `relPath` inside `root`, following symlinks; throws when the result would leave the project folder. */
+/** Real path of `path`: the deepest existing ancestor is resolved through symlinks and the missing rest is appended. */
+function realpathLoose(path: string): string {
+  let existing = path;
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    rest.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(realpathSync(existing), ...rest);
+}
+
+function isInside(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\") && !isAbsolute(rel);
+}
+
+/** Resolves `relPath` inside `root`, following symlinks (also for a path that does not exist yet); throws when the result leaves the project folder. */
 export function resolveInProject(root: string, relPath: string): string {
   if (isAbsolute(relPath)) throw new Error("Path must be relative to the project folder");
   const base = realpathSync(root);
-  const target = resolve(base, relPath);
-  // A path that does not exist yet is checked by its lexical position; one that exists by its real location.
-  const real = existsSync(target) ? realpathSync(target) : target;
-  const rel = relative(base, real);
-  if (rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) throw new Error("Path is outside the project folder");
+  const real = realpathLoose(resolve(base, relPath));
+  if (!isInside(base, real)) throw new Error("Path is outside the project folder");
   return real;
+}
+
+/** True when `path` (absolute, or relative to the project) lies under the project's `invoices/` folder, with symlinks resolved. */
+export function isInvoicesPath(root: string, path: string): boolean {
+  try {
+    const base = realpathSync(root);
+    const dir = realpathLoose(join(base, INVOICES_DIR));
+    return isInside(base, dir) && isInside(dir, realpathLoose(resolve(base, path)));
+  } catch {
+    return false;
+  }
 }
 
 /** Reads a small text file in the project folder; a missing file is `exists: false`, not an error. */
@@ -24,15 +52,21 @@ export function readProjectFile(root: string, relPath: string): { exists: boolea
   return { exists: true, content: readFileSync(file, "utf8") };
 }
 
-/** Shows a file or folder of the project in the OS file manager. */
-export function revealProjectPath(root: string, relPath: string): void {
-  const target = resolveInProject(root, relPath);
-  if (!existsSync(target)) throw new Error("Nothing to show yet");
-  const isDir = statSync(target).isDirectory();
-  const [cmd, args] =
-    process.platform === "darwin" ? ["open", isDir ? [target] : ["-R", target]]
-    : process.platform === "win32" ? ["explorer", isDir ? [target] : [`/select,${target}`]]
-    : ["xdg-open", [isDir ? target : resolve(target, "..")]];
+/** The command that shows `target` in the file manager. It selects the item (`open -R`), so an app bundle or any other file is never launched. */
+export function revealCommand(platform: NodeJS.Platform, target: string): [string, string[]] {
+  if (platform === "darwin") return ["open", ["-R", target]];
+  if (platform === "win32") return ["explorer", [`/select,${target}`]];
+  return ["xdg-open", [dirname(target)]];
+}
+
+/** Shows the project's `invoices/` folder in the OS file manager. Nothing else can be revealed. */
+export function revealProjectInvoices(root: string, launch: (cmd: string, args: string[]) => void = defaultLaunch): void {
+  const target = resolveInProject(root, INVOICES_DIR);
+  if (!existsSync(target) || !statSync(target).isDirectory()) throw new Error("Nothing to show yet");
+  launch(...revealCommand(process.platform, target));
+}
+
+function defaultLaunch(cmd: string, args: string[]): void {
   const child = spawn(cmd, args, { stdio: "ignore", detached: true });
   child.on("error", () => {});
   child.unref();

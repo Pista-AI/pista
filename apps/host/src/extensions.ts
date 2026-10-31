@@ -193,7 +193,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
 const WRITE_VERBS = /(mutation|create|update|delete|remove|save|apply|promote|release|publish|write|set_|select)/i;
 
 /** `alwaysAllowed` is shared with the host so approvals it asks for itself (the goal check) honour "Always allow" too. */
-export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, alwaysAllowed = new Set<string>()): InlineExtension {
+export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, alwaysAllowed = new Set<string>(), autoAllow?: (toolName: string, input: Record<string, unknown>) => boolean): InlineExtension {
   /** Set by a plain decline: the rest of this run may only reply, not act. Cleared when the user prompts again. */
   let declined = false;
 
@@ -231,6 +231,8 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         if (!reason) return undefined;
         if (mode === "read-only") return { block: true, reason: `Blocked: read-only mode (${reason}).` };
         if (alwaysAllowed.has(event.toolName)) return undefined;
+        // Narrow, per-role exemptions (see extensionsFor); anything they do not name still asks.
+        if (autoAllow?.(event.toolName, event.input as Record<string, unknown>)) return undefined;
 
         try {
           const answer = await hub.ask<{ allow: boolean; always?: boolean; note?: string }>(
