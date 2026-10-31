@@ -1,29 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ThreadSummary } from "@pista/protocol";
 import { toast, useApp, type ThreadView } from "../lib/store.ts";
 import { host } from "../lib/host.ts";
 import { ManifestTable, parseManifest, type ManifestRow } from "./ManifestTable.tsx";
 
 export const JOB_ROLE = "invoice-fetch";
-const STATUS_WORD: Record<string, string> = { found: "Found", missing: "Missing", needs_login: "Needs your login", not_supported: "Not supported" };
+const STATUS_WORD: Record<string, string> = { pending: "Waiting", found: "Found", missing: "Missing", needs_login: "Needs your login", not_supported: "Not supported" };
 
 export const useFocusedMode = () => useApp((s) => s.config?.focusedMode === true);
 
-/** invoices/manifest.json of this job, re-read whenever the thread updates. A file older than the thread belongs to an earlier job and is ignored. */
+/** invoices/manifest.json of this job. Re-read when the thread updates or new messages arrive, at most every 2 s; a file older than the thread belongs to an earlier job and is ignored. */
 function useManifest(thread: ThreadSummary | undefined): ManifestRow[] | null {
   const [rows, setRows] = useState<ManifestRow[] | null>(null);
   const isJob = thread?.role === JOB_ROLE;
+  const messages = useApp((s) => (thread ? s.views[thread.id]?.messages.length : 0));
+  const last = useRef(0);
+  const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!thread || !isJob) return setRows(null);
     let live = true;
-    host
-      .call("project.readFile", { projectId: thread.projectId, relPath: "invoices/manifest.json" })
-      .then((f) => live && setRows(f.exists && (f.modified ?? 0) >= thread.createdAt ? parseManifest(f.content ?? "") : null))
-      .catch(() => live && setRows(null));
+    const read = () => {
+      last.current = Date.now();
+      host
+        .call("project.readFile", { projectId: thread.projectId, relPath: "invoices/manifest.json" })
+        .then((f) => live && setRows(f.exists && (f.modified ?? 0) >= thread.createdAt ? parseManifest(f.content ?? "") : null))
+        .catch(() => live && setRows(null));
+    };
+    const wait = Math.max(0, last.current + 2000 - Date.now());
+    if (wait === 0 || thread.status !== "running") read();
+    else timer.current = window.setTimeout(read, wait);
     return () => {
       live = false;
+      window.clearTimeout(timer.current);
     };
-  }, [thread?.id, thread?.status, thread?.updatedAt, isJob]);
+  }, [thread?.id, thread?.status, thread?.updatedAt, messages, isJob]);
   return rows;
 }
 
@@ -69,7 +79,7 @@ export function JobFooter({ thread, view }: { thread: ThreadSummary; view: Threa
       </div>
     );
   }
-  if (thread.status !== "idle" || !rows) return null;
+  if (thread.status !== "idle" || !rows || rows.some((r) => r.status === "pending")) return null;
   return (
     <div className="job-results">
       <h2>Results</h2>

@@ -279,6 +279,18 @@ export function Transcript({ view, threadId, footer, hideErrors }: { view: Threa
   }, [allApprovals, threads, threadId]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const inner = useRef<HTMLDivElement>(null);
+  // Late content (a footer card) keeps a transcript that follows the bottom at the bottom.
+  useEffect(() => {
+    const el = inner.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const s = scroller.current;
+      if (s && stick.current) s.scrollTop = s.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const turns = useMemo(() => buildTurns(view.messages, hideErrors), [view.messages, hideErrors]);
   const homeUrl = useApp((s) => s.config?.homeUrl);
   const grounded = useMemo(() => groundedHosts(view.messages, homeUrl), [view.messages, homeUrl]);
@@ -303,7 +315,7 @@ export function Transcript({ view, threadId, footer, hideErrors }: { view: Threa
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
       }}
     >
-      <div className="transcript-inner">
+      <div className="transcript-inner" ref={inner}>
         {turns.map((turn, i) => (
           <TurnView
             key={turn.key}
