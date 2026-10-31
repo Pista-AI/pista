@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceDiff } from "./diff.ts";
-import { addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -22,7 +22,7 @@ test("fake run over every task and both presets passes and produces the report s
   assert.match(first.model ?? "", /^[^/]+\/.+/);
   const md = toMarkdown(report);
   assert.match(md, /Parent models: solo = /);
-  assert.match(md, /\| preset \| runs \| pass rate \| mean subtest % \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| mean quality \(1-5\) \| mean diff lines \| verify pass\/fail\/skip \|/);
+  assert.match(md, /\| preset \| runs \| pass rate \| mean subtest % \| mean cost \(USD\) \| mean tokens \| mean time \(s\) \| mean sub-agent calls \| mean quality \(1-5\) \| mean diff lines \| verify pass\/fail\/skip \| peak parent ctx/);
   assert.match(md, new RegExp(`\\| solo \\| ${n} \\| 100% \\|`));
   assert.match(md, new RegExp(`\\| routed \\| ${n} \\| 100% \\|`));
 });
@@ -198,6 +198,8 @@ test("session files are kept under <outDir>/sessions by default and skipped with
     assert.ok(!(readdirSync(join(out, rel), { recursive: true }) as string[]).some((f) => /auth|models/.test(f)));
     const skipped = await runEval({ ...base, presets: ["solo"], tasks: "fix-slugify", runs: 1, fake: true });
     assert.equal(skipped.results[0]!.sessionsDir, undefined);
+    assert.equal(skipped.results[0]!.metrics, undefined);
+    assert.ok(kept.results[0]!.metrics);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -215,4 +217,12 @@ test("parseSubtests reads node's reporter summary (spec and TAP) and leaves othe
   const crashed = summarize([{ ...base, preset: "a", pass: false, subtests: { pass: 0, total: 0 } }, { ...base, preset: "a", pass: true, subtests: { pass: 2, total: 2 } }], ["a"]);
   assert.equal(crashed[0]!.meanSubtestPct, 50);
   assert.equal(summarize([{ ...base, preset: "a", pass: true }], ["a"])[0]!.meanSubtestPct, undefined);
+});
+
+test("markdown shows session metrics when present and dashes when absent", () => {
+  const r: RunResult = { preset: "a", task: "t", run: 1, pass: true, seconds: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, subAgentCalls: 0, verifyLines: [], diffStats: { files: 0, added: 0, removed: 0 }, judgeCostUsd: 0 };
+  const metrics = { parentPeakContext: 1700, compactions: 1, childCompactions: 0, parentTokens: 3, childTokens: 1, parentShare: 0.75, agentCallsByRole: { explorer: 2 }, briefsWithCode: 1, wallClockSeconds: 9 };
+  const md = (results: RunResult[]) => toMarkdown({ generatedAt: "", fake: false, totalCostUsd: 0, results, summary: summarize(results, ["a"]) });
+  assert.match(md([{ ...r, metrics }]), /\| 1700 \| 1\.0 \| 75% \| 1\.0 \| explorer 2\.0 \|/);
+  assert.match(md([r]), /\| – \| – \| – \| – \| – \|/);
 });
