@@ -1,6 +1,7 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { confineToFolder } from "./download.ts";
+import { scripts } from "./page-scripts.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
@@ -215,7 +216,9 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const d = await driver();
           if (!d.download) throw new Error("browser_download is not supported with this browser driver (the cdp driver cannot save downloads).");
           d.setActivity?.(`Downloading ${path}`);
-          const trigger = ref
+          // A link to a PDF would open in the inline viewer instead of downloading, so a link is downloaded by address with the pane's session.
+          const href = ref ? String(await d.evaluate(scripts.href(ref)).catch(() => "")) : "";
+          const trigger = ref && !href
             ? async () => {
                 const result = await runPageAction(d, { action: "click", target: ref }, async (action) => {
                   if (signal?.aborted) return "aborted";
@@ -225,7 +228,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
                 if (result.note && /^Stopped|not found|error/i.test(result.note)) throw new Error(`download failed: ${result.note}`);
               }
             : undefined;
-          const saved = await d.download({ path: target, ...(url ? { url } : {}), ...(trigger ? { trigger } : {}) });
+          const saved = await d.download({ path: target, ...(url || href ? { url: url ?? href } : {}), ...(trigger ? { trigger } : {}) });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },

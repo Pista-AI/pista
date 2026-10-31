@@ -21,7 +21,8 @@ Parse each line into date (write it as YYYY-MM-DD), amount, currency and descrip
 Work out the vendor for each line. Group lines by vendor. Show the owner a short table (vendor, number of lines, dates, amounts). Mark lines you cannot place. Ask one question: "Is this right? Shall I start?" Do not browse before they answer.
 
 ### Step 2: each vendor
-Go to the vendor's billing or invoices page. Go to the vendor's website and find its billing or invoices page. Search if you are unsure.
+Work one vendor at a time, in list order. Do not open or search for the next vendor until the current one is finished or skipped.
+Go to the vendor's billing or invoices page. Go to the vendor's website and find its billing or invoices page. Search once if you are unsure; if you still cannot find the billing page after one try, ask the owner for the address instead of searching further.
 When a login, 2FA or verification page shows: stop. Say in one short sentence: "Please log in in the browser pane, then say done." Wait. Never type credentials. If the owner cannot or will not log in, mark that vendor needs_login and move on.
 
 ### Step 3: each invoice

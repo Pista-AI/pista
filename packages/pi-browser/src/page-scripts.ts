@@ -836,6 +836,19 @@ function pageObserve(target: string | null): PageObservation {
   };
 }
 
+/** The absolute http(s) address of the link a ref (or its closest anchor) points to, or "" when there is none. */
+function pageHref(target: string): string {
+  const w = window as unknown as { __pistaRefs?: Map<string, WeakRef<Element>> };
+  let el: Element | null | undefined;
+  try {
+    el = /^e\d+$/.test(target) ? w.__pistaRefs?.get(target)?.deref() : document.querySelector(target);
+  } catch {
+    return "";
+  }
+  const a = el?.closest("a[href]") as HTMLAnchorElement | null | undefined;
+  return a && /^https?:$/.test(a.protocol) ? a.href : "";
+}
+
 // esbuild with keepNames (tsx, pi's extension loader) wraps nested functions in `__name(fn, "name")`;
 // the page has no such helper, so each script brings a no-op one.
 /**
@@ -850,6 +863,7 @@ export const call = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
 
 export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),
+  href: (target: string) => call(pageHref, target),
   prepare: (target: string, op: string, arg?: string) => call(pagePrepare, target, op, arg),
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),

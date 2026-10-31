@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, mkdtempSync, realpathSync, symlin
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { scripts } from "../src/page-scripts.ts";
 import { guardDriver } from "../src/domains.ts";
 import { confineToFolder } from "../src/download.ts";
 import type { BrowserDriver } from "../src/driver.ts";
@@ -44,6 +45,20 @@ test("download guard: a redirect hop outside the allowlist deletes the file and 
   const guarded = guardDriver(inner, { allowedDomains: ["ok.test"] });
   await assert.rejects(guarded.download!({ path: file, url: "https://ok.test/a" }), /policy/);
   assert.equal(existsSync(file), false);
+});
+
+test("href script: a ref resolves to its closest http(s) anchor, anything else to an empty string", () => {
+  const link = { protocol: "https:", href: "https://x.test/invoice-1042.pdf" };
+  const inLink = { closest: () => link };
+  const plain = { closest: () => null };
+  const mailto = { closest: () => ({ protocol: "mailto:", href: "mailto:a@b.c" }) };
+  const run = (el: unknown) => {
+    const win = { __pistaRefs: new Map([["e1", { deref: () => el }]]) };
+    return new Function("window", "document", `return ${scripts.href("e1")}`)(win, { querySelector: () => null });
+  };
+  assert.equal(run(inLink), link.href);
+  assert.equal(run(plain), "");
+  assert.equal(run(mailto), "");
 });
 
 test("browser_download: needs exactly one of url or ref, and a driver that can download", async () => {

@@ -312,7 +312,7 @@ class BrowserPane {
   /** Resolves when the armed download completed; the request is disarmed either way. */
   async waitDownload() {
     const request = this.armed;
-    if (!request) throw new Error("download failed: nothing is armed");
+    if (!request) throw new Error("download failed: the download request expired or was never armed");
     const limit = (ms: number, message: string) => new Promise<never>((_, reject) => (timers.push(setTimeout(() => reject(new Error(message)), ms))));
     const timers: NodeJS.Timeout[] = [];
     try {
@@ -383,7 +383,8 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.handle("browser:screenshot", () => pane.screenshot());
   ipcMain.handle("browser:evaluate", (_e, script: string) => pane.evaluate(script));
   ipcMain.handle("browser:armDownload", (_e, p: string, url?: string) => pane.armDownload(p, url));
-  ipcMain.handle("browser:waitDownload", () => pane.waitDownload());
+  // Failures travel as a value so Electron does not log an unhandled handler error; the preload rethrows them.
+  ipcMain.handle("browser:waitDownload", () => pane.waitDownload().catch((e: Error) => ({ error: e.message })));
   ipcMain.handle("browser:input", (_e, event: NativeInput) => pane.input(event));
   ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
 }
