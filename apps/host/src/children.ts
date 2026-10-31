@@ -31,6 +31,8 @@ export interface ThreadKind {
   /** The role has a tool allowlist, or the thread is an orchestrator (`orchestratorTools`). */
   restricted: boolean;
   isChild: boolean;
+  /** Set for a thread with a parent link (a sub-agent). A role alone does not set it: a standalone role thread has none. */
+  hasParent?: boolean;
   /** Tools of an orchestrator top-level thread (see `HostConfig.orchestratorMode`); absent otherwise. */
   orchestratorTools?: string[];
   /** Orchestrator mode of a top-level thread (not "off"); picks its prompt section. Absent for children and when off. */
@@ -66,9 +68,9 @@ function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
   return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
 }
 
-/** The invoice-fetch job saves its PDFs and manifest without a prompt: only the `write` tool, only under `<project>/invoices/`. Bash and every other path still ask. */
+/** The standalone invoice-fetch thread (a role without a parent; `isChild` is true for it too) saves its PDFs and manifest without a prompt: only the `write` tool, only under `<project>/invoices/`. Bash and every other path still ask. */
 export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => boolean) | undefined {
-  if (kind.role !== "invoice-fetch" || kind.isChild || !cwd) return undefined;
+  if (kind.role !== "invoice-fetch" || kind.hasParent || !cwd) return undefined;
   return (toolName, input) => toolName === "write" && typeof input.path === "string" && isInvoicesPath(cwd, input.path);
 }
 
@@ -151,6 +153,7 @@ export class Children {
       role,
       restricted: orchestrator !== undefined || (role !== undefined && isRestrictedRole(role, roles)),
       isChild,
+      ...(this.parentOf(threadId) ? { hasParent: true } : {}),
       ...(orchestrator ? { orchestratorTools: orchestrator } : {}),
       ...(mode && mode !== "off" ? { orchestratorMode: mode } : {}),
       ...(mode === "sliced" ? { harness: slicedHarness } : {}),

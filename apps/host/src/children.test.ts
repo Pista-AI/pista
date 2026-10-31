@@ -34,7 +34,7 @@ test("extensionsFor: an implementer child keeps tools and the browser but gets n
 });
 
 test("extensionsFor: a restricted child loses codemode, tool search, MCP and the browser", () => {
-  assert.deepEqual(names(extensionsFor({ role: "explorer", restricted: true, isChild: true }, deps)), [
+  assert.deepEqual(names(extensionsFor({ role: "explorer", restricted: true, isChild: true, hasParent: true }, deps)), [
     "role-gate", "loop-guard", "abort-label", "workspace-state", "context-prune", "approvals",
   ]);
 });
@@ -52,10 +52,10 @@ test("kindOf and parentOf read threadMeta, then the loaded or indexed summary", 
     summary: (id) => (id === "indexed" ? { ...parent, id, parentId: "p" } : undefined),
     summaries: () => [],
   });
-  assert.deepEqual(children.kindOf(childId), { role: "explorer", restricted: true, isChild: true });
+  assert.deepEqual(children.kindOf(childId), { role: "explorer", restricted: true, isChild: true, hasParent: true });
   assert.equal(children.parentOf(childId), parent.id);
   assert.deepEqual(children.kindOf(parent.id), { role: undefined, restricted: false, isChild: false });
-  assert.deepEqual(children.kindOf("indexed"), { role: undefined, restricted: false, isChild: true });
+  assert.deepEqual(children.kindOf("indexed"), { role: undefined, restricted: false, isChild: true, hasParent: true });
   assert.equal(children.parentOf("indexed"), "p");
 });
 
