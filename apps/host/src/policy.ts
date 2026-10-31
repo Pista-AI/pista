@@ -144,7 +144,7 @@ const validOverride = (v: unknown): boolean =>
   (v.maxToolCalls === undefined || validToolCallLimit(v.maxToolCalls) !== undefined) &&
   (v.disabled === undefined || typeof v.disabled === "boolean");
 
-const validSliced = (v: unknown): boolean => {
+export const validSliced = (v: unknown): boolean => {
   if (!isRecord(v) || !Object.keys(v).every((k) => ["minSlices", "maxParallel", "integrateTools", "repoSizeFraction"].includes(k))) return false;
   const { minSlices, maxParallel, integrateTools, repoSizeFraction } = v;
   return (

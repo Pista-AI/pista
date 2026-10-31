@@ -17,7 +17,8 @@ import { abortLabelExtension } from "./abort-label.ts";
 import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
 import { modelRef } from "./models.ts";
-import { slicedExtension } from "./sliced/extension.ts";
+import type { Harness, HarnessContext } from "./harness/types.ts";
+import { slicedHarness } from "./harness/sliced.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, createAgentRunner, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";
@@ -33,6 +34,8 @@ export interface ThreadKind {
   orchestratorTools?: string[];
   /** Orchestrator mode of a top-level thread (not "off"); picks its prompt section. Absent for children and when off. */
   orchestratorMode?: NonNullable<HostConfig["orchestratorMode"]>;
+  /** Harness of a top-level thread in a harness-backed mode (today "sliced"); absent otherwise. */
+  harness?: Harness;
 }
 
 export interface ExtensionDeps {
@@ -52,8 +55,8 @@ export interface ExtensionDeps {
   roles?: RoleMap;
   /** Tool audit for this thread; absent when the policy has no `audit` block. */
   toolAudit?: ToolAudit;
-  /** Backs the sliced extension of top-level threads in "sliced" mode. */
-  sliced?: Omit<Parameters<typeof slicedExtension>[0], "runAgent">;
+  /** Backs the harness extension of top-level threads; `runAgent` is filled in here with the shared runner. */
+  harness?: HarnessContext;
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
@@ -80,7 +83,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     ...(isChild ? [] : [agentToolExtension(agentOpts, runner)]),
     // The gate runs before approvals so a tool the role can never use does not prompt the user.
     ...(role ? [watch(roleGateExtension(role, deps.roles), "policy")] : []),
-    ...(!isChild && kind.orchestratorMode === "sliced" && deps.sliced ? [slicedExtension({ ...deps.sliced, runAgent: runner! })] : []),
+    ...(!isChild && kind.harness?.extension && deps.harness ? [kind.harness.extension({ ...deps.harness, runAgent: runner! })] : []),
     ...(kind.orchestratorTools ? [watch(orchestratorGateExtension(kind.orchestratorTools), "policy")] : []),
     watch(loopGuardExtension(store), "loop_guard"),
     abortLabelExtension(),
@@ -137,6 +140,7 @@ export class Children {
       isChild,
       ...(orchestrator ? { orchestratorTools: orchestrator } : {}),
       ...(mode && mode !== "off" ? { orchestratorMode: mode } : {}),
+      ...(mode === "sliced" ? { harness: slicedHarness } : {}),
     };
   }
 
