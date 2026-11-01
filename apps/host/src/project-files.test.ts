@@ -50,6 +50,8 @@ test("reveal only selects the invoices folder and never launches a .app", () => 
   const calls: [string, string[]][] = [];
   revealProjectInvoices(root, (cmd, args) => calls.push([cmd, args]));
   assert.equal(calls.length, 1);
-  assert.ok(calls[0]![1].some((a) => a.endsWith("invoices")));
+  assert.deepEqual(calls[0], revealCommand(process.platform, join(root, "invoices")));
+  assert.deepEqual(revealCommand("linux", join(root, "invoices")), ["xdg-open", [root]]);
+  assert.deepEqual(revealCommand("win32", join(root, "invoices")), ["explorer", [`/select,${join(root, "invoices")}`]]);
   assert.throws(() => revealProjectInvoices(join(root, "invoices"), () => {}), /Nothing to show/);
 });
