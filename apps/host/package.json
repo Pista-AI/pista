@@ -20,13 +20,13 @@
     "@pista/pi-browser": "workspace:*",
     "@pista/protocol": "workspace:*",
     "pi-memory": "^0.4.2",
-    "pi-web-access": "^0.44.0",
+    "pi-web-access": "^0.46.0",
     "typebox": "^1.4.3",
     "undici": "7.30.0",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15"
