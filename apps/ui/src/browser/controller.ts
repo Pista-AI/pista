@@ -232,7 +232,7 @@ class BrowserController {
         throw new Error("Downloads need the desktop shell.");
       case "login.list":
       case "login.fill":
-        throw new Error("Saved logins need the desktop shell.");
+        throw new Error("Downloads need the desktop shell.");
       case "input":
         // No trusted input in an iframe; the driver falls back to DOM events.
         return { ...this.stateOf(id), value: false };
@@ -288,7 +288,7 @@ class BrowserController {
         return { download: await b.waitDownload() };
       case "login.list":
       case "login.fill":
-        throw new Error("Saved logins are not available yet.");
+        throw new Error("This desktop build cannot save downloads.");
     }
   }
 

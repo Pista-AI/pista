@@ -718,7 +718,7 @@ export type BrowserAction = (
   | { action: "download.wait" }
   /** Lists the saved logins (metadata only) the desktop shell holds. */
   | { action: "login.list" }
-  /** Fills and submits the login form of the current page with the saved login `site` (id or label as the model names it). */
+  /** Fills and submits the login form of the current page with the saved login `site` (id or label as the model names it). `site` resolves by exact match on a saved login's id or label only, never fuzzy or by origin; the fill happens only when the pane's current page origin equals the saved origin. */
   | { action: "login.fill"; site: string }
 ) & { activity?: string };
 
