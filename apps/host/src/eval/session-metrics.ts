@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { looksLikeCode } from "../brief.ts";
+import { listHarnesses } from "../harness/registry.ts";
+import type { SessionEntryLike as Entry, SessionPart as Part, SessionUsage as Usage } from "../harness/types.ts";
 
 /** Orchestration metrics derived from a run's kept Pi session files. */
 export interface SessionMetrics {
@@ -18,39 +20,8 @@ export interface SessionMetrics {
   briefsWithCode: number;
   /** First to last timestamp across all session files. */
   wallClockSeconds: number;
-  /** Sliced orchestrator mode: set when the parent called `slices`; counts come from its last persisted board. */
-  sliced?: SlicedMetrics;
-}
-
-export interface SlicedMetrics {
-  /** The harness ran implementers for the slices (false when it went solo). */
-  dispatched: boolean;
-  slices: number;
-  done: number;
-  failed: number;
-  skipped: number;
-}
-
-interface Usage {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-}
-
-interface Part {
-  type?: string;
-  name?: string;
-  arguments?: Record<string, unknown>;
-}
-
-interface Entry {
-  type?: string;
-  customType?: string;
-  data?: { slices?: unknown[]; phase?: string; status?: Record<string, string> };
-  timestamp?: string;
-  parentSession?: string;
-  message?: { role?: string; usage?: Usage; content?: Part[] };
+  /** The harness-specific metrics of the parent session (see `Harness.eval`); absent when no harness measured anything. */
+  harness?: { id: string; metrics: Record<string, unknown> };
 }
 
 interface Session {
@@ -71,17 +42,10 @@ function readJsonl(file: string): Entry[] {
   return out;
 }
 
-/** Counts from the last `pista.slices` board entry the parent persisted. */
-function slicedMetrics(entries: Entry[]): SlicedMetrics {
-  const board = entries.findLast((e) => e.type === "custom" && e.customType === "pista.slices")?.data;
-  const status = Object.values(board?.status ?? {});
-  const count = (s: string) => status.filter((x) => x === s).length;
-  const dispatched = !!board && board.phase !== "solo" && board.phase !== "plan" && status.some((x) => x !== "pending");
-  return { dispatched, slices: board?.slices?.length ?? 0, done: count("done"), failed: count("failed"), skipped: count("skipped") };
-}
-
 const assistantUsage = (e: Entry) => (e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined);
 const total = (u: Usage) => (u.input || 0) + (u.output || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+
+const warned = new Set<string>();
 
 /** Walks `dir` for session JSONL files; undefined when there are none. The parent is the session without a `parentSession` that makes the most agent calls (ties: the first file). */
 export function sessionMetrics(dir: string): SessionMetrics | undefined {
@@ -133,7 +97,20 @@ export function sessionMetrics(dir: string): SessionMetrics | undefined {
     // `brief` is the pre-structured parameter; old sessions still carry it.
     if ([a.goal, a.constraints, a.brief, pointers.join("\n")].some((t) => typeof t === "string" && looksLikeCode(t))) m.briefsWithCode++;
   }
-  if (calls(parent, "slices").length) m.sliced = slicedMetrics(parent.entries);
+  // Built-ins win over package harnesses; the run config is not available here.
+  const found = listHarnesses().flatMap((h) => {
+    try {
+      const metrics = h.eval?.metrics(parent.entries);
+      return metrics ? [{ id: h.id, metrics }] : [];
+    } catch (err) {
+      if (!warned.has(h.id)) {
+        warned.add(h.id);
+        console.warn(`[pista-eval] harness ${h.id}: eval.metrics threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return [];
+    }
+  });
+  if (found[0]) m.harness = found[0];
   const spent = m.parentTokens + m.childTokens;
   if (spent > 0) m.parentShare = m.parentTokens / spent;
   if (last > first) m.wallClockSeconds = (last - first) / 1000;

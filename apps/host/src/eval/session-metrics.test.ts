@@ -30,9 +30,9 @@ test("a parent `slices` call counts as a dispatch and the last board entry gives
     const head = { type: "session", timestamp: "2026-10-30T10:00:00Z" };
     writeFileSync(join(dir, "parent.jsonl"), line(head) + line(call("slices")) + line(board("dispatch", { a: "running", b: "pending", c: "pending" })) + line(board("done", { a: "done", b: "failed", c: "skipped" })));
     writeFileSync(join(dir, "child.jsonl"), line({ ...head, parentSession: "parent.jsonl" }) + line(call("write")));
-    assert.deepEqual(sessionMetrics(dir)!.sliced, { dispatched: true, slices: 3, done: 1, failed: 1, skipped: 1 });
+    assert.deepEqual(sessionMetrics(dir)!.harness, { id: "sliced", metrics: { dispatched: true, slices: 3, done: 1, failed: 1, skipped: 1 } });
     writeFileSync(join(dir, "parent.jsonl"), line(head) + line(call("slices")) + line(board("solo", { a: "pending", b: "pending" })));
-    assert.deepEqual(sessionMetrics(dir)!.sliced, { dispatched: false, slices: 2, done: 0, failed: 0, skipped: 0 });
+    assert.deepEqual(sessionMetrics(dir)!.harness, { id: "sliced", metrics: { dispatched: false, slices: 2, done: 0, failed: 0, skipped: 0 } });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

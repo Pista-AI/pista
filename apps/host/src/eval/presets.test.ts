@@ -226,7 +226,7 @@ test("markdown shows session metrics when present and dashes when absent", () =>
   const md = (results: RunResult[]) => toMarkdown({ generatedAt: "", fake: false, totalCostUsd: 0, results, summary: summarize(results, ["a"]) });
   assert.match(md([{ ...r, metrics }]), /\| 1700 \| 1\.0 \| 75% \| 1\.0 \| explorer 2\.0 \|/);
   assert.match(md([r]), /\| – \| – \| – \| – \| – \|/);
-  assert.match(md([{ ...r, metrics: { ...metrics, sliced: { dispatched: true, slices: 5, done: 4, failed: 1, skipped: 0 } } }]), /\| explorer 2\.0 \| 1\/1 dispatched; 4\/1\/0 of 5 \|/);
+  assert.match(md([{ ...r, metrics: { ...metrics, harness: { id: "sliced", metrics: { dispatched: true, slices: 5, done: 4, failed: 1, skipped: 0 } } } }]), /\| explorer 2\.0 \| 1\/1 dispatched; 4\/1\/0 of 5 \|/);
 });
 
 test("a fake sliced run dispatches one implementer per slice and the report says so", async () => {
@@ -237,8 +237,9 @@ test("a fake sliced run dispatches one implementer per slice and the report says
     const sliced = report.results.filter((r) => r.preset === "sliced-32k");
     assert.equal(sliced.length, 2);
     for (const r of sliced) assert.equal(r.finalText, "Done: all slices verified.", r.task);
-    assert.deepEqual(report.summary[0]!.sliced, { runs: 2, dispatched: 2, slices: 8, done: 8, failed: 0, skipped: 0 });
-    assert.equal(report.summary[1]!.sliced, undefined);
+    const rows = toMarkdown(report).split("\n");
+    assert.match(rows.find((l) => l.startsWith("| sliced-32k"))!, /\| 2\/2 dispatched; 8\/0\/0 of 8 \|$/);
+    assert.match(rows.find((l) => l.startsWith("| solo-32k"))!, /\| – \|$/);
   } finally {
     rmSync(out, { recursive: true, force: true });
   }

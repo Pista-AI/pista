@@ -1,4 +1,4 @@
-import type { AgentOutcome, AgentToolParams } from "../subagent.ts";
+import type { AgentOutcome, AgentToolParams } from "../../subagent.ts";
 import type { SliceBoard } from "./board.ts";
 import { prereadSection } from "./preread.ts";
 import { renderBoard } from "./render.ts";

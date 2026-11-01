@@ -89,3 +89,34 @@ test("lead keeps a top-level thread unrestricted and ungated; delegate-read gate
     store.patchConfig({ orchestratorMode: undefined });
   }
 });
+
+test("harness config key: harness sliced matches the legacy sliced mode, unknown ids run solo, solo keeps other modes", () => {
+  const children = new Children(store, {
+    ensure: async () => {
+      throw new Error("not used");
+    },
+    load: async () => {
+      throw new Error("not used");
+    },
+    summary: () => undefined,
+    summaries: () => [],
+  });
+  try {
+    store.patchConfig({ orchestratorMode: "sliced" });
+    const legacy = children.kindOf("top-level");
+    assert.equal(legacy.harness?.id, "sliced");
+    store.patchConfig({ orchestratorMode: undefined, harness: "sliced" });
+    assert.deepEqual(children.kindOf("top-level"), legacy);
+
+    store.patchConfig({ harness: "nope" });
+    assert.deepEqual(children.kindOf("top-level"), { role: undefined, restricted: false, isChild: false });
+
+    store.patchConfig({ harness: "solo", orchestratorMode: "delegate" });
+    const delegate = children.kindOf("top-level");
+    assert.equal(delegate.harness, undefined);
+    assert.equal(delegate.orchestratorMode, "delegate");
+    assert.equal(delegate.restricted, true);
+  } finally {
+    store.patchConfig({ harness: undefined, orchestratorMode: undefined });
+  }
+});

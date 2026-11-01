@@ -1,0 +1,10 @@
+{
+  "name": "pista-harness-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal example of a Pista harness shipped as a Pi package.",
+  "pista": {
+    "harness": { "id": "demo", "entry": "./src/harness.js" }
+  }
+}
