@@ -1,6 +1,7 @@
 // Harness-preset evaluation: runs fixed coding tasks through a real ThreadManager under different HostConfig
 // fragments ("presets") and reports pass rate, cost, tokens and time. Everything happens in temp copies.
 // This file imports the harness registry (and through it session.ts and pi-env.ts, which only resolve paths at import time) but never starts a host; each run still executes in its own child process (run-one.ts) with a fresh PISTA_HOME, Pi agent dir and memory dir.
+import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,34 @@ export interface Task {
   prompt: string;
   /** Hidden check, run in the workspace after the agent finishes; exit 0 passes. The check files are copied in only then. */
   check: string;
+  /** Start from `git archive <commit>` of the repo that holds the tasks instead of (or beneath) `fixture/`. */
+  sourceRepo?: SourceRepo;
+}
+
+/** `task.json` `sourceRepo`: a pinned snapshot of the surrounding repo as the task's starting point. `fixture/`, when present, is layered on top. */
+export interface SourceRepo {
+  commit: string;
+  /** Paths left out of the snapshot (e.g. the eval tasks themselves and docs that would give the answer away). */
+  exclude?: string[];
+}
+
+/** Writes the task's starting repo into `dest`: the `sourceRepo` snapshot first, then `fixture/` over it. */
+export function stageTaskFixture(task: Pick<Task, "dir" | "sourceRepo">, dest: string): void {
+  mkdirSync(dest, { recursive: true });
+  const src = task.sourceRepo;
+  if (src) {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: task.dir, encoding: "utf8" }).trim();
+    try {
+      execFileSync("git", ["cat-file", "-e", `${src.commit}^{commit}`], { cwd: root, stdio: "ignore" });
+    } catch {
+      throw new Error(`sourceRepo commit ${src.commit} is not in this clone; fetch full history (git fetch --unshallow)`);
+    }
+    const tar = execFileSync("git", ["archive", "--format=tar", src.commit, "--", ".", ...(src.exclude ?? []).map((p) => `:(exclude)${p}`)], { cwd: root, maxBuffer: 512 * 1024 * 1024 });
+    execFileSync("tar", ["-x", "-C", dest], { input: tar });
+  }
+  const fixture = join(task.dir, "fixture");
+  if (existsSync(fixture)) cpSync(fixture, dest, { recursive: true });
+  else if (!src) throw new Error(`${task.dir}: no fixture/ and no sourceRepo`);
 }
 
 export interface RunResult {
@@ -125,9 +154,10 @@ export function loadTasks(root: string, pattern: string): Task[] {
   if (names.length === 0) throw new Error(`No task matches "${pattern}" in ${root}`);
   return names.map((name) => {
     const dir = join(root, name);
-    const { check } = JSON.parse(readFileSync(join(dir, "task.json"), "utf8")) as { check?: string };
+    const { check, sourceRepo } = JSON.parse(readFileSync(join(dir, "task.json"), "utf8")) as { check?: string; sourceRepo?: SourceRepo };
     if (!check) throw new Error(`${name}/task.json needs a "check" command`);
-    return { name, dir, prompt: readFileSync(join(dir, "task.md"), "utf8"), check };
+    if (sourceRepo !== undefined && (typeof sourceRepo.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(sourceRepo.commit))) throw new Error(`${name}/task.json: sourceRepo.commit must be a hex commit id`);
+    return { name, dir, prompt: readFileSync(join(dir, "task.md"), "utf8"), check, ...(sourceRepo ? { sourceRepo } : {}) };
   });
 }
 
@@ -545,7 +575,7 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
           }
           const dir = mkdtempSync(join(scratch, "run-"));
           // Stage fixture, hidden check files and fake solution outside the repo so the workspace never advertises repo paths.
-          cpSync(join(task.dir, "fixture"), join(dir, "stage", "fixture"), { recursive: true });
+          stageTaskFixture(task, join(dir, "stage", "fixture"));
           // Hidden check files are copied in only after the child reports the agent finished (see onAgentDone below).
           if (opts.fake && existsSync(join(task.dir, "fake"))) cpSync(join(task.dir, "fake"), join(dir, "stage", "fake"), { recursive: true });
           if (preset.agentsDir) cpSync(preset.agentsDir, join(dir, "agents"), { recursive: true });
