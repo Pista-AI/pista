@@ -1,0 +1,1 @@
+extensions.ts approvalExtension intercepts the call and sends approval.request via hub.ts; the UI store.ts shows Transcript.tsx ApprovalCard; respondApproval sends approval.respond; the host calls settle.
