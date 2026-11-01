@@ -566,8 +566,8 @@ Environment variables the policy refers to (`apiKeyEnv`, `headersEnv`, `${ENV}` 
 pnpm policy:check [--json]
 # Headless build
 node apps/host/dist/host.mjs policy check [--json]
-# Packaged macOS app
-ELECTRON_RUN_AS_NODE=1 /Applications/Pista.app/Contents/MacOS/Pista /Applications/Pista.app/Contents/Resources/host/dist/host.mjs policy check
+# Packaged macOS app (the app binary is not a Node interpreter; use Node 22 or newer)
+node /Applications/Pista.app/Contents/Resources/host/dist/host.mjs policy check
 ```
 
 It honours `PISTA_POLICY_FILE` and `PISTA_REQUIRE_POLICY` like the host. The first line names the source (`env-file`, `mdm`, `file`, `url` or `none`); `--json` has the same value as `sourceKind`. It then prints the locked and default settings, a `Version gate:` line, and each other block as normalized JSON. When a remote policy source is configured, `check` does a live fetch (nothing is written to the cache) and ends with a `Remote policy:` line. Example output:
