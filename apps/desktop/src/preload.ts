@@ -39,7 +39,7 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
       return r;
     },
     input: (event: unknown) => ipcRenderer.invoke("browser:input", event),
-    openDevTools: () => ipcRenderer.send("browser:openDevTools"),
+    openDevTools: () => ipcRenderer.invoke("browser:openDevTools"),
     logins: {
       status: () => loginCall("logins:status"),
       list: () => loginCall("logins:list"),

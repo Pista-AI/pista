@@ -7,8 +7,8 @@
  * - Implements the UI's DesktopBrowserBridge with a WebContentsView (real Chromium),
  *   so the agent can read, script and screenshot any page.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, WebContentsView } from "electron";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, type UtilityProcess, utilityProcess, WebContentsView } from "electron";
+import { execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -17,6 +17,7 @@ import path from "node:path";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
 import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
+import { findDebugFlag } from "./debug-flags.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
 
@@ -24,7 +25,17 @@ const DEV_URL = process.env.PISTA_DEV_URL;
 const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
 
 let mainWindow: BrowserWindow | null = null;
-let hostProcess: ChildProcess | null = null;
+let hostProcess: UtilityProcess | null = null;
+
+// A packaged build refuses to start with a debugger or inspector switch, so nothing outside can attach to the main
+// process or the renderers. Checked before any window exists.
+if (app.isPackaged) {
+  const flag = findDebugFlag(process.argv);
+  if (flag) {
+    process.stderr.write(`Pista: ${flag} is not supported in this build.\n`);
+    app.exit(1);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Agent host
@@ -81,18 +92,19 @@ async function startHost(): Promise<string> {
   const bundledLlama = path.join(resources, "llama");
   const llamaEnv = app.isPackaged && existsSync(bundledLlama) ? { PISTA_LLAMA_BUNDLE_DIR: bundledLlama } : {};
 
-  hostProcess = spawn(process.execPath, [entry], {
+  // utilityProcess (not ELECTRON_RUN_AS_NODE) so the RunAsNode fuse can stay off in packaged builds.
+  hostProcess = utilityProcess.fork(entry, [], {
+    serviceName: "pista-host",
     env: {
       ...process.env,
       PATH: loginShellPath() ?? process.env.PATH,
-      ELECTRON_RUN_AS_NODE: "1",
       PISTA_HOST_PORT: String(port),
       PISTA_UI_DIR: path.join(resources, "ui"),
       PISTA_PARENT_PID: String(process.pid),
       PISTA_APP_VERSION: app.getVersion(),
       ...llamaEnv,
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: "pipe",
   });
   hostProcess.stdout?.pipe(log);
   hostProcess.stderr?.pipe(log);
@@ -390,7 +402,10 @@ function registerBrowserIpc(pane: BrowserPane) {
   // Failures travel as a value so Electron does not log an unhandled handler error; the preload rethrows them.
   ipcMain.handle("browser:waitDownload", () => pane.waitDownload().catch((e: Error) => ({ error: e.message })));
   ipcMain.handle("browser:input", (_e, event: NativeInput) => pane.input(event));
-  ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
+  ipcMain.handle("browser:openDevTools", () => {
+    if (app.isPackaged) return { error: "DevTools are not available in this build." };
+    pane.view.webContents.openDevTools({ mode: "detach" });
+  });
 }
 
 const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import"];
@@ -502,10 +517,9 @@ async function createWindow() {
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     mainWindow = null;
-    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload", ...LOGIN_CHANNELS])
+    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload", "browser:openDevTools", ...LOGIN_CHANNELS])
       ipcMain.removeHandler(channel);
     ipcMain.removeAllListeners("browser:setBounds");
-    ipcMain.removeAllListeners("browser:openDevTools");
   });
   await win.loadURL(uiUrl);
 }
@@ -534,7 +548,7 @@ app.whenReady().then(async () => {
         label: "View",
         submenu: [
           { role: "reload" },
-          { role: "toggleDevTools" },
+          ...(app.isPackaged ? [] : [{ role: "toggleDevTools" as const }]),
           { type: "separator" },
           { role: "resetZoom" },
           { role: "zoomIn" },
