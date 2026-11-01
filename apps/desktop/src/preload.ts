@@ -6,6 +6,13 @@ import { contextBridge, ipcRenderer } from "electron";
 
 type Rect = { x: number; y: number; width: number; height: number };
 
+/** Main returns failures as `{ error }` values; turn them back into rejections. */
+async function loginCall(channel: string, ...args: unknown[]) {
+  const r = await ipcRenderer.invoke(channel, ...args);
+  if (r && typeof r === "object" && "error" in r) throw new Error(String((r as { error: unknown }).error));
+  return r;
+}
+
 contextBridge.exposeInMainWorld("pistaDesktop", {
   shell: "electron",
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
@@ -33,5 +40,12 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
     },
     input: (event: unknown) => ipcRenderer.invoke("browser:input", event),
     openDevTools: () => ipcRenderer.send("browser:openDevTools"),
+    logins: {
+      status: () => loginCall("logins:status"),
+      list: () => loginCall("logins:list"),
+      save: (input: { label: string; loginUrl: string; username: string; password: string }) => loginCall("logins:save", input),
+      remove: (id: string) => loginCall("logins:remove", id),
+      fill: (site: string) => loginCall("logins:fill", site),
+    },
   },
 });

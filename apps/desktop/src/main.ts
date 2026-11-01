@@ -7,12 +7,14 @@
  * - Implements the UI's DesktopBrowserBridge with a WebContentsView (real Chromium),
  *   so the agent can read, script and screenshot any page.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, WebContentsView } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, WebContentsView } from "electron";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
+import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
 
@@ -389,6 +391,45 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
 }
 
+const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill"];
+
+function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
+  const vault = createLoginVault({ file: path.join(app.getPath("userData"), "logins.json"), crypto: safeStorageCrypto(safeStorage) });
+  const wc = pane.view.webContents;
+  const fill = createLoginFill({
+    vault,
+    pane: {
+      getURL: () => wc.getURL(),
+      runInPage: (code) => wc.executeJavaScriptInIsolatedWorld(LOGIN_WORLD_ID, [{ code }]),
+      insertText: (text) => wc.insertText(text),
+      pressEnter: async () => {
+        for (const type of ["keyDown", "char", "keyUp"] as const) wc.sendInputEvent({ type, keyCode: "Return" });
+      },
+      onNavigate: (cb) => {
+        const handler = (_e: unknown, url: string) => cb(url);
+        wc.on("did-navigate", handler);
+        wc.on("did-navigate-in-page", handler);
+        return () => {
+          wc.removeListener("did-navigate", handler);
+          wc.removeListener("did-navigate-in-page", handler);
+        };
+      },
+    },
+  });
+  // Only the app UI may reach the vault; pages loaded in the browser pane must not.
+  const guarded = (channel: string, run: (...args: any[]) => Promise<unknown>) =>
+    ipcMain.handle(channel, async (event, ...args) => {
+      if (event.sender !== owner) return { error: "not allowed" };
+      // Failures travel as values (like waitDownload); messages here never contain secrets.
+      return run(...args).catch((e: Error) => ({ error: e.message }));
+    });
+  guarded("logins:status", () => vault.status());
+  guarded("logins:list", () => vault.list());
+  guarded("logins:save", (input) => vault.save(input));
+  guarded("logins:remove", (id: string) => vault.remove(String(id)));
+  guarded("logins:fill", (site: string) => fill.fill(String(site)));
+}
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
@@ -418,6 +459,7 @@ async function createWindow() {
 
   const pane = new BrowserPane(win);
   registerBrowserIpc(pane);
+  registerLoginIpc(pane, win.webContents);
 
   // Links opened from the app UI (docs, OAuth sign-in) go to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -427,7 +469,7 @@ async function createWindow() {
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     mainWindow = null;
-    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload"])
+    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload", ...LOGIN_CHANNELS])
       ipcMain.removeHandler(channel);
     ipcMain.removeAllListeners("browser:setBounds");
     ipcMain.removeAllListeners("browser:openDevTools");
