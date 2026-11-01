@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
 import { workspaceDiff } from "./diff.ts";
 import { slicedFake } from "./fake-solution.ts";
 import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, stageTaskFixture, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
@@ -313,6 +312,17 @@ test("a sourceRepo task starts from the pinned commit (minus excluded paths) wit
     assert.equal(readFileSync(join(dest, "src/a.ts"), "utf8"), "pinned\n");
     assert.equal(readFileSync(join(dest, "src/b.ts"), "utf8"), "layered\n");
     assert.ok(!existsSync(join(dest, "docs")) && !existsSync(join(dest, "evals")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a sourceRepo commit missing from the clone fails with a clear error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "source-repo-missing-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    const task = { dir, sourceRepo: { commit: "0123456789abcdef0123456789abcdef01234567" } };
+    assert.throws(() => stageTaskFixture(task, join(dir, "out")), /is not in this clone; fetch full history \(git fetch --unshallow\)/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

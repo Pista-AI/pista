@@ -45,6 +45,11 @@ export function stageTaskFixture(task: Pick<Task, "dir" | "sourceRepo">, dest: s
   const src = task.sourceRepo;
   if (src) {
     const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: task.dir, encoding: "utf8" }).trim();
+    try {
+      execFileSync("git", ["cat-file", "-e", `${src.commit}^{commit}`], { cwd: root, stdio: "ignore" });
+    } catch {
+      throw new Error(`sourceRepo commit ${src.commit} is not in this clone; fetch full history (git fetch --unshallow)`);
+    }
     const tar = execFileSync("git", ["archive", "--format=tar", src.commit, "--", ".", ...(src.exclude ?? []).map((p) => `:(exclude)${p}`)], { cwd: root, maxBuffer: 512 * 1024 * 1024 });
     execFileSync("tar", ["-x", "-C", dest], { input: tar });
   }

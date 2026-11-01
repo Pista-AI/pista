@@ -6,8 +6,9 @@ const file = "apps/host/src/log-url.ts";
 let src = "";
 try { src = readFileSync(file, "utf8"); } catch { console.error("BEHAVIOUR WRONG: no " + file); process.exit(1); }
 const fails = [];
+const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 if (!/import\s*\{[^}]*\bmaskUserinfo\b[^}]*\}\s*from\s*["']\.\/network(\.ts)?["']/.test(src)) fails.push("NOT REUSED: log-url.ts does not import maskUserinfo from ./network");
-if (/\.(username|password)\s*=[^=]/.test(src) || src.includes("***")) fails.push("DUPLICATED: log-url.ts masks credentials itself");
+if (/\.(username|password)\s*=[^=]/.test(code) || code.includes("***")) fails.push("DUPLICATED: log-url.ts masks credentials itself");
 // network.ts needs undici at import time; the workspace has no node_modules, so a stub stands in.
 mkdirSync("node_modules/undici", { recursive: true });
 writeFileSync("node_modules/undici/package.json", JSON.stringify({ name: "undici", type: "module", main: "index.js" }));
