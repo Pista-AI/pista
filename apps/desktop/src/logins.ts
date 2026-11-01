@@ -131,11 +131,18 @@ export function createLoginVault(options: { file: string; crypto: VaultCrypto })
     username: l.username,
   });
 
-  return {
-    async status(): Promise<{ available: boolean; backend: string }> {
+  /** A crypto backend that throws counts as unavailable; its error never surfaces. */
+  const status = async (): Promise<{ available: boolean; backend: string }> => {
+    try {
       const backend = crypto.backend();
       return { available: (await crypto.isAvailable()) && backend !== "basic_text", backend };
-    },
+    } catch {
+      return { available: false, backend: "unknown" };
+    }
+  };
+
+  return {
+    status,
 
     async list(): Promise<SavedLoginMeta[]> {
       return (await load()).logins.map(meta);
@@ -146,7 +153,7 @@ export function createLoginVault(options: { file: string; crypto: VaultCrypto })
         if (!nonEmpty(input.label, 80)) throw new Error("The label must be 1 to 80 characters.");
         if (!nonEmpty(input.username, 200)) throw new Error("The username must be 1 to 200 characters.");
         if (!nonEmpty(input.password, 1000)) throw new Error("The password must be 1 to 1000 characters.");
-        if (!(await this.status()).available) throw new Error(NO_KEYCHAIN_MESSAGE);
+        if (!(await status()).available) throw new Error(NO_KEYCHAIN_MESSAGE);
         const { origin, loginUrl } = parseOrigin(input.loginUrl);
         const data = await load();
         const secret = JSON.stringify({ origin, username: input.username, password: input.password });
