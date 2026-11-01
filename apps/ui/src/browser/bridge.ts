@@ -38,8 +38,8 @@ export interface DesktopBrowserBridge {
   readText(maxChars: number): Promise<string>;
   screenshot(): Promise<{ data: string; mimeType: string }>;
   evaluate(script: string): Promise<unknown>;
-  /** One-shot download hook: the next download saves at `path`; with `url` the pane starts it with its own session. */
-  armDownload?(path: string, url?: string): Promise<void>;
+  /** One-shot download hook: the next download saves at `path`, which must stay inside the project folder `root` (the shell refuses anything else); with `url` the pane starts it with its own session. */
+  armDownload?(path: string, root: string, url?: string): Promise<void>;
   /** Resolves when the armed download completed; rejects when none started within 15 s or it failed. */
   waitDownload?(): Promise<{ bytes: number; contentType?: string; url?: string; urlChain?: string[] }>;
   /** Resolves false when the input couldn't be delivered (e.g. the view is hidden); callers fall back to DOM events. */
