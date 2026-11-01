@@ -716,7 +716,26 @@ export type BrowserAction = (
   | { action: "download.arm"; path: string; url?: string }
   /** Resolves with the armed download's result once it completed. Rejects when none started in time or it failed. */
   | { action: "download.wait" }
+  /** Lists the saved logins (metadata only) the desktop shell holds. */
+  | { action: "login.list" }
+  /** Fills and submits the login form of the current page with the saved login `site` (id or label as the model names it). */
+  | { action: "login.fill"; site: string }
 ) & { activity?: string };
+
+/**
+ * A saved login as the host and the model see it. The password is never part of this type and
+ * never leaves the desktop main process.
+ */
+export type SavedLoginMeta = {
+  /** Stable id of the saved login. */
+  id: string;
+  /** Short name the model uses to pick it. */
+  label: string;
+  /** Origin the login is bound to; it is only filled on this origin. */
+  origin: string;
+  /** Account name, shown to help tell logins apart. */
+  username?: string;
+};
 
 export interface BrowserResult {
   url?: string;
@@ -727,6 +746,10 @@ export interface BrowserResult {
   image?: { data: string; mimeType: string };
   download?: { bytes: number; contentType?: string; url?: string; urlChain?: string[] };
   note?: string;
+  /** Result of `login.list`. */
+  logins?: SavedLoginMeta[];
+  /** Result of `login.fill`; `note` is a short generic status, never page content. */
+  login?: { ok: boolean; note: string };
 }
 
 // ---------------------------------------------------------------------------
