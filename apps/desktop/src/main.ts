@@ -10,10 +10,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, WebContentsView } from "electron";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
+import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
@@ -391,7 +393,7 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
 }
 
-const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill"];
+const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import"];
 
 function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   const vault = createLoginVault({ file: path.join(app.getPath("userData"), "logins.json"), crypto: safeStorageCrypto(safeStorage) });
@@ -439,6 +441,26 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   guarded("logins:save", (input) => vault.save(input));
   guarded("logins:remove", (id: string) => vault.remove(String(id)));
   guarded("logins:fill", (site: string) => fill.fill(String(site)));
+  // The export file is read and parsed here only. The renderer gets counts back, never rows.
+  guarded("logins:import", (opts?: { trash?: boolean }) =>
+    runLoginImport(
+      {
+        vault,
+        pick: async () => {
+          // Dev-only test hook that skips the native dialog. Needs PISTA_DEV_URL and an unpackaged app, so a packaged build can never use it.
+          if (DEV_URL && !app.isPackaged && process.env.PISTA_LOGIN_IMPORT_FILE) return process.env.PISTA_LOGIN_IMPORT_FILE;
+          const win = BrowserWindow.fromWebContents(owner);
+          const options: Electron.OpenDialogOptions = { properties: ["openFile"], filters: [{ name: "CSV", extensions: ["csv"] }] };
+          const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+          return picked.canceled ? null : (picked.filePaths[0] ?? null);
+        },
+        size: async (f) => (await stat(f)).size,
+        read: (f) => readFile(f),
+        trash: (f) => shell.trashItem(f),
+      },
+      { trash: opts?.trash === true },
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------

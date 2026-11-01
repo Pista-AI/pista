@@ -1,4 +1,4 @@
-import { isInvoicesPath } from "./project-files.ts";
+import { isInvoicesPath, isPasswordExportName, PASSWORD_EXPORT_MESSAGE } from "./project-files.ts";
 import {
   createCodemodeExtension,
   createMcpExtension,
@@ -83,11 +83,12 @@ export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((t
 /** The standalone invoice-fetch thread reads only inside its project folder (no `bash`, so `read` and `ls` are its only way to see files). Refused outright, not asked. */
 export function invoiceReadGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => string | undefined) | undefined {
   if (kind.role !== "invoice-fetch" || kind.hasParent || !cwd) return undefined;
-  return (toolName, input) =>
+  return (toolName, input) => {
+    if ((toolName !== "read" && toolName !== "ls") || typeof input.path !== "string") return undefined;
+    if (isPasswordExportName(input.path)) return PASSWORD_EXPORT_MESSAGE;
     // Pi expands "~" and strips a leading "@" before resolving, which a textual check would miss, so those are refused outright.
-    (toolName === "read" || toolName === "ls") && typeof input.path === "string" && (/^[~@]/.test(input.path) || !isInvoicesPath(cwd, input.path, "."))
-      ? "The invoice job only reads inside its project folder."
-      : undefined;
+    return /^[~@]/.test(input.path) || !isInvoicesPath(cwd, input.path, ".") ? "The invoice job only reads inside its project folder." : undefined;
+  };
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
