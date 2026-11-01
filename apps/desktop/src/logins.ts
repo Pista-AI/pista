@@ -20,8 +20,14 @@ export interface SafeStorageLike {
 export function safeStorageCrypto(s: SafeStorageLike): VaultCrypto {
   return {
     isAvailable: () => s.isAsyncEncryptionAvailable(),
-    // Only meaningful on Linux; other platforms report "unknown", which is fine.
-    backend: () => s.getSelectedStorageBackend(),
+    // Only meaningful on Linux; Electron throws on macOS/Windows, so report "unknown" there.
+    backend: () => {
+      try {
+        return s.getSelectedStorageBackend();
+      } catch {
+        return "unknown";
+      }
+    },
     encrypt: (text) => s.encryptStringAsync(text),
     decrypt: async (blob) => (await s.decryptStringAsync(blob)).result,
   };

@@ -2775,3 +2775,37 @@ select:focus-visible {
   border-bottom: 1px solid var(--pane-border);
   vertical-align: top;
 }
+
+/* Settings → Saved logins */
+.login-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+}
+.login-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.login-info small {
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.login-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.login-error {
+  color: var(--red);
+  font-size: 12px;
+}

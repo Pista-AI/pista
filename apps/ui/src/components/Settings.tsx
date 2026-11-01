@@ -9,6 +9,7 @@ import { openExternal } from "../lib/links.ts";
 import { useConfigField } from "../lib/useConfigField.ts";
 import { ManagedBadge } from "./ManagedBadge.tsx";
 import { host } from "../lib/host.ts";
+import { SavedLogins } from "./SavedLogins.tsx";
 
 type Tab = Exclude<ReturnType<typeof useApp.getState>["settingsOpen"], false>;
 
@@ -208,6 +209,7 @@ function General() {
         </div>
         <span className="help">Opens the app as one guided job: paste your transactions and Pista collects the matching invoices. Turn it off to get the full app back.</span>
       </div>
+      <SavedLogins />
       <div className="field">
         <label>
           Permissions <ManagedBadge field={approval} />
