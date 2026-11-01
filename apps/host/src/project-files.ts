@@ -44,9 +44,18 @@ export function isInvoicesPath(root: string, path: string, folder: string = INVO
   }
 }
 
+const PASSWORD_EXPORT_NAME = /passw|logins?\.csv|bitwarden|1password|chrome passwords|exported/i;
+export const PASSWORD_EXPORT_MESSAGE = "That looks like a password export. Pista does not read those.";
+
+/** Defense in depth: password exports are imported by the desktop app only, never read by the host or the model. */
+export function isPasswordExportName(path: string): boolean {
+  return PASSWORD_EXPORT_NAME.test(basename(path));
+}
+
 /** Reads a small text file in the project folder; a missing file is `exists: false`, not an error. */
 export function readProjectFile(root: string, relPath: string): { exists: boolean; content?: string; modified?: number } {
   const file = resolveInProject(root, relPath);
+  if (isPasswordExportName(relPath) || isPasswordExportName(file)) throw new Error(PASSWORD_EXPORT_MESSAGE);
   if (!existsSync(file) || !statSync(file).isFile()) return { exists: false };
   if (statSync(file).size > MAX_READ_BYTES) throw new Error("File is too large to read");
   return { exists: true, content: readFileSync(file, "utf8"), modified: statSync(file).mtimeMs };

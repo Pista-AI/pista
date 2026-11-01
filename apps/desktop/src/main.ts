@@ -10,10 +10,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, WebContentsView } from "electron";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
+import { importLogins, parseLoginCsv } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
@@ -391,7 +393,7 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
 }
 
-const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill"];
+const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import"];
 
 function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   const vault = createLoginVault({ file: path.join(app.getPath("userData"), "logins.json"), crypto: safeStorageCrypto(safeStorage) });
@@ -439,6 +441,25 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   guarded("logins:save", (input) => vault.save(input));
   guarded("logins:remove", (id: string) => vault.remove(String(id)));
   guarded("logins:fill", (site: string) => fill.fill(String(site)));
+  // The export file is read and parsed here only. The renderer gets counts back, never rows.
+  guarded("logins:import", async (opts?: { trash?: boolean }) => {
+    // Dev-only test hook: skips the native dialog. Impossible in packaged builds, where PISTA_DEV_URL is never set.
+    const forced = DEV_URL ? process.env.PISTA_LOGIN_IMPORT_FILE : undefined;
+    let file = forced;
+    if (!file) {
+      const win = BrowserWindow.fromWebContents(owner);
+      const picked = await dialog.showOpenDialog(win ?? (undefined as never), { properties: ["openFile"], filters: [{ name: "CSV", extensions: ["csv"] }] });
+      if (picked.canceled || !picked.filePaths[0]) return { imported: 0, replaced: 0, skipped: 0, failed: 0, canceled: true };
+      file = picked.filePaths[0];
+    }
+    if ((await stat(file)).size > 5_000_000) throw new Error("That file is too large to be a password export.");
+    const parsed = parseLoginCsv(await readFile(file, "utf8"));
+    const done = await importLogins(vault, parsed.rows);
+    let trashed = false;
+    // Reversible: the file goes to the Trash, not deleted. Only when the UI asked for it.
+    if (opts?.trash === true) trashed = await shell.trashItem(file).then(() => true, () => false);
+    return { ...done, skipped: parsed.skipped.reduce((n, s) => n + s.count, 0), trashed };
+  });
 }
 
 // ---------------------------------------------------------------------------

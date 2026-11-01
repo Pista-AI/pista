@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
       save: (input: { label: string; loginUrl: string; username: string; password: string }) => loginCall("logins:save", input),
       remove: (id: string) => loginCall("logins:remove", id),
       fill: (site: string) => loginCall("logins:fill", site),
+      import: (opts: { trash: boolean }) => loginCall("logins:import", { trash: opts?.trash === true }),
     },
   },
 });

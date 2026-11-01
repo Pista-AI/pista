@@ -37,3 +37,10 @@ test("hostOf keeps ipv6 port and drops default port", () => {
   assert.equal(hostOf("http://[::1]:3000"), "[::1]:3000");
   assert.equal(hostOf("https://example.com:443"), "example.com");
 });
+
+test("formats the import result with counts only", async () => {
+  const { formatImportResult } = await import("../src/focused/saved-logins.ts");
+  assert.equal(formatImportResult({ imported: 12, replaced: 2, skipped: 3, failed: 0 }), "Imported 12 logins, replaced 2, skipped 3.");
+  assert.equal(formatImportResult({ imported: 1, replaced: 0, skipped: 0, failed: 1 }), "Imported 1 login, replaced 0, skipped 0. 1 login could not be saved.");
+  assert.equal(formatImportResult({ imported: 0, replaced: 0, skipped: 0, failed: 0, canceled: true }), "");
+});

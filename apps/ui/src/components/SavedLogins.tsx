@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SavedLoginMeta } from "@pista/protocol";
-import { hostOf, validateLoginInput } from "../focused/saved-logins.ts";
+import { formatImportResult, hostOf, validateLoginInput } from "../focused/saved-logins.ts";
 
 const EMPTY = { label: "", loginUrl: "", username: "", password: "" };
 
@@ -18,6 +18,9 @@ export function SavedLogins() {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [trash, setTrash] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState("");
   const alive = useRef(true);
 
   const refresh = async () => {
@@ -87,6 +90,21 @@ export function SavedLogins() {
     }
   };
 
+  const runImport = async () => {
+    setImporting(true);
+    setError(null);
+    setImportNote("");
+    try {
+      const r = await logins.import({ trash });
+      if (alive.current) setImportNote(formatImportResult(r));
+      await refresh();
+    } catch (err) {
+      if (alive.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (alive.current) setImporting(false);
+    }
+  };
+
   return (
     <div className="field saved-logins">
       <label>Saved logins</label>
@@ -125,6 +143,17 @@ export function SavedLogins() {
           <button type="submit" className="pill-btn primary" disabled={!ready || busy}>Save login</button>
         </div>
       </form>
+      <div className="login-import">
+        <strong>Import from a file</strong>
+        <span className="help">Export your passwords from Chrome, Firefox, Safari, Bitwarden or 1Password as a CSV file, then import it here. Only website logins are imported, and the file is read by the desktop app only.</span>
+        <label className="login-trash">
+          <input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} disabled={!ready || importing} /> Move the file to the Trash after importing
+        </label>
+        <div>
+          <button type="button" className="pill-btn" disabled={!ready || importing} onClick={runImport}>Choose file and import</button>
+        </div>
+        {importNote && <span className="help" role="status">{importNote}</span>}
+      </div>
     </div>
   );
 }

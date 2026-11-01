@@ -53,7 +53,18 @@ export interface DesktopBrowserBridge {
     save(input: { label: string; loginUrl: string; username: string; password: string }): Promise<SavedLoginMeta>;
     remove(id: string): Promise<void>;
     fill(site: string): Promise<{ ok: boolean; note: string }>;
+    /** Opens a file dialog in the main process, which reads and imports the CSV. Only counts come back, never rows. */
+    import(opts: { trash: boolean }): Promise<LoginImportResult>;
   };
+}
+
+export interface LoginImportResult {
+  imported: number;
+  replaced: number;
+  skipped: number;
+  failed: number;
+  canceled?: true;
+  trashed?: boolean;
 }
 
 export interface PistaDesktop {

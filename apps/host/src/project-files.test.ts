@@ -55,3 +55,12 @@ test("reveal only selects the invoices folder and never launches a .app", () => 
   assert.deepEqual(revealCommand("win32", join(root, "invoices")), ["explorer", [`/select,${join(root, "invoices")}`]]);
   assert.throws(() => revealProjectInvoices(join(root, "invoices"), () => {}), /Nothing to show/);
 });
+
+test("refuses files that look like a password export", () => {
+  const { root } = fixture();
+  for (const name of ["Chrome Passwords.csv", "logins.csv", "bitwarden_export.csv", "1password.csv", "exported.txt", "my-passwords.txt"]) {
+    writeFileSync(join(root, name), "x");
+    assert.throws(() => readProjectFile(root, name), { message: "That looks like a password export. Pista does not read those." });
+  }
+  assert.equal(readProjectFile(root, "invoices/manifest.json").content, "[]");
+});
