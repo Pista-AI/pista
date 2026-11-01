@@ -5,6 +5,8 @@ import type { Hub } from "./hub.ts";
 /** Mutable binding so a driver created before the session knows which thread it serves. */
 export interface ThreadRef {
   threadId: string;
+  /** The thread's working folder, once known; `browser_download` saves under it. */
+  cwd?: string;
 }
 
 /**
@@ -62,13 +64,13 @@ export class PaneBrowserDriver implements BrowserDriver {
     private ref: ThreadRef,
   ) {}
 
-  private async ask(request: BrowserAction): Promise<BrowserResult> {
+  private async ask(request: BrowserAction, timeoutMs = 45_000): Promise<BrowserResult> {
     // The label rides along with the first request of each action, for the badge over the page.
     const activity = this.activity;
     this.activity = undefined;
     return this.hub.ask<BrowserResult>(
       (requestId) => ({ type: "browser.request", requestId, threadId: this.ref.threadId, request: { ...request, activity } }),
-      45_000,
+      timeoutMs,
       undefined,
       "browser",
     );
@@ -98,6 +100,19 @@ export class PaneBrowserDriver implements BrowserDriver {
   }
   async input(event: BrowserInput) {
     return Boolean((await this.ask({ action: "input", event })).value);
+  }
+  async download(opts: { path: string; url?: string; trigger?: () => Promise<unknown> }) {
+    await this.ask({ action: "download.arm", path: opts.path, ...(opts.url ? { url: opts.url } : {}) });
+    try {
+      await opts.trigger?.();
+    } catch (error) {
+      // Disarm by waiting it out is wasteful; a failed trigger means nothing can start, so report it as is.
+      this.ask({ action: "download.wait" }, 20_000).catch(() => undefined);
+      throw error;
+    }
+    const r = await this.ask({ action: "download.wait" }, 80_000);
+    if (!r.download) throw new Error(r.note ?? "download failed");
+    return r.download;
   }
   async screenshot() {
     const r = await this.ask({ action: "screenshot" });

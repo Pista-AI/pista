@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
     readText: (maxChars: number) => ipcRenderer.invoke("browser:readText", maxChars),
     screenshot: () => ipcRenderer.invoke("browser:screenshot"),
     evaluate: (script: string) => ipcRenderer.invoke("browser:evaluate", script),
+    armDownload: (path: string, url?: string) => ipcRenderer.invoke("browser:armDownload", path, url),
+    waitDownload: async () => {
+      const r = await ipcRenderer.invoke("browser:waitDownload");
+      if (r && typeof r === "object" && "error" in r) throw new Error(String((r as { error: unknown }).error));
+      return r;
+    },
     input: (event: unknown) => ipcRenderer.invoke("browser:input", event),
     openDevTools: () => ipcRenderer.send("browser:openDevTools"),
   },

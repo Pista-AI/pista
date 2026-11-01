@@ -102,6 +102,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         traceDir: CLIENT_DIR,
         threadId: ref.threadId,
         domainRules,
+        downloadRoot: () => ref.cwd,
       }),
   };
 }
@@ -124,6 +125,7 @@ const PAGE_CHANGING_TOOLS = new Set([
   "browser_type",
   "browser_select",
   "browser_press",
+  "browser_download",
   "browser_eval",
   "browser_choose", // PI_BROWSER_CHOOSE=1
   "browser_fill", // PI_BROWSER_FILL=1

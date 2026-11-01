@@ -28,6 +28,12 @@ export interface BrowserDriver {
   /** Resolves false when trusted input isn't available; callers then fall back to DOM events. */
   input(event: NativeInput): Promise<boolean>;
   screenshot(): Promise<{ data: string; mimeType: string }>;
+  /**
+   * Optional: saves one download straight to `path` (absolute) without the bytes passing through the caller. Either `url` is
+   * downloaded with the browser's own session, or `trigger` runs (e.g. a click) while the browser waits for the download it causes.
+   * Rejects with a plain-language message when none starts or it fails. Drivers without file access leave it out.
+   */
+  download?(opts: { path: string; url?: string; trigger?: () => Promise<unknown> }): Promise<{ bytes: number; contentType?: string; urlChain?: string[] }>;
   /** Optional: what the agent is doing, for drivers that show it to the user. */
   setActivity?(label: string): void;
   /** Optional: protocol round trips so far, for per-step traces. Drivers that don't count leave it out. */

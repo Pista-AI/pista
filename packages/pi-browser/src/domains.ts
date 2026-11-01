@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 /**
  * Managed domain rules for the browser tools. `guardDriver` wraps any BrowserDriver, so the rules hold for every driver.
  * Matching runs on the parsed URL hostname (lower case, punycode by the URL parser, trailing dots stripped), never on the raw string:
@@ -105,6 +106,21 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
     evaluate: async (script) => (await check(), inner.evaluate(script)),
     input: async (event) => (await check(), inner.input(event)),
     screenshot: async () => (await check(), inner.screenshot()),
+    download: inner.download
+      ? async (opts) => {
+          const reason = opts.url ? checkUrl(opts.url, rules) : undefined;
+          if (reason) refuse(reason, false);
+          await check();
+          const saved = await inner.download!(opts);
+          // The final address and every redirect hop must pass too; a file from a refused host is not kept.
+          const denied = [...(saved.urlChain ?? [])].map((u) => checkUrl(u, rules)).find(Boolean);
+          if (denied) {
+            rmSync(opts.path, { force: true });
+            refuse(denied, false);
+          }
+          return saved;
+        }
+      : undefined,
     setActivity: inner.setActivity?.bind(inner),
     stats: inner.stats?.bind(inner),
   };
