@@ -58,9 +58,11 @@ test("reveal only selects the invoices folder and never launches a .app", () => 
 
 test("refuses files that look like a password export", () => {
   const { root } = fixture();
-  for (const name of ["Chrome Passwords.csv", "logins.csv", "bitwarden_export.csv", "1password.csv", "exported.txt", "my-passwords.txt"]) {
+  for (const name of ["Chrome Passwords.csv", "logins.csv", "bitwarden_export.csv", "1password.csv", "Passwords.CSV", "bitwarden.json"]) {
     writeFileSync(join(root, name), "x");
     assert.throws(() => readProjectFile(root, name), { message: "That looks like a password export. Pista does not read those." });
   }
+  writeFileSync(join(root, "Passwort-Rechnung.pdf"), "x");
+  assert.equal(readProjectFile(root, "Passwort-Rechnung.pdf").content, "x");
   assert.equal(readProjectFile(root, "invoices/manifest.json").content, "[]");
 });

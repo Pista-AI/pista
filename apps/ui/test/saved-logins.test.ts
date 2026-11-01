@@ -43,4 +43,6 @@ test("formats the import result with counts only", async () => {
   assert.equal(formatImportResult({ imported: 12, replaced: 2, skipped: 3, failed: 0 }), "Imported 12 logins, replaced 2, skipped 3.");
   assert.equal(formatImportResult({ imported: 1, replaced: 0, skipped: 0, failed: 1 }), "Imported 1 login, replaced 0, skipped 0. 1 login could not be saved.");
   assert.equal(formatImportResult({ imported: 0, replaced: 0, skipped: 0, failed: 0, canceled: true }), "");
+  assert.ok(formatImportResult({ imported: 1, replaced: 0, skipped: 0, failed: 0, trashed: false }, true).endsWith("Delete it yourself."));
+  assert.ok(!formatImportResult({ imported: 1, replaced: 0, skipped: 0, failed: 0, trashed: true }, true).includes("Trash"));
 });

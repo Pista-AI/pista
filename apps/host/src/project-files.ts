@@ -44,7 +44,7 @@ export function isInvoicesPath(root: string, path: string, folder: string = INVO
   }
 }
 
-const PASSWORD_EXPORT_NAME = /passw|logins?\.csv|bitwarden|1password|chrome passwords|exported/i;
+const PASSWORD_EXPORT_NAME = /^(chrome )?passwords?\b.*\.csv$|^logins?\.csv$|bitwarden.*\.(csv|json)$|1password.*\.(csv|1pux)$/i;
 export const PASSWORD_EXPORT_MESSAGE = "That looks like a password export. Pista does not read those.";
 
 /** Defense in depth: password exports are imported by the desktop app only, never read by the host or the model. */

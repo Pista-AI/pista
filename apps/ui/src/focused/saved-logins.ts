@@ -35,10 +35,11 @@ export function hostOf(origin: string): string {
 }
 
 /** Result line for a CSV import. Counts only; no row content ever reaches the UI. */
-export function formatImportResult(r: { imported: number; replaced: number; skipped: number; failed: number; canceled?: boolean }): string {
+export function formatImportResult(r: { imported: number; replaced: number; skipped: number; failed: number; canceled?: boolean; trashed?: boolean }, trashRequested = false): string {
   if (r.canceled) return "";
   const n = (c: number, one: string, many: string) => `${c} ${c === 1 ? one : many}`;
   let s = `Imported ${n(r.imported, "login", "logins")}, replaced ${r.replaced}, skipped ${r.skipped}.`;
   if (r.failed > 0) s += ` ${n(r.failed, "login", "logins")} could not be saved.`;
+  if (trashRequested && !r.trashed) s += " The file could not be moved to the Trash. Delete it yourself.";
   return s;
 }

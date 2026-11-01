@@ -96,7 +96,7 @@ export function SavedLogins() {
     setImportNote("");
     try {
       const r = await logins.import({ trash });
-      if (alive.current) setImportNote(formatImportResult(r));
+      if (alive.current) setImportNote(formatImportResult(r, trash));
       await refresh();
     } catch (err) {
       if (alive.current) setError(err instanceof Error ? err.message : String(err));
