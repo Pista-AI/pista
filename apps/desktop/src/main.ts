@@ -7,7 +7,7 @@
  * - Implements the UI's DesktopBrowserBridge with a WebContentsView (real Chromium),
  *   so the agent can read, script and screenshot any page.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, type UtilityProcess, utilityProcess, WebContentsView } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, shell, systemPreferences, type UtilityProcess, utilityProcess, WebContentsView } from "electron";
 import { execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -19,6 +19,7 @@ import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } fr
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
 import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
+import { createPresenceGate } from "./presence.js";
 import { findDebugFlag } from "./debug-flags.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { decidePanePermission, isWebUrl, sameOrigin } from "./web-policy.js";
@@ -495,11 +496,18 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
         .then(() => run(...args))
         .catch((e: Error) => ({ error: e.message }));
     });
-  guarded("logins:status", () => vault.status());
+  // Touch ID once per app run (re-asked after 8 hours or a resume from sleep). Where it is unavailable the fill is not gated.
+  const canPrompt = () => process.platform === "darwin" && systemPreferences.canPromptTouchID();
+  const presence = createPresenceGate({ canPrompt, prompt: () => systemPreferences.promptTouchID("use a saved login"), now: Date.now, ttlMs: 8 * 60 * 60_000 });
+  powerMonitor.on("resume", () => presence.lock());
+  guarded("logins:status", async () => ({ ...(await vault.status()), presence: canPrompt() ? "touchid" : "unavailable" }));
   guarded("logins:list", () => vault.list());
   guarded("logins:save", (input) => vault.save(input));
   guarded("logins:remove", (id: string) => vault.remove(String(id)));
-  guarded("logins:fill", (site: string) => fill.fill(String(site)));
+  guarded("logins:fill", async (site: string) => {
+    const confirmed = await presence.ensure();
+    return confirmed.ok ? fill.fill(String(site)) : { error: confirmed.error };
+  });
   // The export file is read and parsed here only. The renderer gets counts back, never rows.
   guarded("logins:import", (opts?: { trash?: boolean }) =>
     runLoginImport(

@@ -12,10 +12,10 @@ const { classifyTool } = await import("./audit-events.ts");
 const { PaneBrowserDriver } = await import("./browser-driver.ts");
 const { INVOICE_FETCH_ROLE } = await import("./invoice-role.ts");
 
-function approvals(cwd: string, kind: object = { role: "invoice-fetch", restricted: true, isChild: false }) {
+function approvals(cwd: string, kind: object = { role: "invoice-fetch", restricted: true, isChild: false }, config: Record<string, unknown> = {}) {
   let asked = 0;
   const hub = { ask: async () => (asked++, { allow: true }) } as never;
-  const store = { config: { approvalMode: "ask-writes" }, toolRules: undefined } as never;
+  const store = { config: { approvalMode: "ask-writes", ...config }, toolRules: undefined } as never;
   const ext = approvalExtension(hub, store, { threadId: "t" } as never, undefined, invoiceWriteGate(kind as never, cwd), invoiceReadGate(kind as never, cwd));
   const handlers = new Map<string, (e: any, c: any) => Promise<any>>();
   (ext as unknown as { factory: (pi: unknown) => void }).factory({ on: (n: string, h: never) => handlers.set(n, h), getAllTools: () => [] });
@@ -100,4 +100,34 @@ test("invoice role: lists logins through browser_logins before any search, and k
   assert.match(p, /call browser_logins once/);
   assert.match(p, /before any web search/);
   assert.match(p, /Never type, store, repeat or ask for a password/);
+});
+
+test("sign-in confirmation: mode x confirmSignIns x tool", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pista-login-"));
+  const none = { role: undefined, restricted: false, isChild: false };
+  const cases: Array<[string, boolean | undefined, string, number]> = [
+    ["full-access", undefined, "browser_login", 1],
+    ["full-access", true, "browser_login", 1],
+    ["full-access", false, "browser_login", 0],
+    ["full-access", true, "browser_click", 0],
+    ["ask-writes", false, "browser_login", 1],
+    ["ask-writes", true, "browser_login", 1],
+  ];
+  for (const [approvalMode, confirmSignIns, tool, asked] of cases) {
+    const a = approvals(dir, none, { approvalMode, confirmSignIns });
+    await a.call(tool, { site: "Fixture" });
+    assert.equal(a.asked(), asked, `${approvalMode} ${confirmSignIns} ${tool}`);
+  }
+});
+
+test("sign-in confirmation ignores Always allow", async () => {
+  let asked = 0;
+  const hub = { ask: async () => (asked++, { allow: true, always: true }) } as never;
+  const store = { config: { approvalMode: "ask-writes", confirmSignIns: true }, toolRules: undefined } as never;
+  const ext = approvalExtension(hub, store, { threadId: "t" } as never, new Set<string>());
+  const handlers = new Map<string, (e: any, c: any) => Promise<any>>();
+  (ext as unknown as { factory: (pi: unknown) => void }).factory({ on: (n: string, h: never) => handlers.set(n, h), getAllTools: () => [] });
+  await handlers.get("tool_call")!({ toolName: "browser_login", input: {} }, {});
+  await handlers.get("tool_call")!({ toolName: "browser_login", input: {} }, {});
+  assert.equal(asked, 2);
 });

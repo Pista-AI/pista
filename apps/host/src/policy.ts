@@ -118,6 +118,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   localServers: "array",
   llamaEnabled: "boolean",
   focusedMode: "boolean",
+  confirmSignIns: "boolean",
   maxOutputTokens: "number",
   verify: "object",
 };

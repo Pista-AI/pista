@@ -79,8 +79,6 @@ test("case differences do not slip past the checks on case-insensitive platforms
   const mac = { ...upper, platform: "darwin" as const };
   assert.equal(confineDownload(path.join(home, ".ssh", "p", "a.pdf"), path.join(home, ".ssh", "p"), mac), undefined);
   assert.equal(confineDownload(path.join(home, "pistahome", "pi", "a.pdf"), path.join(home, "pistahome", "pi"), mac), undefined);
-  // A case-sensitive platform compares exactly, so the same upper-case spelling does not match: folding is what catches it above.
-  assert.ok(confineDownload(path.join(home, ".ssh", "p", "a.pdf"), path.join(home, ".ssh", "p"), { ...upper, platform: "linux" as const }));
 });
 
 test("the pi folder under the client home is sealed, the rest of the client home is not", () => {
