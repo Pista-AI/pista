@@ -242,7 +242,7 @@ export class ThreadManager {
     if (role === undefined) return this.snapshot(await this.load(projectId, sessionManager));
     const roles = this.agentRoles.forProject(project.path);
     if (typeof role !== "string" || !Object.hasOwn(roles, role) || roles[role]!.disabled) throw new Error(`Unknown agent role: ${String(role)}`);
-    if (roles[role]!.standalone && this.store.config.browserEnabled === false) throw new Error("The invoice job needs the browser; enable it in settings.");
+    if (roles[role]!.standalone && this.store.config.browserEnabled === false) throw new Error("The invoice job needs the browser. Turn it on under Settings.");
     // Recorded before the first load, like a child's role; `parentId` stays unset, so the thread is still top-level.
     const id = sessionManager.getSessionId();
     this.store.setThreadMeta(id, { role });
@@ -339,6 +339,7 @@ export class ThreadManager {
         plan: { getPlan: () => thread?.plan, setPlan: (plan) => thread && this.setPlan(thread, plan) },
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
+        cwd: sessionManager.getCwd(),
         harness: harnessHost,
         roles,
         thinkingMode: () => thread?.thinkingMode,
@@ -632,7 +633,7 @@ export class ThreadManager {
     const thread = await this.ensure(threadId);
     const { session } = thread;
     if (!session.sessionName && !session.messages.some((m) => m.role === "user")) {
-      const title = titleFrom(text);
+      const title = this.store.getThreadMeta(threadId)?.role === "invoice-fetch" ? `Invoices ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : titleFrom(text);
       session.setSessionName(title);
       this.touch(thread, { title });
     }

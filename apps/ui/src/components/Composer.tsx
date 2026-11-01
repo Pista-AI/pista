@@ -42,7 +42,7 @@ function readImage(file: File): Promise<Attachment> {
   });
 }
 
-export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: { text: string; n: number } }) {
+export function Composer({ autoFocusKey, seed, placeholder, simple, tall }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string; /** Hides the add, permissions and model controls (focused mode). */ simple?: boolean; /** Roomy text box for pasting (focused mode, empty thread). */ tall?: boolean }) {
   const { activeThreadId, views, models, config, pageContext } = useApp();
   const approvalField = useConfigField("approvalMode");
   const view = activeThreadId ? views[activeThreadId] : undefined;
@@ -64,7 +64,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-  }, [text]);
+  }, [text, tall]);
 
   const currentModel = view?.model ?? config?.defaultModel;
   const modelInfo = models.find((m) => m.provider === currentModel?.provider && m.id === currentModel?.id);
@@ -128,7 +128,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
             {queued > 0 && <span className="queue-hint">{queued} queued</span>}
           </div>
         )}
-        <div className="composer">
+        <div className={`composer ${tall ? "tall" : ""}`}>
           {(images.length > 0 || pageContext) && (
             <div className="attachments">
               {pageContext && (
@@ -154,7 +154,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
             ref={ta}
             rows={1}
             value={text}
-            placeholder={streaming ? "Steer the agent · ⌥↩ to queue a follow-up" : "Ask Pista to do anything"}
+            placeholder={placeholder ?? (streaming ? "Steer the agent · ⌥↩ to queue a follow-up" : "Ask Pista to do anything")}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
             onKeyDown={(e) => {
@@ -166,6 +166,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
             }}
           />
           <div className="composer-row">
+            {!simple && (
             <Popover
               trigger={({ toggle }) => (
                 <button className="icon-btn round" title="Add" onClick={toggle}>
@@ -191,6 +192,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
                 </>
               )}
             </Popover>
+            )}
             <input
               ref={file}
               type="file"
@@ -204,6 +206,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
               }}
             />
 
+            {!simple && (
             <Popover
               trigger={({ toggle }) => (
                 <>
@@ -240,12 +243,14 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
                 })
               }
             </Popover>
+            )}
 
             <div className="spacer" />
             {view?.contextUsage?.percent != null && view.contextUsage.percent > 40 && (
               <span className="context-ring">{Math.round(view.contextUsage.percent)}%</span>
             )}
 
+            {!simple && (
             <Popover
               placement="top-end"
               trigger={({ toggle }) => (
@@ -310,6 +315,7 @@ export function Composer({ autoFocusKey, seed }: { autoFocusKey: string; seed?: 
                 </>
               )}
             </Popover>
+            )}
 
             {streaming && !text.trim() ? (
               <button className="send-btn" title="Stop (Esc)" onClick={() => actions.abort()}>

@@ -18,6 +18,7 @@ import {
   type Methods,
 } from "@pista/protocol";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
+import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
 import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
 import { extensionsSummary } from "./policy.ts";
 import { describeMcp } from "./policy-mcp.ts";
@@ -107,6 +108,12 @@ llama.start();
 // Local servers may be offline at startup; their model lists refresh when models are listed.
 await Promise.all(store.config.localServers.map((server) => registerLocalServer(models, server).catch(() => {})));
 
+function projectPath(projectId: string): string {
+  const project = store.projects.find((p) => p.id === projectId);
+  if (!project) throw new Error("Unknown project");
+  return project.path;
+}
+
 type Handler<M extends MethodName> = (params: Methods[M]["params"]) => Promise<Methods[M]["result"]> | Methods[M]["result"];
 const handlers: { [M in MethodName]: Handler<M> } = {
   "host.hello": () => ({
@@ -144,6 +151,8 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     await threads.reloadIdle(projectId);
     return project;
   },
+  "project.readFile": ({ projectId, relPath }) => readProjectFile(projectPath(projectId), relPath),
+  "project.reveal": ({ projectId }) => revealProjectInvoices(projectPath(projectId)),
   "projects.remove": async ({ projectId }) => {
     await threads.removeProject(projectId);
   },

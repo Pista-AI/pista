@@ -2713,3 +2713,65 @@ select:focus-visible {
   font-variant-numeric: tabular-nums;
   text-align: left;
 }
+
+/* ---------- Focused mode (invoice job inside the normal shell) ---------- */
+.job-card,
+.job-results,
+.job-error {
+  width: min(560px, 100%);
+  margin: 12px auto;
+  padding: 16px 18px;
+  border: 1px solid var(--pane-border);
+  border-radius: 12px;
+  background: var(--bg-input);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.job-card h1,
+.job-results h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.job-card p,
+.job-error p {
+  margin: 0;
+  color: var(--text-2);
+}
+.job-results {
+  width: 100%;
+  margin: 12px 0;
+}
+.job-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--pane-border);
+  font-size: 13px;
+}
+.job-chip {
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+}
+.job-chip.found {
+  color: var(--green, var(--text));
+}
+.composer.tall textarea {
+  min-height: 150px;
+}
+.job-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.job-table th,
+.job-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--pane-border);
+  vertical-align: top;
+}

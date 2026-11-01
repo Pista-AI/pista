@@ -317,7 +317,7 @@ export const actions = {
     }
   },
 
-  async send(text: string, images?: { data: string; mimeType: string }[], delivery?: "steer" | "followUp") {
+  async send(text: string, images?: { data: string; mimeType: string }[], delivery?: "steer" | "followUp", role?: string) {
     // Show the message now; the host echoes it only after its pre-run steps. While a run is
     // streaming, the echo lands later in order, so queued messages are not shown optimistically.
     const imageBlocks = images?.map((i) => ({ type: "image" as const, ...i }));
@@ -334,7 +334,7 @@ export const actions = {
       // No thread yet: App shows this instead of the empty state until the thread exists.
       set({ startingMessage: optimistic });
       try {
-        const snapshot = await host.call("thread.create", { projectId });
+        const snapshot = await host.call("thread.create", { projectId, role: role ?? (get().config?.focusedMode ? "invoice-fetch" : undefined) });
         applySnapshot(snapshot);
         threadId = snapshot.summary.id;
         fresh = true;

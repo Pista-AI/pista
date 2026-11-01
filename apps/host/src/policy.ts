@@ -117,6 +117,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   contextWindowCap: "number",
   localServers: "array",
   llamaEnabled: "boolean",
+  focusedMode: "boolean",
   maxOutputTokens: "number",
   verify: "object",
 };
