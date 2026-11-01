@@ -1,5 +1,6 @@
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { reportFormatPrompt } from "./brief.ts";
+import { INVOICE_FETCH_ROLE } from "./invoice-role.ts";
 import type { AgentOverride, AgentRole, AgentRoleName, BuiltinAgentRoleName, HostConfig } from "@pista/protocol";
 
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -28,6 +29,7 @@ export const ROLES: Record<BuiltinAgentRoleName, AgentRole> & RoleMap = {
     tools: READ_ONLY_TOOLS,
     description: "Read-only review of files and changes, reports findings.",
   },
+  "invoice-fetch": INVOICE_FETCH_ROLE,
 };
 
 /** A role by name. A name no longer defined (its file was removed) falls back to read-only, so a stale child thread never gains tools. */
@@ -37,7 +39,7 @@ export function roleOf(role: AgentRoleName, roles: RoleMap = ROLES): AgentRole {
 
 /** The roles the agent tool offers and `spawn` accepts. */
 export function availableRoles(roles: RoleMap = ROLES): AgentRole[] {
-  return Object.values(roles).filter((r) => !r.disabled);
+  return Object.values(roles).filter((r) => !r.disabled && !r.standalone);
 }
 
 /** Roles with a tool allowlist also lose codemode, tool search, MCP and the browser. */

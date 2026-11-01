@@ -160,6 +160,8 @@ export interface AgentRole {
   promptMode?: "append" | "replace";
   /** Hidden from the agent tool and refused for new children by `HostConfig.agentOverrides`. */
   disabled?: boolean;
+  /** Only for top-level threads (`thread.create {role}`): not offered to the agent tool or accepted for sub-agents. */
+  standalone?: boolean;
 }
 
 /** Per-role settings on top of a built-in or file role. Can only narrow tools, never widen them. */
@@ -742,7 +744,7 @@ export interface Methods {
   "projects.remove": { params: { projectId: string }; result: void };
 
   "threads.list": { params: {}; result: ThreadSummary[] };
-  "thread.create": { params: { projectId: string }; result: ThreadSnapshot };
+  "thread.create": { params: { projectId: string; /** Run the thread as this role (built-in or role file), e.g. a named skill. Unknown name is rejected. */ role?: AgentRoleName }; result: ThreadSnapshot };
   "thread.open": { params: { threadId: string }; result: ThreadSnapshot };
   "thread.prompt": {
     params: { threadId: string; text: string; images?: ImageBlock[]; delivery?: "steer" | "followUp" };

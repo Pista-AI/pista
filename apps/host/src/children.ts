@@ -15,7 +15,7 @@ import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
 import { abortLabelExtension } from "./abort-label.ts";
 import { resolveRoleModel } from "./model-tiers.ts";
-import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension } from "./roles.ts";
+import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension, roleOf } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import type { Harness, HarnessContext } from "./harness/types.ts";
 import { harnessSource, resolveHarness } from "./harness/registry.ts";
@@ -65,6 +65,10 @@ export interface ExtensionDeps {
   harness?: HarnessContext;
 }
 
+function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
+  return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
+}
+
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
 export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExtension[] {
   const { role, restricted, isChild } = kind;
@@ -75,9 +79,9 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
   const runner = isChild ? undefined : createAgentRunner(agentOpts);
   const watch = <T extends InlineExtension>(ext: T, source: DecisionSource): InlineExtension => (tools ? observeBlocks(ext, source, tools) : ext);
   return [
-    // Restricted roles and orchestrators get no codemode, tool search, MCP or browser.
+    // Restricted roles and orchestrators get no codemode, tool search, MCP or browser, unless the role lists browser tools itself.
     ...(restricted
-      ? []
+      ? wantsBrowser(role, deps) ? [browserExtension(hub, ref, store.managedPolicy?.browser)] : []
       : [
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),
@@ -131,7 +135,7 @@ export class Children {
     return this.store.getThreadMeta(threadId)?.parentId ?? this.host.summary(threadId)?.parentId;
   }
 
-  /** Child by role or by parent link. Depth is 1, so a child never gets the agent tool. */
+  /** True for a thread with a role or a parent link: it never gets the agent tool (depth is 1). A role without a parent is a standalone thread, not a sub-agent. */
   isChildThread(threadId: string): boolean {
     return Boolean(this.store.getThreadMeta(threadId)?.role || this.parentOf(threadId));
   }
@@ -161,7 +165,7 @@ export class Children {
     return undefined;
   }
 
-  /** Child threads keep their role across restarts: it is recorded in threadMeta before the first load. */
+  /** A thread keeps its role across restarts: it is recorded in threadMeta before the first load. */
   kindOf(threadId: string, roles?: RoleMap): ThreadKind {
     const role = this.store.getThreadMeta(threadId)?.role;
     const isChild = this.isChildThread(threadId);
