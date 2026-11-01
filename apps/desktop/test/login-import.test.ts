@@ -71,7 +71,8 @@ test("importLogins counts imported, replaced and failed; disk has no plaintext",
   assert.equal((await vault.list()).length, 2);
   const disk = await readFile(file, "utf8");
   assert.ok(!disk.includes("PLAINTEXT"));
-  assert.ok(!JSON.stringify(result).includes("example.com"));
+  // The result carries counts only: no row strings can reach the renderer.
+  assert.ok(Object.values(result).every((v) => typeof v === "number"));
 });
 
 test("Bitwarden login_uri split on newlines too", () => {
