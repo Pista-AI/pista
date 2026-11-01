@@ -39,7 +39,7 @@ export function mergeManifest(oldRaw: string | undefined, newRaw: string): strin
     return { ...prev, ...e, ...(keepProgress ? { status: prev.status, file: prev.file, note: prev.note } : {}) };
   });
   for (const e of old) if (!seen.has(keyOf(e))) merged.push(e);
-  return JSON.stringify(merged, null, 2);
+  return `${JSON.stringify(merged, null, 2)}\n`;
 }
 
 /** For the standalone invoice job: a `write` to `<project>/invoices/manifest.json` is merged into the file already there, so a new run cannot drop earlier entries. Rewrites `event.input.content` in place (Pi's way to change arguments). */

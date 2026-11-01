@@ -20,6 +20,7 @@ Parse each line into date (write it as YYYY-MM-DD), amount, currency and descrip
 ### Step 1: vendors
 Work out the vendor for each line. Group lines by vendor. Show the owner a short table (vendor, number of lines, dates, amounts). Mark lines you cannot place. Ask one question: "Is this right? Shall I start?" Do not browse before they answer.
 If invoices/manifest.json already exists, read it first and keep every existing entry; add the new transactions and update entries that match on vendor, date and amount. Never drop an entry.
+Skip every existing entry whose status is "found" and whose file already exists in the project: do not sign in or download again for it. Work only on entries that are pending or needs_login, or not yet in the manifest.
 As soon as the owner confirms, write invoices/manifest.json with every transaction as status "pending" (format in Step 4). Rewrite it after each vendor is finished or skipped, so progress is always on disk.
 
 ### Step 2: each vendor

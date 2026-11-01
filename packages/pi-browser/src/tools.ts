@@ -208,7 +208,8 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           ref: Type.Optional(Type.String({ description: "Snapshot ref of the element that starts the download when clicked" })),
           path: Type.String({ description: "Where to save it, relative to the project folder" }),
         }),
-        execute: async (_id, { url, ref, path }, signal) => {
+        execute: async (_id, { url: rawUrl, ref, path }, signal) => {
+          let url = rawUrl;
           if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
           const folder = root();
           if (!folder) throw new Error("browser_download: no project folder is known for this thread.");
@@ -216,6 +217,15 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const d = await driver();
           if (!d.download) throw new Error("browser_download is not supported with this browser driver (the cdp driver cannot save downloads).");
           d.setActivity?.(`Downloading ${path}`);
+          // A relative link ("/invoice.pdf") only means something against the page the model is looking at; the guard must see the absolute address.
+          if (url) {
+            const base = (await d.state()).url;
+            try {
+              url = new URL(url, base || undefined).href;
+            } catch {
+              throw new Error(`browser_download: "${url}" is not a valid address${base ? ` on ${base}` : ""}.`);
+            }
+          }
           // A link to a PDF would open in the inline viewer instead of downloading, so a link is downloaded by address with the pane's session.
           const href = ref ? String(await d.evaluate(scripts.href(ref)).catch(() => "")) : "";
           const trigger = ref && !href
