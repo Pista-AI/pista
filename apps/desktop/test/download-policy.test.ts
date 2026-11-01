@@ -72,12 +72,15 @@ test("refuses the extended executable and script extensions, but may replace an 
 });
 
 test("case differences do not slip past the checks on case-insensitive platforms", () => {
-  const mac = { ...ctx, platform: "darwin" as const };
-  for (const root of [path.join(home, ".SSH", "P"), path.join(home, "pistahome", "PI"), home.toUpperCase()]) {
-    mkdirSync(root, { recursive: true });
-    assert.equal(confineDownload(path.join(root, "a.pdf"), root, mac), undefined, root);
-  }
-  assert.equal(confineDownload(path.join(proj, "A.pdf"), proj.toUpperCase(), mac) === undefined, false);
+  // The folders exist in lower case; the policy context spells them in upper case, as a user or a drive letter might.
+  mkdirSync(path.join(home, ".ssh", "p"), { recursive: true });
+  mkdirSync(path.join(home, "pistahome", "pi"), { recursive: true });
+  const upper = { ...ctx, home: home.toUpperCase(), sealedDirs: ctx.sealedDirs.map((d) => d.toUpperCase()) };
+  const mac = { ...upper, platform: "darwin" as const };
+  assert.equal(confineDownload(path.join(home, ".ssh", "p", "a.pdf"), path.join(home, ".ssh", "p"), mac), undefined);
+  assert.equal(confineDownload(path.join(home, "pistahome", "pi", "a.pdf"), path.join(home, "pistahome", "pi"), mac), undefined);
+  // A case-sensitive platform compares exactly, so the same upper-case spelling does not match: folding is what catches it above.
+  assert.ok(confineDownload(path.join(home, ".ssh", "p", "a.pdf"), path.join(home, ".ssh", "p"), { ...upper, platform: "linux" as const }));
 });
 
 test("the pi folder under the client home is sealed, the rest of the client home is not", () => {
