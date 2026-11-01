@@ -1,3 +1,5 @@
+import type { SavedLoginMeta } from "@pista/protocol";
+
 /**
  * Contract a desktop shell (Electron or Tauri 2) implements to give the UI a real,
  * native browser surface. The web build falls back to an <iframe>, which cannot
@@ -43,6 +45,11 @@ export interface DesktopBrowserBridge {
   /** Resolves false when the input couldn't be delivered (e.g. the view is hidden); callers fall back to DOM events. */
   input?(event: NativeInput): Promise<boolean>;
   openDevTools?(): void;
+  /** Saved logins live in the desktop main process; only metadata comes back, `fill` never returns the password. */
+  logins?: {
+    list(): Promise<SavedLoginMeta[]>;
+    fill(id: string): Promise<{ ok: boolean; note: string }>;
+  };
 }
 
 export interface PistaDesktop {
