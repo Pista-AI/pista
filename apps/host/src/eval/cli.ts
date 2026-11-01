@@ -1,6 +1,6 @@
 // `pnpm eval:presets --presets solo,routed --tasks '*' --runs 3 --max-usd 2 --model provider/id [--judge provider/id]`
 // `--fake` swaps in a scripted model (no API calls). Each run happens in a child process with its own throwaway
-// PISTA_HOME, agent dir and memory dir (see presets.ts); real runs copy only auth.json and models-store.json
+// PISTA_HOME, agent dir and memory dir (see presets.ts); real runs copy only auth.json, auth.enc.json and models-store.json
 // from your Pi agent dir. Exits nonzero when aborted by the cost cap or when every run errored.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";

@@ -17,6 +17,8 @@ import {
   type MethodName,
   type Methods,
 } from "@pista/protocol";
+import { resolveAuthKeySource } from "./auth-key.ts";
+import { setupCredentials } from "./auth-setup.ts";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
 import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
 import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
@@ -84,7 +86,14 @@ const mcpLine = describeMcp(loadedPolicy.policy?.mcp);
 if (mcpLine) console.log(mcpLine);
 for (const warning of store.policyWarnings) console.warn(`[pista-host] managed policy: ${warning}`);
 const hub = new Hub();
-const models = await ModelRuntime.create({ allowModelNetwork: true });
+let credentials: Awaited<ReturnType<typeof setupCredentials>>["credentials"];
+try {
+  credentials = (await setupCredentials(await resolveAuthKeySource(process.env, process.stdin), piAgentDir(), console.log)).credentials;
+} catch (error) {
+  console.error(`[pista-host] ${(error as Error).message}`);
+  process.exit(1);
+}
+const models = await ModelRuntime.create({ allowModelNetwork: true, ...(credentials ? { credentials } : {}) });
 registerNebiusProvider(models);
 const gatewayResult = registerPolicyGateways(
   loadedPolicy.policy,

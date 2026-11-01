@@ -410,7 +410,7 @@ function Providers() {
   return (
     <>
       <h3>Model providers</h3>
-      <p className="sub">The agent can use any provider Pi supports. Credentials are kept in <code>pi/auth.json</code> in the Pista data folder (copied from the Pi CLI on first start).</p>
+      <p className="sub">The agent can use any provider Pi supports. Credentials are kept encrypted in <code>pi/auth.enc.json</code> in the Pista data folder (keyed by the OS keychain through the desktop app).</p>
       <LocalModels />
       <div className="settings-section-label">Cloud providers</div>
       <input className="search" placeholder="Search providers" value={query} onChange={(e) => setQuery(e.target.value)} />
