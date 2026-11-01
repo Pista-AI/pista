@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { realpathSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -50,7 +50,7 @@ test("reveal only selects the invoices folder and never launches a .app", () => 
   const calls: [string, string[]][] = [];
   revealProjectInvoices(root, (cmd, args) => calls.push([cmd, args]));
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], revealCommand(process.platform, join(root, "invoices")));
+  assert.deepEqual(calls[0], revealCommand(process.platform, realpathSync(join(root, "invoices"))));
   assert.deepEqual(revealCommand("linux", join(root, "invoices")), ["xdg-open", [root]]);
   assert.deepEqual(revealCommand("win32", join(root, "invoices")), ["explorer", [`/select,${join(root, "invoices")}`]]);
   assert.throws(() => revealProjectInvoices(join(root, "invoices"), () => {}), /Nothing to show/);
