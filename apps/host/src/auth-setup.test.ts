@@ -69,8 +69,7 @@ test("key hex never appears in logs or errors", async () => {
   await setupCredentials({ kind: "key", key }, d, log);
   assert.ok(!out.join("\n").includes(keyHex));
   writeFileSync(join(d, "auth.enc.json"), "garbage");
-  const store = (await setupCredentials({ kind: "key", key }, d, log)).credentials!;
-  await assert.rejects(store.list(), (e: Error) => !e.message.includes(keyHex));
+  await assert.rejects(setupCredentials({ kind: "key", key }, d, log), (e: Error) => !e.message.includes(keyHex));
   assert.ok(!out.join("\n").includes(keyHex));
 });
 
@@ -98,4 +97,17 @@ test("rm failure after migration logs a warning and continues", async () => {
   } finally {
     chmodSync(d, 0o700);
   }
+});
+
+test("wrong key fails at startup with a clear message and leaves the file alone", async () => {
+  const d = dir();
+  await createEncryptedCredentialStore({ file: join(d, "auth.enc.json"), key }).modify("x", async () => ({ type: "api_key", key: "k" }));
+  const before = readFileSync(join(d, "auth.enc.json"), "utf-8");
+  const other = Buffer.alloc(32, 9);
+  await assert.rejects(setupCredentials({ kind: "key", key: other }, d, () => {}), (e: Error) => {
+    assert.match(e.message, /^auth\.enc\.json cannot be decrypted with the current key \(wrong key or corrupt file\)\. Delete .*auth\.enc\.json to start over; you will need to sign in to providers again\.$/);
+    assert.ok(!e.message.includes(other.toString("hex")) && !e.message.includes("k\"") );
+    return true;
+  });
+  assert.equal(readFileSync(join(d, "auth.enc.json"), "utf-8"), before);
 });

@@ -19,6 +19,11 @@ export async function setupCredentials(
     return { mode: "plain" };
   }
   const store = createEncryptedCredentialStore({ file: encFile, key: source.key });
+  try {
+    await store.list();
+  } catch {
+    throw new Error(`auth.enc.json cannot be decrypted with the current key (wrong key or corrupt file). Delete ${encFile} to start over; you will need to sign in to providers again.`);
+  }
   if (existsSync(plainFile)) {
     let parsed: unknown;
     try {
