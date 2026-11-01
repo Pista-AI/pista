@@ -47,8 +47,12 @@ export interface DesktopBrowserBridge {
   openDevTools?(): void;
   /** Saved logins live in the desktop main process; only metadata comes back, `fill` never returns the password. */
   logins?: {
+    status(): Promise<{ available: boolean; backend: string }>;
     list(): Promise<SavedLoginMeta[]>;
-    fill(id: string): Promise<{ ok: boolean; note: string }>;
+    /** The password passes through the renderer only at save time, straight to the main process, and is never part of any protocol message. */
+    save(input: { label: string; loginUrl: string; username: string; password: string }): Promise<SavedLoginMeta>;
+    remove(id: string): Promise<void>;
+    fill(site: string): Promise<{ ok: boolean; note: string }>;
   };
 }
 

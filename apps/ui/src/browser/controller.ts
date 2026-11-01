@@ -287,8 +287,11 @@ class BrowserController {
         if (!b.waitDownload) throw new Error("This desktop build cannot save downloads.");
         return { download: await b.waitDownload() };
       case "login.list":
+        if (!b.logins) throw new Error("This desktop build cannot use saved logins.");
+        return { logins: await b.logins.list() };
       case "login.fill":
-        throw new Error("This desktop build cannot use saved logins.");
+        if (!b.logins) throw new Error("This desktop build cannot use saved logins.");
+        return { login: await b.logins.fill(req.site) };
     }
   }
 
