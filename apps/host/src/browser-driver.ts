@@ -102,7 +102,7 @@ export class PaneBrowserDriver implements BrowserDriver {
     return Boolean((await this.ask({ action: "input", event })).value);
   }
   async download(opts: { path: string; url?: string; trigger?: () => Promise<unknown> }) {
-    await this.ask({ action: "download.arm", path: opts.path, ...(opts.url ? { url: opts.url } : {}) });
+    await this.ask({ action: "download.arm", path: opts.path, ...(this.ref.cwd ? { root: this.ref.cwd } : {}), ...(opts.url ? { url: opts.url } : {}) });
     try {
       await opts.trigger?.();
     } catch (error) {

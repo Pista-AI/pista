@@ -281,7 +281,8 @@ class BrowserController {
         return { value: serialize(await b.evaluate(req.script)) };
       case "download.arm":
         if (!b.armDownload) throw new Error("This desktop build cannot save downloads.");
-        await b.armDownload(req.path, req.url);
+        if (!req.root) throw new Error("download failed: no project folder is known for this thread.");
+        await b.armDownload(req.path, req.root, req.url);
         return {};
       case "download.wait":
         if (!b.waitDownload) throw new Error("This desktop build cannot save downloads.");

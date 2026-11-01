@@ -14,6 +14,8 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
+import { buildUiCsp } from "./csp.js";
+import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
 import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
@@ -334,8 +336,10 @@ class BrowserPane {
     });
   }
 
-  armDownload(savePath: string, url?: string) {
-    if (!path.isAbsolute(savePath)) throw new Error("download failed: the path must be absolute");
+  /** `root` is the thread's project folder; the file must land strictly inside it (see download-policy.ts). Refusals return a fixed message. */
+  armDownload(requested: string, root: string, url?: string): { error: string } | undefined {
+    const savePath = confineDownload(requested, root, { home: homedir(), protectedDirs: protectedDirsFor({ userData: app.getPath("userData"), clientHome: CLIENT_HOME }), sealedDirs: sealedDirsFor({ home: homedir(), env: process.env }) });
+    if (!savePath) return { error: DOWNLOAD_REFUSED };
     if (this.armed) throw new Error("another download is in progress");
     const request = {} as DownloadRequest;
     request.path = savePath;
@@ -349,6 +353,7 @@ class BrowserPane {
       if (this.armed === request) this.armed = undefined;
     }, 90_000);
     if (url) this.view.webContents.downloadURL(url);
+    return undefined;
   }
 
   /** Resolves when the armed download completed; the request is disarmed either way. */
@@ -424,7 +429,7 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.handle("browser:readText", (_e, maxChars: number) => pane.readText(maxChars));
   ipcMain.handle("browser:screenshot", () => pane.screenshot());
   ipcMain.handle("browser:evaluate", (_e, script: string) => pane.evaluate(script));
-  ipcMain.handle("browser:armDownload", (_e, p: string, url?: string) => pane.armDownload(p, url));
+  ipcMain.handle("browser:armDownload", (_e, p: string, root: string, url?: string) => pane.armDownload(p, root, url));
   // Failures travel as a value so Electron does not log an unhandled handler error; the preload rethrows them.
   ipcMain.handle("browser:waitDownload", () => pane.waitDownload().catch((e: Error) => ({ error: e.message })));
   ipcMain.handle("browser:input", (_e, event: NativeInput) => pane.input(event));
@@ -531,6 +536,16 @@ async function createWindow() {
   });
   mainWindow = win;
 
+  // The UI page reaches the preload bridge, so script injection there must not run: set the policy on the UI's own document responses only
+  // (the pane lives in the persist:pista-browser session and is untouched).
+  const uiOrigin = new URL(uiUrl).origin;
+  const csp = buildUiCsp(uiUrl, { dev: Boolean(DEV_URL) });
+  win.webContents.session.webRequest.onHeadersReceived({ urls: [`${uiOrigin}/*`] }, (details, callback) => {
+    if (details.resourceType !== "mainFrame" || details.webContentsId !== win.webContents.id) return callback({});
+    const headers = Object.fromEntries(Object.entries(details.responseHeaders ?? {}).filter(([k]) => k.toLowerCase() !== "content-security-policy"));
+    callback({ responseHeaders: { ...headers, "Content-Security-Policy": [csp] } });
+  });
+
   const pane = new BrowserPane(win);
   registerBrowserIpc(pane);
   registerLoginIpc(pane, win.webContents);
@@ -567,6 +582,9 @@ app.on("before-quit", () => {
   quitting = true;
   hostProcess?.kill();
 });
+
+// Every renderer runs in the OS sandbox, not only the two views that ask for it.
+app.enableSandbox();
 
 app.whenReady().then(async () => {
   app.setName("Pista");

@@ -712,8 +712,8 @@ export type BrowserAction = (
   | { action: "input"; event: BrowserInput }
   | { action: "back" }
   | { action: "reload" }
-  /** Arms the next download of the pane to save at `path` (absolute); with `url` it also starts that download using the pane's session. */
-  | { action: "download.arm"; path: string; url?: string }
+  /** Arms the next download of the pane to save at `path` (absolute) inside the project folder `root`, which the shell checks; with `url` it also starts that download using the pane's session. */
+  | { action: "download.arm"; path: string; root?: string; url?: string }
   /** Resolves with the armed download's result once it completed. Rejects when none started in time or it failed. */
   | { action: "download.wait" }
   /** Lists the saved logins (metadata only) the desktop shell holds. */
