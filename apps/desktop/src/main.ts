@@ -14,6 +14,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createAuthKeyVault, writeKeyToStdin } from "./auth-key.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
 import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
@@ -75,6 +76,8 @@ async function startHost(): Promise<string> {
   const resources = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "../build");
   const entry = path.join(resources, "host", "dist", "host.mjs");
   mkdirSync(CLIENT_HOME, { recursive: true });
+  // The host's data key is wrapped by the OS keychain and reaches the host only over stdin (never argv, env or logs).
+  const key = await createAuthKeyVault({ file: path.join(app.getPath("userData"), "auth-key.json"), crypto: safeStorageCrypto(safeStorage) }).load();
   const log = createWriteStream(path.join(CLIENT_HOME, "host.log"), { flags: "a" });
 
   // A packaged build may ship llama-server (see scripts/fetch-llama.mjs); the host only learns of it through this variable.
@@ -90,10 +93,14 @@ async function startHost(): Promise<string> {
       PISTA_UI_DIR: path.join(resources, "ui"),
       PISTA_PARENT_PID: String(process.pid),
       PISTA_APP_VERSION: app.getVersion(),
+      PISTA_AUTH_KEY_STDIN: "1",
       ...llamaEnv,
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
+  // A broken pipe means the host already died; its exit handler below reports why.
+  await writeKeyToStdin(hostProcess.stdin!, key).catch(() => undefined);
+  key.fill(0);
   hostProcess.stdout?.pipe(log);
   hostProcess.stderr?.pipe(log);
   // The host's last stderr line is its fatal reason (for example a broken managed policy); show it in the error box.
