@@ -397,10 +397,19 @@ export function realAgentDir(env: NodeJS.ProcessEnv = process.env): string {
 
 /** Env vars the child may inherit: basics plus provider API keys. Everything else (PISTA_*, PI_*, NODE_OPTIONS, ...) is dropped. */
 const ENV_KEEP = /^(PATH|HOME|TMPDIR|SHELL|LANG|LC_[A-Z_]+|USER|LOGNAME|TERM|[A-Z0-9_]+_API_KEY|AWS_[A-Z_]+|GOOGLE_APPLICATION_CREDENTIALS|AZURE_[A-Z_]+|GOOGLE_CLOUD_[A-Z_]+)$/;
-export function childEnv(base: NodeJS.ProcessEnv, over: { home: string; agent: string; memory: string }): NodeJS.ProcessEnv {
+export function childEnv(base: NodeJS.ProcessEnv, over: { home: string; agent: string; memory: string; auth?: { key?: string; plain?: boolean } }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined && ENV_KEEP.test(k)) env[k] = v;
+  // The encrypted store's key (or plain-mode flag) is the one PISTA_* value the child needs; it has no stdin, so it goes by env.
+  if (over.auth?.key) env.PISTA_AUTH_KEY = over.auth.key;
+  else if (over.auth?.plain) env.PISTA_AUTH_PLAIN = "1";
   return { ...env, PISTA_HOME: over.home, PI_CODING_AGENT_DIR: over.agent, PI_MEMORY_DIR: over.memory };
+}
+
+/** Auth mode for real eval children: the parent's key if it was given one, else plain mode if it asked for that. */
+function evalAuth(env: NodeJS.ProcessEnv): { key?: string; plain?: boolean } {
+  if (env.PISTA_AUTH_KEY) return { key: env.PISTA_AUTH_KEY };
+  return { plain: env.PISTA_AUTH_PLAIN === "1" };
 }
 
 /** The child currently running and the scratch dir, so a signal handler can clean up. */
@@ -504,8 +513,8 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
   const freshEnv = (dir: string): NodeJS.ProcessEnv => {
     const agent = join(dir, "agent");
     mkdirSync(agent, { recursive: true });
-    if (realDir) for (const f of ["auth.json", "models-store.json"]) if (existsSync(join(realDir, f))) cpSync(join(realDir, f), join(agent, f));
-    return childEnv(process.env, { home: join(dir, "home"), agent, memory: join(dir, "memory") });
+    if (realDir) for (const f of ["auth.json", "auth.enc.json", "models-store.json"]) if (existsSync(join(realDir, f))) cpSync(join(realDir, f), join(agent, f));
+    return childEnv(process.env, { home: join(dir, "home"), agent, memory: join(dir, "memory"), auth: realDir ? evalAuth(process.env) : undefined });
   };
   const base = (preset: Preset, task: Task, dir: string): ChildJob => ({
     mode: "run",

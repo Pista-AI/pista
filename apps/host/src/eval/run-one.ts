@@ -4,6 +4,7 @@
 // a sandbox: the agent runs with the user's OS permissions.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { CredentialStore } from "@earendil-works/pi-ai";
 import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
@@ -70,9 +71,19 @@ async function review(runtime: typeof models, ref: { provider: string; id: strin
   }
 }
 
+/** Same store the host uses; the parent hands the key over PISTA_AUTH_KEY (or PISTA_AUTH_PLAIN=1). Fake runs have neither. */
+async function childCredentials(): Promise<{ credentials?: CredentialStore }> {
+  if (job.fake) return {};
+  const { resolveAuthKeySource } = await import("../auth-key.ts");
+  const { setupCredentials } = await import("../auth-setup.ts");
+  const { piAgentDir } = await import("../pi-env.ts");
+  const { credentials } = await setupCredentials(await resolveAuthKeySource(process.env, process.stdin), piAgentDir(), () => {});
+  return credentials ? { credentials } : {};
+}
+
 if (job.mode === "check-model") {
   const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
-  const models = await ModelRuntime.create({ allowModelNetwork: false });
+  const models = await ModelRuntime.create({ allowModelNetwork: false, ...(await childCredentials()) });
   registerNebiusProvider(models);
   process.exit(models.getModel(job.model!.provider, job.model!.id) ? 0 : 1);
 }
@@ -86,7 +97,7 @@ const result: RunResult = { preset: job.preset.name, task: job.task, run: 1, pas
 const started = Date.now();
 const faux = job.fake ? await fauxModels() : undefined;
 // Built-in providers are registered by the host at startup (index.ts), not by ModelRuntime itself.
-const models = faux?.models ?? (await ModelRuntime.create({ allowModelNetwork: true }));
+const models = faux?.models ?? (await ModelRuntime.create({ allowModelNetwork: true, ...(await childCredentials()) }));
 const windowCap = job.preset.config.contextWindowCap;
 if (windowCap !== undefined && (typeof windowCap !== "number" || !Number.isInteger(windowCap) || windowCap <= 0)) throw new Error(`preset ${job.preset.name}: contextWindowCap must be a positive integer`);
 if (!faux) registerNebiusProvider(models, windowCap);
