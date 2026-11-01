@@ -93,3 +93,11 @@ test("a real invoice-fetch thread from create() refuses reads outside its projec
   assert.equal((await call("read", { path: "/etc/hosts" })).block, true);
   assert.equal(await call("read", { path: "invoices/manifest.json" }), undefined);
 });
+
+test("invoice role: lists logins through browser_logins before any search, and keeps the secrets rules", () => {
+  assert.ok(INVOICE_FETCH_ROLE.tools.includes("browser_logins"));
+  const p = INVOICE_FETCH_ROLE.prompt ?? "";
+  assert.match(p, /call browser_logins once/);
+  assert.match(p, /before any web search/);
+  assert.match(p, /Never type, store, repeat or ask for a password/);
+});
