@@ -24,7 +24,8 @@ import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { decidePanePermission, isWebUrl, sameOrigin } from "./web-policy.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
 
-const DEV_URL = process.env.PISTA_DEV_URL;
+// A packaged build never honours PISTA_DEV_URL: it always loads its own host and gets the packaged CSP.
+const DEV_URL = app.isPackaged ? undefined : process.env.PISTA_DEV_URL;
 const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
 
 let mainWindow: BrowserWindow | null = null;
@@ -194,8 +195,13 @@ interface DownloadResult {
   urlChain: string[];
 }
 
+function downloadPolicyContext() {
+  return { home: homedir(), protectedDirs: protectedDirsFor({ userData: app.getPath("userData"), clientHome: CLIENT_HOME }), sealedDirs: sealedDirsFor({ home: homedir(), clientHome: CLIENT_HOME, env: process.env }) };
+}
+
 interface DownloadRequest {
   path: string;
+  root: string;
   taken: boolean;
   started: Promise<void>;
   markStarted: () => void;
@@ -329,7 +335,13 @@ class BrowserPane {
       armed.taken = true;
       armed.item = item;
       armed.markStarted();
-      item.setSavePath(armed.path);
+      // The folder may have changed since arming (a directory swapped for a link): check again right before the file is written.
+      const savePath = confineDownload(armed.path, armed.root, downloadPolicyContext());
+      if (!savePath) {
+        item.cancel();
+        return armed.fail(new Error(DOWNLOAD_REFUSED));
+      }
+      item.setSavePath(savePath);
       item.once("done", (_e, state) =>
         state === "completed" ? armed.finish({ bytes: item.getReceivedBytes(), contentType: item.getMimeType() || undefined, url: item.getURL(), urlChain: item.getURLChain() }) : armed.fail(new Error(`download failed: ${state}`)),
       );
@@ -338,11 +350,12 @@ class BrowserPane {
 
   /** `root` is the thread's project folder; the file must land strictly inside it (see download-policy.ts). Refusals return a fixed message. */
   armDownload(requested: string, root: string, url?: string): { error: string } | undefined {
-    const savePath = confineDownload(requested, root, { home: homedir(), protectedDirs: protectedDirsFor({ userData: app.getPath("userData"), clientHome: CLIENT_HOME }), sealedDirs: sealedDirsFor({ home: homedir(), env: process.env }) });
+    const savePath = confineDownload(requested, root, downloadPolicyContext());
     if (!savePath) return { error: DOWNLOAD_REFUSED };
-    if (this.armed) throw new Error("another download is in progress");
+    if (this.armed) return { error: "another download is in progress" };
     const request = {} as DownloadRequest;
     request.path = savePath;
+    request.root = root;
     request.taken = false;
     request.started = new Promise<void>((resolve) => (request.markStarted = resolve));
     request.result = new Promise((resolve, reject) => ((request.finish = resolve), (request.fail = reject)));
@@ -539,7 +552,7 @@ async function createWindow() {
   // The UI page reaches the preload bridge, so script injection there must not run: set the policy on the UI's own document responses only
   // (the pane lives in the persist:pista-browser session and is untouched).
   const uiOrigin = new URL(uiUrl).origin;
-  const csp = buildUiCsp(uiUrl, { dev: Boolean(DEV_URL) });
+  const csp = buildUiCsp(uiUrl, { dev: Boolean(DEV_URL) && !app.isPackaged });
   win.webContents.session.webRequest.onHeadersReceived({ urls: [`${uiOrigin}/*`] }, (details, callback) => {
     if (details.resourceType !== "mainFrame" || details.webContentsId !== win.webContents.id) return callback({});
     const headers = Object.fromEntries(Object.entries(details.responseHeaders ?? {}).filter(([k]) => k.toLowerCase() !== "content-security-policy"));
