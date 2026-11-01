@@ -126,6 +126,7 @@ const PAGE_CHANGING_TOOLS = new Set([
   "browser_select",
   "browser_press",
   "browser_download",
+  "browser_login",
   "browser_eval",
   "browser_choose", // PI_BROWSER_CHOOSE=1
   "browser_fill", // PI_BROWSER_FILL=1
@@ -195,7 +196,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
 const WRITE_VERBS = /(mutation|create|update|delete|remove|save|apply|promote|release|publish|write|set_|select)/i;
 
 /** `alwaysAllowed` is shared with the host so approvals it asks for itself (the goal check) honour "Always allow" too. */
-export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, alwaysAllowed = new Set<string>(), autoAllow?: (toolName: string, input: Record<string, unknown>) => boolean): InlineExtension {
+export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, alwaysAllowed = new Set<string>(), autoAllow?: (toolName: string, input: Record<string, unknown>) => boolean, block?: (toolName: string, input: Record<string, unknown>) => string | undefined): InlineExtension {
   /** Set by a plain decline: the rest of this run may only reply, not act. Cleared when the user prompts again. */
   let declined = false;
 
@@ -204,7 +205,8 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
     factory: (pi: ExtensionAPI) => {
       const isWrite = (toolName: string): string | undefined => {
         if (["bash", "powershell", "edit", "write"].includes(toolName)) return `${toolName} can change files or run commands`;
-        if (["browser_click", "browser_type", "browser_select", "browser_press", "browser_eval", "browser_choose", "browser_fill"].includes(toolName)) {
+        if (["browser_click", "browser_type", "browser_select", "browser_press", "browser_eval", "browser_choose", "browser_fill", "browser_login"].includes(toolName)) {
+          // browser_login: the ask makes an injection-driven sign-in visible to the owner.
           return "interacts with the page in the browser";
         }
         if (toolName.startsWith("mcp__")) {
@@ -221,6 +223,9 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
       });
 
       pi.on("tool_call", async (event) => {
+        // A role's hard refusal holds in every approval mode and is never asked about.
+        const refused = block?.(event.toolName, event.input as Record<string, unknown>);
+        if (refused) return { block: true, reason: refused };
         // After a plain decline, no tool runs until the user speaks again; persisting stops the run.
         if (declined) {
           return { block: true, terminate: true, reason: "Tools are paused because the user declined an action. Reply to the user instead." };

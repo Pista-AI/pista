@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fixture sign in, two steps</title>
+<h1>Sign in</h1>
+<form id="f">
+  <label>Username <input name="username" type="text" autocomplete="username"></label>
+  <label id="pw" hidden>Password <input name="password" type="password" autocomplete="current-password"></label>
+  <button id="go" type="submit">Next</button>
+</form>
+<script>
+  const f = document.getElementById("f");
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (document.getElementById("pw").hidden) {
+      if (!f.username.value) return;
+      document.getElementById("pw").hidden = false;
+      document.getElementById("go").textContent = "Sign in";
+      f.password.focus();
+    } else if (f.password.value) {
+      location.href = "welcome.html?user=" + encodeURIComponent(f.username.value);
+    }
+  });
+</script>

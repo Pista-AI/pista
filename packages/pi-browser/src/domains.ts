@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
  * Matching runs on the parsed URL hostname (lower case, punycode by the URL parser, trailing dots stripped), never on the raw string:
  * `https://allowed.com@evil.com/` and `https://evil.com\@allowed.com` both have the host evil.com.
  */
-import type { BrowserDriver, PageState } from "./driver.ts";
+import type { BrowserDriver, PageState, SavedLoginMeta } from "./driver.ts";
 
 export interface DomainRules {
   /** When set, only these hosts may be opened. Entries: an exact host, or `*.example.com` (subdomains only, not example.com itself). */
@@ -51,6 +51,11 @@ export function checkUrl(url: string, rules: DomainRules): string | undefined {
   if (rules.deniedDomains?.some((p) => hostMatches(host, p))) return `${host} is on the denied list`;
   if (rules.allowedDomains && !rules.allowedDomains.some((p) => hostMatches(host, p))) return `${host} is not on the allowed list`;
   return undefined;
+}
+
+/** The saved login whose id or label is exactly `site`. */
+export function findLogin(logins: SavedLoginMeta[], site: string): SavedLoginMeta | undefined {
+  return logins.find((l) => l.id === site) ?? logins.find((l) => l.label === site);
 }
 
 const ERROR_PAGE = "chrome-error://chromewebdata/";
@@ -119,6 +124,15 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
             refuse(denied, false);
           }
           return saved;
+        }
+      : undefined,
+    loginList: inner.loginList?.bind(inner),
+    // The saved site must pass the domain rules before the app types anything on it.
+    loginFill: inner.loginFill && inner.loginList
+      ? async (site) => {
+          const login = findLogin(await inner.loginList!(), site);
+          if (login && checkUrl(login.origin, rules)) return { ok: false, note: "That site is blocked by policy." };
+          return inner.loginFill!(site);
         }
       : undefined,
     setActivity: inner.setActivity?.bind(inner),

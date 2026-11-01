@@ -85,7 +85,9 @@ export function classifyTool(toolName: string, input: unknown): { kind: ToolKind
         domain = new URL(args.url).hostname;
       } catch {}
     }
-    return { kind: "browser", attrs: { "browser.action": toolName.slice("browser_".length), "url.domain": domain } };
+    // The site is a label the owner chose, never a secret.
+    const site = toolName === "browser_login" && typeof args.site === "string" ? args.site : undefined;
+    return { kind: "browser", attrs: { "browser.action": toolName.slice("browser_".length), "url.domain": domain, ...(site ? { "login.site": site } : {}) } };
   }
   if (isShellTool(toolName)) return { kind: "shell", attrs: { "shell.command_name": typeof args.command === "string" ? commandName(args.command) : undefined } };
   return { kind: INTERNAL_TOOLS.includes(toolName) ? "internal" : "builtin", attrs: {} };

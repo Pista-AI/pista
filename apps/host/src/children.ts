@@ -80,6 +80,15 @@ export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((t
   return (toolName, input) => toolName === "write" && typeof input.path === "string" && (isInvoicesPath(cwd, input.path) || isInvoicesPath(cwd, input.path, ".pista"));
 }
 
+/** The standalone invoice-fetch thread reads only inside its project folder (no `bash`, so `read` and `ls` are its only way to see files). Refused outright, not asked. */
+export function invoiceReadGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => string | undefined) | undefined {
+  if (kind.role !== "invoice-fetch" || kind.hasParent || !cwd) return undefined;
+  return (toolName, input) =>
+    (toolName === "read" || toolName === "ls") && typeof input.path === "string" && !isInvoicesPath(cwd, input.path, ".")
+      ? "The invoice job only reads inside its project folder."
+      : undefined;
+}
+
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
 export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExtension[] {
   const { role, restricted, isChild } = kind;
@@ -112,7 +121,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     contextPruneExtension(store),
     // Children share the parent's cwd, so only role-less threads may write the plan file.
     ...(role ? [] : [planTool({ ...deps.plan, record: deps.record })]),
-    watch(approvalExtension(hub, store, ref, deps.alwaysAllowed, invoiceWriteGate(kind, deps.cwd)), "approval"),
+    watch(approvalExtension(hub, store, ref, deps.alwaysAllowed, invoiceWriteGate(kind, deps.cwd), invoiceReadGate(kind, deps.cwd)), "approval"),
     // Last, so it sees the input as every other extension left it and nothing runs after its block.
     ...(store.toolRules ? [policyGateExtension(store.toolRules, tools ? (name, input, denial, id) => tools.decision(id, name, input, "deny", { source: "policy", rule: denial.rule }) : undefined)] : []),
     // After every gate, so it only sees calls that were allowed.
