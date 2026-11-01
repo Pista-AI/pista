@@ -80,10 +80,6 @@ export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((t
   return (toolName, input) => toolName === "write" && typeof input.path === "string" && (isInvoicesPath(cwd, input.path) || isInvoicesPath(cwd, input.path, ".pista"));
 }
 
-function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
-  return Boolean(role && deps.store.config.browserEnabled !== false && roleOf(role, deps.roles).tools.some((t) => t.startsWith("browser_")));
-}
-
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
 export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExtension[] {
   const { role, restricted, isChild } = kind;
