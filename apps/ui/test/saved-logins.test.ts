@@ -23,3 +23,17 @@ test("hostOf extracts the host", () => {
   assert.equal(hostOf("http://127.0.0.1:8765"), "127.0.0.1:8765");
   assert.equal(hostOf("weird"), "weird");
 });
+
+test("local hosts in other forms are accepted", () => {
+  assert.equal(validateLoginInput({ ...ok, loginUrl: "http://[::1]:3000" }), null);
+  assert.equal(validateLoginInput({ ...ok, loginUrl: "HTTP://LOCALHOST" }), null);
+});
+test("other schemes and blank username are rejected", () => {
+  assert.ok(validateLoginInput({ ...ok, loginUrl: "ftp://example.com" }));
+  assert.ok(validateLoginInput({ ...ok, loginUrl: "javascript:alert(1)" }));
+  assert.ok(validateLoginInput({ ...ok, username: "   " }));
+});
+test("hostOf keeps ipv6 port and drops default port", () => {
+  assert.equal(hostOf("http://[::1]:3000"), "[::1]:3000");
+  assert.equal(hostOf("https://example.com:443"), "example.com");
+});

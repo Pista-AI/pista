@@ -2791,11 +2791,13 @@ select:focus-visible {
 }
 .login-info small {
   color: var(--text-3);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .login-confirm {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }

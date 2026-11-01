@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SavedLoginMeta } from "@pista/protocol";
 import { hostOf, validateLoginInput } from "../focused/saved-logins.ts";
 
@@ -11,27 +11,40 @@ const EMPTY = { label: "", loginUrl: "", username: "", password: "" };
  */
 export function SavedLogins() {
   const logins = window.pistaDesktop?.browser?.logins;
-  const [available, setAvailable] = useState(true);
+  const [available, setAvailable] = useState<boolean | null>(null);
   const [items, setItems] = useState<SavedLoginMeta[]>([]);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const alive = useRef(true);
 
   const refresh = async () => {
     if (!logins) return;
+    setError(null);
     try {
-      setItems(await logins.list());
+      const list = await logins.list();
+      if (alive.current) setItems(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (alive.current) setError(e instanceof Error ? e.message : String(e));
     }
   };
   useEffect(() => {
-    if (!logins) return;
-    logins.status().then((s) => setAvailable(s.available), () => setAvailable(false));
-    void refresh();
+    alive.current = true;
+    if (logins) {
+      logins.status().then(
+        (s) => alive.current && setAvailable(s.available),
+        () => alive.current && setAvailable(false),
+      );
+      void refresh();
+    }
+    return () => {
+      alive.current = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const ready = available === true;
 
   if (!logins) {
     return (
@@ -42,6 +55,7 @@ export function SavedLogins() {
     );
   }
 
+  const aria = { "aria-invalid": error ? true : undefined, "aria-describedby": error ? "login-error" : undefined };
   const set = (k: keyof typeof EMPTY) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,21 +65,25 @@ export function SavedLogins() {
     setError(null);
     try {
       await logins.save({ ...form, label: form.label.trim(), loginUrl: form.loginUrl.trim(), username: form.username.trim() });
-      setForm(EMPTY);
+      if (alive.current) setForm(EMPTY);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (alive.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   };
   const remove = async (id: string) => {
     setConfirming(null);
+    setError(null);
+    setRemoving(true);
     try {
       await logins.remove(id);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (alive.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (alive.current) setRemoving(false);
     }
   };
 
@@ -73,8 +91,8 @@ export function SavedLogins() {
     <div className="field saved-logins">
       <label>Saved logins</label>
       <span className="help">Pista signs in to these sites for you. Passwords are kept in your computer's keychain and are never shown to the AI.</span>
-      {!available && <div role="alert" className="login-error">Saved logins need an OS keychain. None is available on this system.</div>}
-      {items.length === 0 && available && <span className="help">No saved logins yet.</span>}
+      {available === false && <div role="alert" className="login-error">Pista can't store passwords safely on this computer, so saving logins is turned off.</div>}
+      {items.length === 0 && ready && <span className="help">No saved logins yet.</span>}
       {items.map((l) => (
         <div className="login-row" key={l.id}>
           <div className="login-info">
@@ -84,27 +102,27 @@ export function SavedLogins() {
           {confirming === l.id ? (
             <span className="login-confirm">
               Remove?
-              <button type="button" className="pill-btn danger" onClick={() => remove(l.id)}>Yes</button>
-              <button type="button" className="pill-btn" onClick={() => setConfirming(null)}>No</button>
+              <button type="button" className="pill-btn danger" aria-label={`Yes, remove ${l.label}`} disabled={removing} onClick={() => remove(l.id)}>Yes</button>
+              <button type="button" className="pill-btn" disabled={removing} onClick={() => setConfirming(null)}>No</button>
             </span>
           ) : (
-            <button type="button" className="pill-btn" onClick={() => setConfirming(l.id)}>Remove</button>
+            <button type="button" className="pill-btn" aria-label={`Remove ${l.label}`} disabled={removing} onClick={() => setConfirming(l.id)}>Remove</button>
           )}
         </div>
       ))}
       <form className="login-form" onSubmit={save}>
         <label htmlFor="login-label">Site name</label>
-        <input id="login-label" value={form.label} onChange={set("label")} disabled={!available || busy} maxLength={80} />
+        <input {...aria} id="login-label" value={form.label} onChange={set("label")} disabled={!ready || busy} maxLength={80} />
         <label htmlFor="login-url">Sign-in page address</label>
-        <input id="login-url" value={form.loginUrl} onChange={set("loginUrl")} placeholder="https://…" disabled={!available || busy} />
+        <input {...aria} id="login-url" value={form.loginUrl} onChange={set("loginUrl")} placeholder="https://…" disabled={!ready || busy} />
         <label htmlFor="login-user">Username or email</label>
-        <input id="login-user" value={form.username} onChange={set("username")} autoComplete="off" disabled={!available || busy} />
+        <input {...aria} id="login-user" value={form.username} onChange={set("username")} autoComplete="off" disabled={!ready || busy} />
         <label htmlFor="login-pass">Password</label>
-        <input id="login-pass" type="password" value={form.password} onChange={set("password")} autoComplete="new-password" disabled={!available || busy} />
+        <input {...aria} id="login-pass" type="password" value={form.password} onChange={set("password")} autoComplete="new-password" disabled={!ready || busy} />
         <span className="help">The password is never shown again. To change a login, save it again with the same sign-in page address.</span>
-        {error && <div role="alert" className="login-error">{error}</div>}
+        {error && <div role="alert" id="login-error" className="login-error">{error}</div>}
         <div>
-          <button type="submit" className="pill-btn primary" disabled={!available || busy}>Save login</button>
+          <button type="submit" className="pill-btn primary" disabled={!ready || busy}>Save login</button>
         </div>
       </form>
     </div>
