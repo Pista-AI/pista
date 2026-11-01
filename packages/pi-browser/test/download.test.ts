@@ -78,3 +78,26 @@ test("browser_download: needs exactly one of url or ref, and a driver that can d
   registerBrowserTools({ registerTool: (t: { name: string; execute: never }) => tools2.set(t.name, t), on: () => undefined } as never, () => noDownload, { downloadRoot: () => folder, traceDir: "off" });
   await assert.rejects(tools2.get("browser_download")!.execute("1", { url: "https://x.test/a", path: "a.pdf" }, undefined), /not supported/);
 });
+
+test("browser_download: a relative url resolves against the page url and the guard sees the absolute address", async () => {
+  const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
+  const api = { registerTool: (t: { name: string; execute: never }) => tools.set(t.name, t), on: () => undefined } as never;
+  const seen: string[] = [];
+  const page = { url: "http://127.0.0.1:8765/invoices.html", title: "", loading: false };
+  const inner = {
+    state: async () => page,
+    navigate: async () => page,
+    download: async (o: { url?: string }) => (seen.push(o.url ?? ""), { bytes: 3, urlChain: [o.url ?? ""] }),
+    setActivity: () => undefined,
+  } as unknown as BrowserDriver;
+  const run = async (rules: { allowedDomains: string[] }, url: string) => {
+    tools.clear();
+    registerBrowserTools(api, () => guardDriver(inner, rules), { downloadRoot: () => folder, traceDir: "off" });
+    return tools.get("browser_download")!.execute("1", { url, path: "inv/r.pdf" }, undefined);
+  };
+  await run({ allowedDomains: ["127.0.0.1"] }, "/invoice-1042.pdf");
+  assert.deepEqual(seen, ["http://127.0.0.1:8765/invoice-1042.pdf"]);
+  // The raw "/x.pdf" has no host, so only the resolved address can be judged: it is on a host outside the allowlist.
+  await assert.rejects(run({ allowedDomains: ["other.test"] }, "/invoice-1042.pdf"), /policy|blocked|allow/i);
+  assert.equal(seen.length, 1);
+});
