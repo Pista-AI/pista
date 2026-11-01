@@ -247,6 +247,22 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
   if (probe?.loginFill && probe.loginList) {
     pi.registerTool(
       defineTool({
+        name: "browser_logins",
+        label: "Browser: saved logins",
+        description: "List the sites the owner saved a login for: each name and sign-in address. Never shows usernames or passwords. Takes no arguments.",
+        promptSnippet: "browser_logins: list the sites with a saved login",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const d = await driver();
+          if (!d.loginList) throw new Error("browser_logins is not supported with this browser driver.");
+          const logins = (await d.loginList()).map((l) => ({ label: l.label, origin: l.origin }));
+          const r = { logins };
+          return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r };
+        },
+      }),
+    );
+    pi.registerTool(
+      defineTool({
         name: "browser_login",
         label: "Browser: sign in",
         description:
