@@ -244,6 +244,8 @@ export function describeTool(name: string, args: Record<string, unknown>): { ver
       return { verb: "Read search results", target: "" };
     case "browser_navigate":
       return { verb: "Opened", target: str(args.url) };
+    case "browser_login":
+      return { verb: "Sign in with saved login", target: str(args.site) };
     case "browser_read":
       return { verb: "Read page", target: "" };
     case "browser_screenshot":

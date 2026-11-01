@@ -6,7 +6,7 @@ import { declineCookieBanner, runPageAction, type ActionResult, type PageAction 
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
 import { registerContextPruning } from "./context.ts";
-import { guardDriver, type DomainRules } from "./domains.ts";
+import { findLogin, guardDriver, type DomainRules } from "./domains.ts";
 import type { BrowserDriver, PageState } from "./driver.ts";
 import { fillEnabled, registerFillTool } from "./fill.ts";
 import { traceTools } from "./trace.ts";
@@ -231,6 +231,45 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const saved = await d.download({ path: target, ...(url || href ? { url: url ?? href } : {}), ...(trigger ? { trigger } : {}) });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
+        },
+      }),
+    );
+  }
+  // Registered only when the driver can sign in. Hosts hand over a ready driver (not a promise), so it can be checked here.
+  const probe = (() => {
+    try {
+      const d = rawDriver();
+      return d instanceof Promise ? undefined : d;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (probe?.loginFill && probe.loginList) {
+    pi.registerTool(
+      defineTool({
+        name: "browser_login",
+        label: "Browser: sign in",
+        description:
+          "Sign in to the current page with a login the owner saved under Settings. Pass the saved login's name. The password is typed by the desktop app and never shown to you. Only works when the page is the saved site's sign-in page.",
+        promptSnippet: "browser_login: sign in with a login the owner saved",
+        parameters: Type.Object({ site: Type.String({ description: "The saved login's name" }) }),
+        execute: async (_id, { site }) => {
+          const d = await driver();
+          if (!d.loginFill || !d.loginList) throw new Error("browser_login is not supported with this browser driver.");
+          const say = (r: object) => ({ content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r });
+          const logins = await d.loginList();
+          const login = findLogin(logins, site);
+          if (!login) return say({ ok: false, note: "No saved login with that name.", saved: logins.map((l) => l.label) });
+          // Advisory, for a clear error. The binding check that matters is in the desktop app, right before typing (login-fill.ts), so a navigation after this cannot fill another origin.
+          const url = (await d.state()).url;
+          let here = "";
+          try {
+            here = new URL(url).origin;
+          } catch {}
+          if (here !== login.origin) return say({ ok: false, note: "Open the saved site's sign-in page first.", origin: login.origin });
+          d.setActivity?.("Signing in");
+          const r = await d.loginFill(site);
+          return say({ ok: r.ok, note: r.note });
         },
       }),
     );

@@ -15,7 +15,8 @@ test("a top-level thread can run as invoice-fetch: prompt, tools and gate apply,
   const { session } = liveMap<Live>(manager).get(summary.id)!;
   assert.match(session.systemPrompt, /Never open, log in to, or ask the owner to log in to a bank/);
   const tools = session.getActiveToolNames();
-  for (const t of ["read", "write", "bash", "browser_navigate", "browser_eval"]) assert.ok(tools.includes(t), t);
+  for (const t of ["read", "write", "browser_navigate", "browser_eval", "browser_login"]) assert.ok(tools.includes(t), t);
+  assert.ok(!tools.includes("bash"));
   assert.ok(!tools.includes("agent"));
   assert.equal((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "x", toolName: "edit", input: {} }))?.block, true);
 });

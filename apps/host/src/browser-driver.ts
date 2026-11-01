@@ -114,6 +114,14 @@ export class PaneBrowserDriver implements BrowserDriver {
     if (!r.download) throw new Error(r.note ?? "download failed");
     return r.download;
   }
+  async loginList() {
+    return (await this.ask({ action: "login.list" })).logins ?? [];
+  }
+  async loginFill(site: string) {
+    const r = await this.ask({ action: "login.fill", site }, 60_000);
+    if (!r.login) throw new Error(r.note ?? "sign-in failed");
+    return r.login;
+  }
   async screenshot() {
     const r = await this.ask({ action: "screenshot" });
     if (!r.image) throw new Error(r.note ?? "Screenshot unavailable.");
