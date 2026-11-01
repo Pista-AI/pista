@@ -162,3 +162,15 @@ test("safeStorageCrypto reads .result and reports the backend", async () => {
   assert.equal(c.backend(), "basic_text");
   assert.equal(await c.decrypt(await c.encrypt("x")), "x");
 });
+
+test("safeStorageCrypto: a platform where the backend query throws (macOS) still works", () => {
+  const c = safeStorageCrypto({
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => {
+      throw new Error("only available on Linux");
+    },
+    encryptStringAsync: async (t: string) => Buffer.from(t),
+    decryptStringAsync: async (b: Buffer) => ({ result: b.toString() }),
+  });
+  assert.equal(c.backend(), "unknown");
+});
