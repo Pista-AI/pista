@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { realpathLoose } from "./project-files.ts";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 
 type Entry = Record<string, unknown>;
 
 const keyOf = (e: Entry) => {
-  const amount = Math.abs(Number(e.amount));
+  const amount = Number(e.amount);
   return `${String(e.vendor ?? "").trim().toLowerCase()}|${String(e.date ?? "").trim()}|${Number.isFinite(amount) ? amount.toFixed(2) : String(e.amount ?? "")}`;
 };
 
@@ -43,14 +44,14 @@ export function mergeManifest(oldRaw: string | undefined, newRaw: string): strin
 
 /** For the standalone invoice job: a `write` to `<project>/invoices/manifest.json` is merged into the file already there, so a new run cannot drop earlier entries. Rewrites `event.input.content` in place (Pi's way to change arguments). */
 export function manifestMergeExtension(cwd: string): InlineExtension {
-  const target = resolve(cwd, "invoices", "manifest.json");
+  const target = realpathLoose(resolve(cwd, "invoices", "manifest.json"));
   return {
     name: "manifest-merge",
     factory: (pi: ExtensionAPI) => {
       pi.on("tool_call", (event) => {
         const input = event.input as { path?: unknown; content?: unknown };
         if (event.toolName !== "write" || typeof input.path !== "string" || typeof input.content !== "string") return undefined;
-        if (/^[~@]/.test(input.path) || resolve(cwd, input.path) !== target) return undefined;
+        if (/^[~@]/.test(input.path) || realpathLoose(resolve(cwd, input.path)) !== target) return undefined;
         try {
           input.content = mergeManifest(existsSync(target) ? readFileSync(target, "utf8") : undefined, input.content);
         } catch {
