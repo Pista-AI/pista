@@ -10,6 +10,8 @@ import { normalizeDomainPattern } from "@pista/pi-browser/domains";
 import { auditSection } from "./audit-policy.ts";
 import { validToolCallLimit } from "./roles.ts";
 import { isTierRef, TIER_NAME } from "./model-tiers.ts";
+import { positiveInt, validSliced } from "./harness/sliced/validate.ts";
+import { HARNESS_CONFIG_VALIDATORS } from "./harness/validators.ts";
 import { isRecord, looksLikeSecret } from "./secrets.ts";
 import { readMdmPolicy, type CommandRunner, type LstatFn } from "./policy-mdm.ts";
 
@@ -104,6 +106,8 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   defaultThinkingMode: "enum",
   orchestratorMode: "enum",
   sliced: "object",
+  harness: "string",
+  harnessConfig: "object",
   instructions: "string",
   linkTarget: "enum",
   memoryEnabled: "boolean",
@@ -145,17 +149,6 @@ const validOverride = (v: unknown): boolean =>
   (v.maxToolCalls === undefined || validToolCallLimit(v.maxToolCalls) !== undefined) &&
   (v.disabled === undefined || typeof v.disabled === "boolean");
 
-export const validSliced = (v: unknown): boolean => {
-  if (!isRecord(v) || !Object.keys(v).every((k) => ["minSlices", "maxParallel", "integrateTools", "repoSizeFraction"].includes(k))) return false;
-  const { minSlices, maxParallel, integrateTools, repoSizeFraction } = v;
-  return (
-    (minSlices === undefined || positiveInt(minSlices)) &&
-    (maxParallel === undefined || (positiveInt(maxParallel) && maxParallel <= 3)) &&
-    (integrateTools === undefined || integrateTools === "read-only" || integrateTools === "full") &&
-    (repoSizeFraction === undefined || (typeof repoSizeFraction === "number" && repoSizeFraction > 0 && repoSizeFraction <= 1))
-  );
-};
-
 /** Checks the shape of the nested settings; the top-level kind has been checked already. */
 function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "defaultModel") return isModelRef(value);
@@ -163,7 +156,9 @@ function validNested(key: keyof HostConfig, value: unknown): boolean {
   if (key === "agentRoles") return Object.entries(value as Record<string, unknown>).every(([role, v]) => ROLES.includes(role) && isRecord(v) && isModelSpec(v.model));
   if (key === "modelTiers") return !Array.isArray(value) && Object.entries(value as Record<string, unknown>).every(([name, v]) => TIER_NAME.test(name) && isRecord(v) && isNonEmpty(v.provider) && isNonEmpty(v.id));
   if (key === "agentOverrides") return Object.values(value as Record<string, unknown>).every(validOverride);
+  if (key === "harness") return isNonEmpty(value);
   if (key === "sliced") return validSliced(value);
+  if (key === "harnessConfig") return Object.entries(value as Record<string, unknown>).every(([id, v]) => isRecord(v) && (HARNESS_CONFIG_VALIDATORS[id]?.(v) ?? true));
   return true;
 }
 
@@ -181,8 +176,6 @@ const RESERVED_PROVIDER_IDS: readonly string[] = ["nebius", "llama.cpp", ...SERV
 const GATEWAY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
-
-const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 
 /** The URL without a trailing slash when it is usable, else null: https (http for local hosts only), no credentials, query or fragment. */
 function cleanBaseUrl(raw: string): string | null {
@@ -453,6 +446,32 @@ function extensionsSection(raw: unknown, warnings: string[]): ManagedPolicy["ext
   return out;
 }
 
+/** Validates the `harnesses` section; a bad entry is dropped with a warning. */
+function harnessesSection(raw: unknown, warnings: string[]): ManagedPolicy["harnesses"] {
+  if (!isRecord(raw)) {
+    warnings.push('"harnesses" must be an object, ignored');
+    return undefined;
+  }
+  for (const key of Object.keys(raw)) if (!["allow", "allowUserHarnesses"].includes(key)) warnings.push(`harnesses.${key}: unknown setting, ignored`);
+  const out: NonNullable<ManagedPolicy["harnesses"]> = {};
+  if (raw.allowUserHarnesses !== undefined) {
+    if (typeof raw.allowUserHarnesses === "boolean") out.allowUserHarnesses = raw.allowUserHarnesses;
+    else warnings.push("harnesses.allowUserHarnesses: must be a boolean, treated as true");
+  }
+  if (raw.allow !== undefined) {
+    out.allow = [];
+    if (!Array.isArray(raw.allow)) warnings.push("harnesses.allow: must be an array of strings, treated as empty (denies all non-solo harnesses)");
+    else {
+      for (const entry of raw.allow) {
+        const id = typeof entry === "string" ? entry.trim() : "";
+        if (!id) warnings.push("harnesses.allow: entry must be a non-empty string, ignored");
+        else if (!out.allow.includes(id)) out.allow.push(id);
+      }
+    }
+  }
+  return out;
+}
+
 /** Startup log suffix; empty without an `extensions` section. */
 export function extensionsSummary(policy: ManagedPolicy | null): string {
   const section = policy?.extensions;
@@ -664,7 +683,7 @@ export function parsePolicy(text: string, source: string, sourceKind: PolicySour
   }
   if (kindOf(parsed) !== "object" || (parsed as { version?: unknown }).version !== 1) return fail(`${source}: "version" must be 1`);
   const file = parsed as Record<string, unknown>;
-  for (const key of Object.keys(file)) if (!["version", "locked", "defaults", "providers", "models", "mcp", "extensions", "tools", "network", "telemetry", "browser", "updates", "audit", "retention", "policySource"].includes(key)) warnings.push(`${key}: unknown top-level key, ignored`);
+  for (const key of Object.keys(file)) if (!["version", "locked", "defaults", "providers", "models", "mcp", "extensions", "harnesses", "tools", "network", "telemetry", "browser", "updates", "audit", "retention", "policySource"].includes(key)) warnings.push(`${key}: unknown top-level key, ignored`);
   const policy: ManagedPolicy = { version: 1, locked: section(file.locked, "locked", warnings), defaults: section(file.defaults, "defaults", warnings) };
   if (file.providers !== undefined) {
     const section = providers(file.providers, warnings);
@@ -683,6 +702,10 @@ export function parsePolicy(text: string, source: string, sourceKind: PolicySour
   if (file.extensions !== undefined) {
     const section = extensionsSection(file.extensions, warnings);
     if (section) policy.extensions = section;
+  }
+  if (file.harnesses !== undefined) {
+    const section = harnessesSection(file.harnesses, warnings);
+    if (section) policy.harnesses = section;
   }
   if (file.tools !== undefined) policy.tools = toolsSection(file.tools, warnings);
   const problems: string[] = [];

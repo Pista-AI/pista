@@ -19,7 +19,11 @@ import { resolveRoleModel } from "./model-tiers.ts";
 import { availableRoles, isRestrictedRole, orchestratorGateExtension, orchestratorTools, ROLES, type RoleMap, roleGateExtension, roleOf } from "./roles.ts";
 import { modelRef } from "./models.ts";
 import type { Harness, HarnessContext } from "./harness/types.ts";
-import { slicedHarness } from "./harness/sliced.ts";
+import { harnessSource, resolveHarness } from "./harness/registry.ts";
+import { harnessIdOf, selectedByPolicy } from "./harness/select.ts";
+import { harnessDecision } from "./harness/gate.ts";
+import { type AuditSink, noopAudit } from "./audit.ts";
+import { emitHarnessDecision, scopeAudit } from "./audit-events.ts";
 import { stateExtension } from "./state.ts";
 import { agentToolExtension, createAgentRunner, type ChildThreads } from "./subagent.ts";
 import type { LiveThread } from "./threads.ts";
@@ -40,6 +44,8 @@ export interface ThreadKind {
   /** Harness of a top-level thread in a harness-backed mode (today "sliced"); absent otherwise. */
   harness?: Harness;
 }
+
+const warnedHarnesses = new Set<string>();
 
 export interface ExtensionDeps {
   store: ConfigStore;
@@ -131,6 +137,8 @@ export class Children {
     private host: ChildrenHost,
     /** Roles of a project's threads; defaults to the built-ins. */
     private rolesFor: (projectId: string) => RoleMap = () => ROLES,
+    /** Where refused harnesses are reported. */
+    private audit: AuditSink = noopAudit,
   ) {}
 
   /** A child's parent: recorded in threadMeta before its first load, or taken from the session file's parent link. */
@@ -143,12 +151,40 @@ export class Children {
     return Boolean(this.store.getThreadMeta(threadId)?.role || this.parentOf(threadId));
   }
 
+  /** The configured harness when it is not solo, resolves and the managed policy allows it; an unknown or refused id warns once and runs solo. */
+  private harnessOf(threadId: string): Harness | undefined {
+    const config = this.store.config;
+    const id = harnessIdOf(config);
+    if (id === "solo") return undefined;
+    const harness = resolveHarness(id);
+    if (!harness) {
+      if (!warnedHarnesses.has(id)) {
+        warnedHarnesses.add(id);
+        console.warn(`[pista-host] unknown harness ${id}; running solo`);
+      }
+      return undefined;
+    }
+    const selected = selectedByPolicy(config, this.store.policy.locked);
+    const decision = harnessDecision({ id, policy: this.store.managedPolicy ?? undefined, selectedByPolicy: selected, source: harnessSource(id) });
+    if (decision.allow) return harness;
+    const key = `${id}:${decision.rule}`;
+    if (!warnedHarnesses.has(key)) {
+      warnedHarnesses.add(key);
+      console.warn(`[pista-host] harness ${id} is not allowed by policy (${decision.rule}); running solo`);
+    }
+    emitHarnessDecision(scopeAudit(this.audit, () => ({ "session.id": threadId })), id, decision.rule);
+    return undefined;
+  }
+
   /** A thread keeps its role across restarts: it is recorded in threadMeta before the first load. */
   kindOf(threadId: string, roles?: RoleMap): ThreadKind {
     const role = this.store.getThreadMeta(threadId)?.role;
     const isChild = this.isChildThread(threadId);
-    const orchestrator = isChild ? undefined : orchestratorTools(this.store.config.orchestratorMode);
-    const mode = isChild ? undefined : this.store.config.orchestratorMode;
+    const harness = isChild ? undefined : this.harnessOf(threadId);
+    const configured = this.store.config.orchestratorMode;
+    // A non-solo harness replaces the orchestrator modes; "sliced" without its harness (unknown id) runs solo.
+    const mode = isChild ? undefined : harness ? (harness.id === "sliced" ? "sliced" : undefined) : configured === "sliced" ? undefined : configured;
+    const orchestrator = orchestratorTools(mode);
     return {
       role,
       restricted: orchestrator !== undefined || (role !== undefined && isRestrictedRole(role, roles)),
@@ -156,7 +192,7 @@ export class Children {
       ...(this.parentOf(threadId) ? { hasParent: true } : {}),
       ...(orchestrator ? { orchestratorTools: orchestrator } : {}),
       ...(mode && mode !== "off" ? { orchestratorMode: mode } : {}),
-      ...(mode === "sliced" ? { harness: slicedHarness } : {}),
+      ...(harness ? { harness } : {}),
     };
   }
 

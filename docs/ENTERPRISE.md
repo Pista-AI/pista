@@ -285,6 +285,10 @@ Limits:
 - An npm package installs with its lifecycle scripts, and a git or npm package runs code with the employee's permissions. Review what you pin.
 - Pi fetches npm and git packages over the network at first use, into `<agent-dir>/npm` and `<agent-dir>/git`. Machines without access to the registry or git host need the packages mirrored or preinstalled.
 
+## Harnesses
+
+The `harnesses` section (`allow`, `allowUserHarnesses`) decides which agent harnesses may run; a harness shipped as a package also has to be in `extensions.packages`. See [harness.md](harness.md#policy).
+
 ## Tool rules
 
 The `tools` section restricts which tools, shell commands, MCP servers and tools, and skills the agent may use. The host enforces it on every tool call, whatever the user installs.

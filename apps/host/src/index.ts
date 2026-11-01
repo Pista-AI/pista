@@ -34,6 +34,7 @@ import { readMemory } from "./memory.ts";
 import { createLlama } from "./llama.ts";
 import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
 import { activeBrowserDriverConfig, describeBrowserDriver } from "./browser-driver.ts";
+import { resetHarnessPackageCache } from "./harness/packages.ts";
 
 const VERSION = resolveAppVersion(process.env, (message) => console.warn(`[pista-host] ${message}`));
 const PORT = Number(process.env.PISTA_HOST_PORT ?? DEFAULT_HOST_PORT);
@@ -132,7 +133,8 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     store.assertUnlocked(patch);
     const config = store.patchConfig(patch, { userSet: true });
     hub.emit({ type: "config.changed", config, configSources: store.sources() });
-    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
+    resetHarnessPackageCache();
+    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.harness !== undefined || patch.harnessConfig !== undefined || patch.sliced !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
     return config;
   },
 

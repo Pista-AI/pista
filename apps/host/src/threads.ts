@@ -42,6 +42,10 @@ import { deleteFile } from "./retention.ts";
 import { autoLevel, fallbackNeedsThinking, judgeNeedsThinking, recentHistory } from "./thinking.ts";
 
 import type { Hub } from "./hub.ts";
+import { harnessConfigOf, harnessIdOf, selectedByPolicy, threadTools } from "./harness/select.ts";
+import { loadPackageHarness, resetHarnessPackageCache } from "./harness/packages.ts";
+import { resolveHarness } from "./harness/registry.ts";
+import { piAgentDir } from "./pi-env.ts";
 
 /** Pi's model object (it carries more than the provider and id, e.g. baseUrl). */
 type PiModel = NonNullable<AgentSession["model"]>;
@@ -171,6 +175,7 @@ export class ThreadManager {
         summaries: () => this.summaries(),
       },
       (projectId) => this.agentRoles.forProject(this.store.project(projectId).path),
+      this.audit,
     );
   }
 
@@ -270,6 +275,26 @@ export class ThreadManager {
     decisions.restore();
     const alwaysAllowed = new Set<string>();
     const roles = this.agentRoles.forProject(project.path);
+    // A harness id that is not built in may come from an installed Pi package. A package that Pi's loader has not
+    // installed yet (very first thread) falls back to solo; kindOf stays sync. Later threads find it.
+    const harnessId = harnessIdOf(this.store.config);
+    if (!resolveHarness(harnessId) && !this.children.isChildThread(ref.threadId)) {
+      try {
+        const sync = this.store.packageSync();
+        const managedPackages = [...new Set([...(sync.rules?.packages ?? []), ...sync.previous])];
+        await loadPackageHarness(harnessId, {
+          cwd: project.path,
+          agentDir: piAgentDir(),
+          projectTrusted: resolveProjectTrust(project.path, this.store.projects, WORKSPACE_DIR).trusted,
+          managedPackages,
+          policy: this.store.managedPolicy ?? undefined,
+          selectedByPolicy: selectedByPolicy(this.store.config, this.store.policy.locked),
+          audit: scopeAudit(this.audit, () => ({ "session.id": ref.threadId, "project.id": projectId })),
+        });
+      } catch (error) {
+        console.warn(`[pista-host] harness package lookup failed: ${(error as Error).message}; running solo`);
+      }
+    }
     const kind = this.children.kindOf(ref.threadId, roles);
     const { role, restricted } = kind;
     const cwd = role ? sessionManager.getCwd() : project.path;
@@ -282,12 +307,13 @@ export class ThreadManager {
     // `extensionsFor` adds the shared runner.
     const harnessHost = {
       cwd,
-      config: <T,>() => this.store.config.sliced as T | undefined,
+      config: <T,>() => harnessConfigOf(this.store.config, kind.harness?.id ?? "solo") as T | undefined,
       windowCap: () => this.store.config.contextWindowCap,
       readOnlyTools: READ_ONLY_TOOLS,
       state: { read: <T,>(entryKind: string) => readCustomEntry<T>(sessionManager, entryKind) },
     };
     const harnessPrompt = kind.harness?.prompt?.(harnessHost);
+    const topTools = threadTools(kind, harnessHost);
     const session = await buildSession({
       cwd,
       projectTrusted: trust.trusted,
@@ -301,7 +327,7 @@ export class ThreadManager {
       ...(this.store.toolRules ? { skillAllowed: (name: string) => this.store.toolRules!.skillAllowed(name) } : {}),
       sessionManager,
       // The orchestrator allowlist is only ever set for top-level threads, so it takes precedence over any role.
-      ...(kind.orchestratorTools ? { tools: kind.orchestratorTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
+      ...(topTools ? { tools: topTools } : role && roleOf(role, roles).tools.length ? { tools: roleOf(role, roles).tools } : {}),
       appendSystemPrompt: [systemPrompt(this.store), ...(role ? [rolePrompt(role, roles)] : []), ...(kind.orchestratorMode && !kind.harness ? [orchestratorPrompt(kind.orchestratorMode)] : []), ...(harnessPrompt ? [harnessPrompt] : [])],
       additionalExtensionPaths: restricted ? [] : bundledExtensionPaths(this.store.config),
       extensionFactories: extensionsFor(kind, {
@@ -319,6 +345,8 @@ export class ThreadManager {
         ...(toolAudit ? { toolAudit } : {}),
       }),
     });
+    // Pi installs missing packages while building a session, so forget negative harness lookups; the next thread re-resolves.
+    resetHarnessPackageCache();
     // A restored session keeps the model Pi saved with it; move it off one the policy has since disallowed.
     const restored = modelRef(session.model);
     if (restored && restrictsModels(this.store.managedPolicy) && !isModelAllowed(this.store.managedPolicy, restored)) {

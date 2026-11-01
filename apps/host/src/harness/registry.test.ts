@@ -38,3 +38,10 @@ test("solo harness contributes no prompt, tools or extension", () => {
 test("an unknown harness id resolves to undefined", () => {
   assert.equal(resolveHarness("nope"), undefined);
 });
+
+test("threadTools prefers the harness allowlist, then orchestratorTools, else none", async () => {
+  const { threadTools } = await import("./select.ts");
+  assert.deepEqual(threadTools({ harness: { id: "x", tools: () => ["read"] }, orchestratorTools: ["a"] }, host), ["read"]);
+  assert.deepEqual(threadTools({ harness: { id: "x" }, orchestratorTools: ["a"] }, host), ["a"]);
+  assert.equal(threadTools({}, host), undefined);
+});

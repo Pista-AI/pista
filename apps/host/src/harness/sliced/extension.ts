@@ -1,9 +1,9 @@
 import { defineTool, type ExtensionAPI, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { HostConfig } from "@pista/protocol";
 import { Type } from "typebox";
-import { READ_ONLY_TOOLS } from "../roles.ts";
-import { ENTRY } from "../session.ts";
-import { clip } from "../text.ts";
+import { READ_ONLY_TOOLS } from "../../roles.ts";
+import { ENTRY } from "../../session.ts";
+import { clip } from "../../text.ts";
 import { validateSlices, type SliceBoard, type SliceStatus } from "./board.ts";
 import { decide, resolveSlicedConfig } from "./decide.ts";
 import { estimateRepoTokens } from "./estimate.ts";
