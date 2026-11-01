@@ -13,7 +13,7 @@ import {
 import type { ManagedPolicy, ModelRef } from "@pista/protocol";
 import { capModel } from "./models.ts";
 import { piAgentDir } from "./pi-env.ts";
-import type { SliceBoard } from "./sliced/board.ts";
+import type { SliceBoard } from "./harness/sliced/board.ts";
 
 export interface BuildSessionOptions {
   cwd: string;

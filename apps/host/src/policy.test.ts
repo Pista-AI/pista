@@ -385,3 +385,13 @@ test("sliced settings are validated", () => {
     assert.equal(locked(bad)?.sliced, undefined, JSON.stringify(bad));
   }
 });
+
+test("harnessConfig is validated per harness", () => {
+  const locked = (harnessConfig: unknown) => load(JSON.stringify({ version: 1, locked: { harness: "sliced", harnessConfig } })).policy?.locked;
+  assert.equal(locked({})?.harness, "sliced");
+  const good = { sliced: { minSlices: 2, maxParallel: 3 }, other: { anything: true } };
+  assert.deepEqual(locked(good)?.harnessConfig, good);
+  for (const bad of [{ sliced: { bogus: 1 } }, { sliced: { minSlices: 0 } }, { sliced: "x" }, { other: 1 }, { other: [] }, [], "x"]) {
+    assert.equal(locked(bad)?.harnessConfig, undefined, JSON.stringify(bad));
+  }
+});

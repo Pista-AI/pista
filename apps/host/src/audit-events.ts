@@ -101,6 +101,11 @@ export function emitDecision(audit: AuditSink, toolName: string, input: unknown,
   });
 }
 
+/** A harness the policy refused (never emitted for allowed ones). */
+export function emitHarnessDecision(audit: AuditSink, harnessId: string, rule: string, packageSource?: string): void {
+  safe(() => audit.emit("pista.harness.decision", { "harness.id": harnessId, decision: "deny", "decision.rule": rule, "decision.source": "policy", ...(packageSource ? { "harness.package": packageSource } : {}) }));
+}
+
 export function emitPrompt(audit: AuditSink, text: string, queued = false): void {
   safe(() => audit.emit("pista.prompt", { "prompt.length": text.length, ...(queued ? { "prompt.queued": true } : {}) }, audit.includePrompts ? { body: String(scrub(text, audit.secrets)) } : undefined));
 }
