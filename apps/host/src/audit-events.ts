@@ -80,7 +80,7 @@ export function classifyTool(toolName: string, input: unknown): { kind: ToolKind
   if (mcp) return { kind: "mcp", attrs: { "mcp.server": mcp.server, "mcp.tool": mcp.tool } };
   if (toolName.startsWith("browser_")) {
     let domain: string | undefined;
-    if (toolName === "browser_navigate" && typeof args.url === "string") {
+    if ((toolName === "browser_navigate" || toolName === "browser_download") && typeof args.url === "string") {
       try {
         domain = new URL(args.url).hostname;
       } catch {}

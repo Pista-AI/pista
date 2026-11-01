@@ -710,6 +710,10 @@ export type BrowserAction = (
   | { action: "input"; event: BrowserInput }
   | { action: "back" }
   | { action: "reload" }
+  /** Arms the next download of the pane to save at `path` (absolute); with `url` it also starts that download using the pane's session. */
+  | { action: "download.arm"; path: string; url?: string }
+  /** Resolves with the armed download's result once it completed. Rejects when none started in time or it failed. */
+  | { action: "download.wait" }
 ) & { activity?: string };
 
 export interface BrowserResult {
@@ -719,6 +723,7 @@ export interface BrowserResult {
   text?: string;
   value?: unknown;
   image?: { data: string; mimeType: string };
+  download?: { bytes: number; contentType?: string; url?: string; urlChain?: string[] };
   note?: string;
 }
 

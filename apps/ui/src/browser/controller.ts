@@ -227,6 +227,9 @@ class BrowserController {
       case "screenshot":
         showNotice(id, "The agent can't take screenshots in the web preview.");
         throw new Error("Screenshots need the desktop shell (native webview capture).");
+      case "download.arm":
+      case "download.wait":
+        throw new Error("Downloads need the desktop shell.");
       case "input":
         // No trusted input in an iframe; the driver falls back to DOM events.
         return { ...this.stateOf(id), value: false };
@@ -273,6 +276,13 @@ class BrowserController {
         return { value: b.input ? await b.input(req.event) : false };
       case "eval":
         return { value: serialize(await b.evaluate(req.script)) };
+      case "download.arm":
+        if (!b.armDownload) throw new Error("This desktop build cannot save downloads.");
+        await b.armDownload(req.path, req.url);
+        return {};
+      case "download.wait":
+        if (!b.waitDownload) throw new Error("This desktop build cannot save downloads.");
+        return { download: await b.waitDownload() };
     }
   }
 
