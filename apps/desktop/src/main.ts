@@ -402,16 +402,25 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
       getURL: () => wc.getURL(),
       runInPage: (code) => wc.executeJavaScriptInIsolatedWorld(LOGIN_WORLD_ID, [{ code }]),
       insertText: (text) => wc.insertText(text),
+      // Per the sendInputEvent docs: keyDown/keyUp carry the key name, char carries the character.
+      // Verified live in a later slice.
       pressEnter: async () => {
-        for (const type of ["keyDown", "char", "keyUp"] as const) wc.sendInputEvent({ type, keyCode: "Return" });
+        wc.focus();
+        wc.sendInputEvent({ type: "keyDown", keyCode: "Enter" });
+        wc.sendInputEvent({ type: "char", keyCode: "\r" });
+        wc.sendInputEvent({ type: "keyUp", keyCode: "Enter" });
       },
       onNavigate: (cb) => {
-        const handler = (_e: unknown, url: string) => cb(url);
-        wc.on("did-navigate", handler);
-        wc.on("did-navigate-in-page", handler);
+        // did-navigate is main-frame only; did-navigate-in-page also fires for subframes, which are ignored.
+        const onMain = (_e: unknown, url: string) => cb(url);
+        const onInPage = (_e: unknown, url: string, isMainFrame: boolean) => {
+          if (isMainFrame) cb(url);
+        };
+        wc.on("did-navigate", onMain);
+        wc.on("did-navigate-in-page", onInPage);
         return () => {
-          wc.removeListener("did-navigate", handler);
-          wc.removeListener("did-navigate-in-page", handler);
+          wc.removeListener("did-navigate", onMain);
+          wc.removeListener("did-navigate-in-page", onInPage);
         };
       },
     },
@@ -419,9 +428,11 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   // Only the app UI may reach the vault; pages loaded in the browser pane must not.
   const guarded = (channel: string, run: (...args: any[]) => Promise<unknown>) =>
     ipcMain.handle(channel, async (event, ...args) => {
-      if (event.sender !== owner) return { error: "not allowed" };
+      if (event.sender !== owner || event.senderFrame !== owner.mainFrame) return { error: "not allowed" };
       // Failures travel as values (like waitDownload); messages here never contain secrets.
-      return run(...args).catch((e: Error) => ({ error: e.message }));
+      return Promise.resolve()
+        .then(() => run(...args))
+        .catch((e: Error) => ({ error: e.message }));
     });
   guarded("logins:status", () => vault.status());
   guarded("logins:list", () => vault.list());

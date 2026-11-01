@@ -2,6 +2,12 @@
  * Fills a saved login into the browser pane. The secret is bound to the origin it was saved for:
  * the pane URL is checked before every step and again right before the password is typed.
  * The password is typed with insertText, never put into a script, and never logged or returned.
+ *
+ * Remaining race: between the last check (focus is on the intended field) and insertText running
+ * in the page's process, a page script could still move focus. The window is a few milliseconds
+ * and the origin is the saved one, so only that site's own scripts could exploit it.
+ * After the password is submitted the page may legitimately redirect anywhere (SSO), so polling
+ * then is read-only and no longer origin-bound; nothing is typed after that point.
  */
 import type { SavedLoginMeta } from "./logins.js";
 
@@ -41,21 +47,28 @@ interface Found {
   username: boolean;
   password: boolean;
   otp: boolean;
-  submit: boolean;
+  active: boolean;
 }
 
-/** Returns only booleans. With a field name it also focuses that field. Top document only. */
-const LOCATOR = `(function (focus) {
-  var OTP = /otp|one.?time|2fa|verification|mfa|totp/i;
+/** Name, id and autocomplete of a code field; placeholder and aria-label use the looser PROMPT form. */
+export const OTP_ATTRS = /(^|[^a-z])(otp|2fa|mfa|totp)([^a-z]|$)|one.?time|verification.?code|security.?code/i;
+export const OTP_PROMPT = /(6|six).?digit|verification.?code|security.?code|one.?time/i;
+
+/** Returns only booleans. With a field name it focuses that field, or with verify only reports focus. Top document only. */
+const LOCATOR = `(function (focus, verify) {
+  var OTP_ATTRS = ${OTP_ATTRS.toString()};
+  var OTP_PROMPT = ${OTP_PROMPT.toString()};
   var USER = /user|login|email|mail/i;
   function visible(el) {
     var r = el.getBoundingClientRect();
     var s = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !el.disabled && !el.readOnly;
+    var onscreen = r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
+    return r.width > 0 && r.height > 0 && onscreen && s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0" && !el.disabled && !el.readOnly;
   }
   function isOtp(el) {
     var ac = el.getAttribute("autocomplete") || "";
-    return ac === "one-time-code" || OTP.test(ac + " " + (el.name || "") + " " + (el.id || ""));
+    if (ac === "one-time-code") return true;
+    return OTP_ATTRS.test(ac + " " + (el.name || "") + " " + (el.id || "")) || OTP_PROMPT.test((el.placeholder || "") + " " + (el.getAttribute("aria-label") || ""));
   }
   var inputs = Array.prototype.slice.call(document.querySelectorAll("input")).filter(visible);
   var pw = inputs.filter(function (e) { return e.type === "password"; })[0] || null;
@@ -70,15 +83,12 @@ const LOCATOR = `(function (focus) {
       return e.type === "email" || /username|email/.test(ac) || USER.test((e.name || "") + " " + (e.id || ""));
     })[0] || null;
   }
-  var submit = Array.prototype.slice.call(document.querySelectorAll("button, input[type=submit]")).some(function (b) {
-    return visible(b) && (b.type === "submit" || b.tagName === "BUTTON");
-  });
   var target = focus === "username" ? user : focus === "password" ? pw : null;
-  if (target) target.focus();
-  return { username: !!user, password: !!pw, otp: !!otp, submit: submit };
+  if (target && !verify) target.focus();
+  return { username: !!user, password: !!pw, otp: !!otp, active: !!target && document.activeElement === target };
 })`;
 
-const locatorScript = (focus: Field | null) => `${LOCATOR}(${JSON.stringify(focus)})`;
+const locatorScript = (focus: Field | null, verify = false) => `${LOCATOR}(${JSON.stringify(focus)}, ${verify})`;
 
 class Stop extends Error {
   readonly note: string;
@@ -106,24 +116,27 @@ export function createLoginFill(deps: {
     }
   };
 
-  async function fill(site: string): Promise<FillResult> {
+  async function fillOnce(site: string): Promise<FillResult> {
     const metas = await vault.list();
     const meta = metas.find((m) => m.id === site) ?? metas.find((m) => m.label === site);
     if (!meta) return { ok: false, note: NOTE.unknown };
 
     let moved = false;
+    let submitted = false;
     const stopListening = pane.onNavigate((url) => {
       if (originOf(url) !== meta.origin) moved = true;
     });
+    // After the password was submitted the site may redirect anywhere; we only read from then on.
     const guard = () => {
+      if (submitted) return;
       if (moved || originOf(pane.getURL()) !== meta.origin) throw new Stop(NOTE.origin);
     };
     // A page that is mid-navigation cannot be scripted; that counts as "not there yet".
-    const locate = async (focus: Field | null = null): Promise<Found | null> => {
+    const locate = async (focus: Field | null = null, verify = false): Promise<Found | null> => {
       guard();
       try {
-        const r = (await pane.runInPage(locatorScript(focus))) as Partial<Found> | null;
-        return r ? { username: r.username === true, password: r.password === true, otp: r.otp === true, submit: r.submit === true } : null;
+        const r = (await pane.runInPage(locatorScript(focus, verify))) as Partial<Found> | null;
+        return r ? { username: r.username === true, password: r.password === true, otp: r.otp === true, active: r.active === true } : null;
       } catch {
         return null;
       }
@@ -142,6 +155,9 @@ export function createLoginFill(deps: {
       const f = await locate(field);
       if (!f?.[field]) throw new Stop(NOTE.noForm);
       guard();
+      // The intended field must hold focus in the top document, or the text would go elsewhere.
+      if (!(await locate(field, true))?.active) throw new Stop(NOTE.origin);
+      guard();
       await pane.insertText(text);
     };
 
@@ -152,6 +168,8 @@ export function createLoginFill(deps: {
       if (first.otp) return { ok: false, note: NOTE.otp };
 
       const secret = await vault.get(meta.id);
+      if (secret.meta.origin !== meta.origin) throw new Stop(NOTE.origin);
+      guard();
       if (first.username) await type("username", secret.username);
       if (first.password) {
         await type("password", secret.password);
@@ -161,6 +179,7 @@ export function createLoginFill(deps: {
         if (!(await poll((f) => f.password))) return { ok: false, note: NOTE.failed };
         await type("password", secret.password);
       }
+      submitted = true;
       await pane.pressEnter();
 
       const after = await poll((f) => !f.password);
@@ -171,6 +190,14 @@ export function createLoginFill(deps: {
     } finally {
       stopListening();
     }
+  }
+
+  // One fill at a time: a second call waits for the first.
+  let chain: Promise<unknown> = Promise.resolve();
+  function fill(site: string): Promise<FillResult> {
+    const run = chain.then(() => fillOnce(site));
+    chain = run.catch(() => undefined);
+    return run;
   }
 
   return { fill };
