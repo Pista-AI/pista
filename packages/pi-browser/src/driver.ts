@@ -18,6 +18,14 @@ export type NativeInput =
   | { type: "text"; text: string }
   | { type: "key"; key: string };
 
+/** Same shape as `SavedLoginMeta` in @pista/protocol. */
+export interface SavedLoginMeta {
+  id: string;
+  label: string;
+  origin: string;
+  username?: string;
+}
+
 export interface BrowserDriver {
   navigate(url: string): Promise<PageState>;
   state(): Promise<PageState>;
@@ -34,6 +42,10 @@ export interface BrowserDriver {
    * Rejects with a plain-language message when none starts or it fails. Drivers without file access leave it out.
    */
   download?(opts: { path: string; url?: string; trigger?: () => Promise<unknown> }): Promise<{ bytes: number; contentType?: string; urlChain?: string[] }>;
+  /** Optional: the owner's saved logins (names and sites only, never secrets). Drivers without a vault leave it out. */
+  loginList?(): Promise<SavedLoginMeta[]>;
+  /** Optional: signs in to the current page with the saved login `site` (id or label). The desktop app types the secret; it never passes through here. */
+  loginFill?(site: string): Promise<{ ok: boolean; note: string }>;
   /** Optional: what the agent is doing, for drivers that show it to the user. */
   setActivity?(label: string): void;
   /** Optional: protocol round trips so far, for per-step traces. Drivers that don't count leave it out. */

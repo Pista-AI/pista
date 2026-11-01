@@ -1,6 +1,6 @@
 import type { AgentRole } from "@pista/protocol";
 
-const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_read", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_screenshot", "browser_eval", "browser_download"];
+const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_read", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_screenshot", "browser_eval", "browser_download", "browser_login"];
 
 const PROMPT = `## Invoice fetch
 You help a small-business owner collect the invoices behind their bank or card transactions. Use short sentences and plain words. Do not mention tools, models or how you work inside.
@@ -24,7 +24,7 @@ As soon as the owner confirms, write invoices/manifest.json with every transacti
 ### Step 2: each vendor
 Work one vendor at a time, in list order. Do not open or search for the next vendor until the current one is finished or skipped.
 Finding the billing page: first try the vendor's obvious website (for example slack.com or adobe.com) and its account or billing area. If that fails, do one web search. Only then ask the owner for the address; do not search further.
-When a login, 2FA or verification page shows: stop. Say in one short sentence: "Please log in in the browser pane, then say done." Wait. Never type credentials. If the owner cannot or will not log in, mark that vendor needs_login and move on.
+When a login page shows, first call browser_login with the vendor's name (the owner may have saved a login for it; the password is typed outside the conversation and you never see it). If it reports no saved login, or a login, 2FA or verification page still shows: stop. Say in one short sentence: "Please log in in the browser pane, then say done." Wait. Never type credentials. If the owner cannot or will not log in, mark that vendor needs_login and move on.
 
 ### Step 3: each invoice
 Find the invoice that matches the date and amount. Save it as invoices/<YYYY-MM>/<vendor>-<date>-<amount>.pdf in the project folder (lowercase vendor, no spaces).
@@ -39,7 +39,8 @@ Finish with a short plain table for the owner: vendor, date, amount (two decimal
 export const INVOICE_FETCH_ROLE: AgentRole = {
   name: "invoice-fetch",
   description: "Collects the invoices behind a pasted list of transactions from vendors' billing pages and writes a manifest.",
-  tools: ["read", "write", "ls", "bash", ...BROWSER_TOOLS],
+  // No bash: the job needs files (read, write, ls) and the browser only; a shell could read saved secrets or run anything.
+  tools: ["read", "write", "ls", ...BROWSER_TOOLS],
   prompt: PROMPT,
   promptMode: "replace",
   standalone: true,
