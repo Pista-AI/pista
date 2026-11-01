@@ -19,6 +19,7 @@ import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { findDebugFlag } from "./debug-flags.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
+import { decidePanePermission, isWebUrl, sameOrigin } from "./web-policy.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
 
 const DEV_URL = process.env.PISTA_DEV_URL;
@@ -203,6 +204,25 @@ interface DownloadRequest {
   fail: (e: Error) => void;
 }
 
+/** Pages the agent visits get no device access: only clipboard writes and fullscreen are granted. */
+function restrictPaneSession(ses: Electron.Session) {
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(decidePanePermission(permission)));
+  ses.setPermissionCheckHandler((_wc, permission) => decidePanePermission(permission));
+  ses.setDevicePermissionHandler(() => false);
+  ses.on("select-hid-device", (event, _details, callback) => {
+    event.preventDefault();
+    callback("");
+  });
+  ses.on("select-usb-device", (event, _details, callback) => {
+    event.preventDefault();
+    callback("");
+  });
+  ses.on("select-serial-port", (event, _portList, _wc, callback) => {
+    event.preventDefault();
+    callback("");
+  });
+}
+
 class BrowserPane {
   /** Electron renders failed loads as a blank page, so failures are reported to the UI. */
   private error: LoadError | undefined;
@@ -220,9 +240,14 @@ class BrowserPane {
     neutralizePaneDragRegions(this.view.webContents);
     const wc = this.view.webContents;
     this.hookDownloads();
+    restrictPaneSession(wc.session);
+    // Pages cannot steer the pane to file:, custom schemes or other non-web addresses.
+    wc.on("will-navigate", (event, url) => {
+      if (!isWebUrl(url)) event.preventDefault();
+    });
     // Popups and target=_blank stay in the pane instead of spawning windows.
     wc.setWindowOpenHandler(({ url }) => {
-      void wc.loadURL(url);
+      if (isWebUrl(url)) void wc.loadURL(url);
       return { action: "deny" };
     });
     for (const event of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-stop-loading"] as const) {
@@ -266,7 +291,8 @@ class BrowserPane {
     this.view.setVisible(true);
   }
 
-  async navigate(url: string) {
+  async navigate(url: string): Promise<{ error: string } | undefined> {
+    if (!isWebUrl(url)) return { error: "Only http and https addresses can be opened." };
     try {
       await this.view.webContents.loadURL(url);
     } catch {
@@ -511,8 +537,12 @@ async function createWindow() {
 
   // Links opened from the app UI (docs, OAuth sign-in) go to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (isWebUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  // The UI window never leaves its own origin.
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!sameOrigin(url, uiUrl)) event.preventDefault();
   });
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
