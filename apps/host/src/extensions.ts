@@ -207,7 +207,7 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         if (["bash", "powershell", "edit", "write"].includes(toolName)) return `${toolName} can change files or run commands`;
         if (["browser_click", "browser_type", "browser_select", "browser_press", "browser_eval", "browser_choose", "browser_fill", "browser_login"].includes(toolName)) {
           // browser_login: the ask makes an injection-driven sign-in visible to the owner.
-          return "interacts with the page in the browser";
+          return toolName === "browser_login" ? "signs in with a login the owner saved" : "interacts with the page in the browser";
         }
         if (toolName.startsWith("mcp__")) {
           const info = pi.getAllTools().find((t) => t.name === toolName);

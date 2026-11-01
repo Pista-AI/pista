@@ -137,10 +137,13 @@ export function createLoginVault(options: { file: string; crypto: VaultCrypto })
     username: l.username,
   });
 
-  /** A crypto backend that throws counts as unavailable; its error never surfaces. */
+  /** A crypto that throws counts as unavailable; its error never surfaces. A backend name that cannot be read is "unknown" (the Linux-only query). */
   const status = async (): Promise<{ available: boolean; backend: string }> => {
     try {
-      const backend = crypto.backend();
+      let backend = "unknown";
+      try {
+        backend = crypto.backend();
+      } catch {}
       return { available: (await crypto.isAvailable()) && backend !== "basic_text", backend };
     } catch {
       return { available: false, backend: "unknown" };

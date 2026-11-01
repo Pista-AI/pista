@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -63,13 +63,14 @@ test("invoice role: no bash, has browser_login", () => {
 
 test("invoice read gate: refuses read and ls outside the project folder, allows inside", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "pista-read-"));
+  symlinkSync(tmpdir(), join(cwd, "link"));
   const a = approvals(cwd);
-  for (const [tool, path] of [["read", "/etc/hosts"], ["read", "../secret.txt"], ["ls", "/"], ["read", join(cwd, "..", "x")]] as const) {
+  for (const [tool, path] of [["read", "/etc/hosts"], ["read", "~"], ["read", "~/x"], ["read", "@/etc/hosts"], ["read", "link/x"], ["read", "../secret.txt"], ["ls", "/"], ["read", join(cwd, "..", "x")]] as const) {
     const r = await a.call(tool, { path });
     assert.equal(r?.block, true, `${tool} ${path}`);
     assert.equal(r.reason, "The invoice job only reads inside its project folder.");
   }
-  for (const [tool, input] of [["read", { path: "invoices/manifest.json" }], ["read", { path: join(cwd, "notes.txt") }], ["ls", { path: "." }], ["ls", {}]] as const) {
+  for (const [tool, input] of [["read", { path: "invoices/manifest.json" }], ["read", { path: join(cwd, "notes.txt") }], ["ls", { path: "." }], ["ls", { path: cwd }], ["ls", {}]] as const) {
     assert.equal(await a.call(tool, input), undefined, `${tool} ${JSON.stringify(input)}`);
   }
   assert.equal(a.asked(), 0);

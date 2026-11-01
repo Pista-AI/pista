@@ -84,7 +84,8 @@ export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((t
 export function invoiceReadGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => string | undefined) | undefined {
   if (kind.role !== "invoice-fetch" || kind.hasParent || !cwd) return undefined;
   return (toolName, input) =>
-    (toolName === "read" || toolName === "ls") && typeof input.path === "string" && !isInvoicesPath(cwd, input.path, ".")
+    // Pi expands "~" and strips a leading "@" before resolving, which a textual check would miss, so those are refused outright.
+    (toolName === "read" || toolName === "ls") && typeof input.path === "string" && (/^[~@]/.test(input.path) || !isInvoicesPath(cwd, input.path, "."))
       ? "The invoice job only reads inside its project folder."
       : undefined;
 }

@@ -163,6 +163,16 @@ test("safeStorageCrypto reads .result and reports the backend", async () => {
   assert.equal(await c.decrypt(await c.encrypt("x")), "x");
 });
 
+test("status: an unreadable backend name is unknown, an unavailable keychain is not available", async () => {
+  const mk = (available: boolean) =>
+    createLoginVault({
+      file: join(tmpdir(), "pista-vault-status", "logins.json"),
+      crypto: { ...fakeCrypto(), isAvailable: async () => available, backend: () => { throw new Error("linux only"); } },
+    });
+  assert.deepEqual(await mk(true).status(), { available: true, backend: "unknown" });
+  assert.deepEqual(await mk(false).status(), { available: false, backend: "unknown" });
+});
+
 test("safeStorageCrypto: a platform where the backend query throws (macOS) still works", () => {
   const c = safeStorageCrypto({
     isAsyncEncryptionAvailable: async () => true,

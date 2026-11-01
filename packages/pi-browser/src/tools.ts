@@ -260,6 +260,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const logins = await d.loginList();
           const login = findLogin(logins, site);
           if (!login) return say({ ok: false, note: "No saved login with that name.", saved: logins.map((l) => l.label) });
+          // Advisory, for a clear error. The binding check that matters is in the desktop app, right before typing (login-fill.ts), so a navigation after this cannot fill another origin.
           const url = (await d.state()).url;
           let here = "";
           try {

@@ -131,7 +131,8 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
     loginFill: inner.loginFill && inner.loginList
       ? async (site) => {
           const login = findLogin(await inner.loginList!(), site);
-          if (login && checkUrl(login.origin, rules)) return { ok: false, note: "That site is blocked by policy." };
+          if (!login) return { ok: false, note: "No saved login with that name." };
+          if (checkUrl(login.origin, rules)) return { ok: false, note: "That site is blocked by policy." };
           return inner.loginFill!(site);
         }
       : undefined,

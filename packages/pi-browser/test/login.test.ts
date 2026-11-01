@@ -52,6 +52,7 @@ test("domain rules: a denied saved origin is never filled", async () => {
   const guarded = guardDriver(inner, { deniedDomains: ["shop.test"] });
   assert.deepEqual(await guarded.loginFill!("Fixture"), { ok: false, note: "That site is blocked by policy." });
   assert.deepEqual(fills, []);
+  assert.deepEqual(await guarded.loginFill!("Nobody"), { ok: false, note: "No saved login with that name." });
   const open = guardDriver(inner, { deniedDomains: ["other.test"] });
   assert.equal((await open.loginFill!("Fixture")).ok, true);
 });
