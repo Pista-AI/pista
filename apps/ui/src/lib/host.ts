@@ -57,6 +57,7 @@ class HostClient {
       }
     };
     ws.onclose = () => {
+      if (this.ws !== ws) return;
       this.setConnected(false);
       for (const p of this.pending.values()) p.reject(new Error("Disconnected from agent host"));
       this.pending.clear();
