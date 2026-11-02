@@ -14,6 +14,7 @@ async function loginCall(channel: string, ...args: unknown[]) {
 }
 
 contextBridge.exposeInMainWorld("pistaDesktop", {
+  platform: process.platform,
   shell: "electron",
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder"),

@@ -83,6 +83,8 @@ export interface LoginImportResult {
 
 export interface PistaDesktop {
   shell: "electron" | "tauri";
+  /** Node `process.platform` of the desktop shell (electron only). */
+  platform?: string;
   /** Base URL of the agent host sidecar the shell started, e.g. http://127.0.0.1:4317 */
   hostUrl?: string;
   browser?: DesktopBrowserBridge;
