@@ -1,4 +1,4 @@
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readlinkSync, rmSync } from "node:fs";
 import { hostname as osHostname } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,8 @@ export type LaunchDeps = {
   /** How long launch waits for a live lock owner to go away before reporting the profile as in use. */
   lockGraceMs?: number;
   hostname?: () => string;
+  /** Command line of a process, or undefined when unknown. */
+  commandLine?: (pid: number) => Promise<string | undefined>;
   killPid?: (pid: number, signal: NodeJS.Signals) => void;
   removeLock?: (path: string) => void;
   platform?: NodeJS.Platform;
@@ -74,6 +76,11 @@ function lockHeld(lock: LockInfo | undefined, deps: LaunchDeps): boolean {
   if (lock.host !== (deps.hostname ?? osHostname)()) return true;
   return (deps.isAlive ?? pidAlive)(lock.pid);
 }
+
+const defaultCommandLine = (pid: number) =>
+  new Promise<string | undefined>((resolve) => {
+    execFile("ps", ["-o", "command=", "-p", String(pid)], { timeout: 2000 }, (err, out) => resolve(err ? undefined : out.trim() || undefined));
+  });
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -156,7 +163,10 @@ export async function launchBrowser(
       const kill = deps.killPid ?? ((pid, sig) => process.kill(pid, sig));
       const until = Date.now() + closeTimeout;
       while (alive(lock.pid) && Date.now() < until) await sleep(50);
-      if (alive(lock.pid)) {
+      // Never signal a stranger: the pid may have been reused. Only kill a process that is demonstrably
+      // a browser on our profile (never on Windows, where there is no command line check).
+      const ours = platform !== "win32" && alive(lock.pid) && ((await (deps.commandLine ?? defaultCommandLine)(lock.pid)) ?? "").includes(`--user-data-dir=${options.profileDir}`);
+      if (ours && alive(lock.pid)) {
         try { kill(lock.pid, "SIGKILL"); } catch {}
         const end = Date.now() + 2000;
         while (alive(lock.pid) && Date.now() < end) await sleep(50);

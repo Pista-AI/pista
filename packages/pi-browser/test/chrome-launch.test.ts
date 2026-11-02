@@ -106,6 +106,7 @@ test("close: waits for the exit, then for the lock owner when the spawned proces
     // no lock at launch; afterwards the lock names another pid that outlives the spawned one
     readLink: () => { if (!launched || !lockAlive) throw new Error("none"); return "host-200"; },
     isAlive: (pid) => pid === 200 && lockAlive,
+    commandLine: async () => "/Applications/Chrome --user-data-dir=/p --remote-debugging-pipe",
     killPid: (pid) => (killed.push(pid), (lockAlive = false)),
   });
   const c = b.close();
@@ -195,4 +196,23 @@ test("find: kind comes from the basename; snap, flatpak and PROGRAMW6432 paths",
   assert.equal(findBrowser({}, { platform: "linux", env: { PATH: "" }, exists: has("/snap/bin/chromium") })?.kind, "chrome");
   assert.equal(findBrowser({}, { platform: "linux", env: { PATH: "" }, exists: has("/var/lib/flatpak/exports/bin/com.brave.Browser") })?.kind, "brave");
   assert.equal(findBrowser({}, { platform: "win32", env: { PROGRAMW6432: "C:\\PF" }, exists: has("C:\\PF\\Google\\Chrome\\Application\\chrome.exe") })?.kind, "chrome");
+});
+
+test("close: never kills a lock pid that is not a browser on our profile", async () => {
+  for (const [platform, cmd] of [["darwin", "/usr/bin/vim notes.txt"], ["darwin", "chrome --user-data-dir=/other"], ["win32", "chrome --user-data-dir=/p"]] as const) {
+    const { child } = fakeChild();
+    child.pid = 100;
+    let launched = false;
+    const killed: number[] = [];
+    const b = await launchBrowser({ browserPath: "c", profileDir: "/p" }, {
+      spawn: () => ((launched = true), child), mkdir: () => {}, hostname: () => "host", closeTimeoutMs: 30, platform,
+      readLink: () => { if (!launched) throw new Error("none"); return "host-200"; },
+      isAlive: (pid) => pid === 200, commandLine: async () => cmd, killPid: (pid) => killed.push(pid),
+    });
+    const c = b.close();
+    await tick();
+    child.emit("exit", 0, null);
+    await c;
+    assert.deepEqual(killed, [], `${platform} ${cmd}`);
+  }
 });
