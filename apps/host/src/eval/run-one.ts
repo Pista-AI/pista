@@ -5,6 +5,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CredentialStore } from "@earendil-works/pi-ai";
+import type { McpOAuthCredentialStoreLike } from "../pi-mcp-oauth.ts";
 import type { HostConfig } from "@pista/protocol";
 import { registerNebiusProvider } from "../nebius.ts";
 import { spawnGroup } from "../process-group.ts";
@@ -72,12 +73,14 @@ async function review(runtime: typeof models, ref: { provider: string; id: strin
 }
 
 /** Same store the host uses; the parent hands the key over PISTA_AUTH_KEY (or PISTA_AUTH_PLAIN=1). Fake runs have neither. */
+let childMcpCredentials: McpOAuthCredentialStoreLike | undefined;
 async function childCredentials(): Promise<{ credentials?: CredentialStore }> {
   if (job.fake) return {};
   const { currentParentPort, resolveAuthKeySource } = await import("../auth-key.ts");
   const { setupCredentials } = await import("../auth-setup.ts");
   const { piAgentDir } = await import("../pi-env.ts");
-  const { credentials } = await setupCredentials(await resolveAuthKeySource(process.env, currentParentPort()), piAgentDir(), () => {});
+  const { credentials, mcpCredentials } = await setupCredentials(await resolveAuthKeySource(process.env, currentParentPort()), piAgentDir(), () => {});
+  childMcpCredentials = mcpCredentials;
   return credentials ? { credentials } : {};
 }
 
@@ -109,7 +112,7 @@ hub.emit = (event) => {
   if (event.type === "toast" && event.message.startsWith("Stopped ")) (result.guardStops ??= []).push(event.message.slice(0, 200));
   emit(event);
 };
-const manager = new ThreadManager(store, hub, models);
+const manager = new ThreadManager(store, hub, models, undefined, undefined, undefined, childMcpCredentials);
 let threadId: string | undefined;
 try {
   cpSync(join(job.stageDir, "fixture"), job.workDir, { recursive: true });

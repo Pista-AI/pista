@@ -4,9 +4,24 @@ import { join } from "node:path";
 import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
 import type { AuthKeySource } from "./auth-key.ts";
 import { createEncryptedCredentialStore, fsyncDir } from "./auth-store.ts";
+import { setupMcpAuth } from "./mcp-auth-store.ts";
+import type { McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 
-/** Chooses the credential store for ModelRuntime. Plain mode returns no store, so Pi uses its own auth.json. */
+/**
+ * Chooses the credential stores. Plain mode returns none, so Pi uses its own auth.json and mcp-auth.json. The MCP
+ * store is set up first because the provider setup zeroes the caller's key buffer.
+ */
 export async function setupCredentials(
+  source: AuthKeySource,
+  agentDir: string,
+  log: (line: string) => void,
+): Promise<{ credentials?: CredentialStore; mcpCredentials?: McpOAuthCredentialStoreLike; mode: "encrypted" | "plain" }> {
+  const mcp = await setupMcpAuth(source, agentDir, log);
+  const res = await setupProviderCredentials(source, agentDir, log);
+  return { ...res, ...(mcp.credentials ? { mcpCredentials: mcp.credentials } : {}) };
+}
+
+async function setupProviderCredentials(
   source: AuthKeySource,
   agentDir: string,
   log: (line: string) => void,
