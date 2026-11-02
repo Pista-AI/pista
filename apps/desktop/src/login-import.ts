@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { SaveLoginInput, SavedLoginMeta } from "./logins.js";
 
-export type SkipReason = "no-url" | "not-https" | "not-login" | "missing-field" | "bad-url" | "duplicate";
+export type SkipReason = "no-url" | "not-https" | "not-login" | "missing-field" | "bad-url" | "duplicate" | "undecryptable" | "unknown-format";
 export interface ParsedLogins {
   rows: SaveLoginInput[];
   skipped: { reason: SkipReason; count: number }[];
@@ -159,8 +159,8 @@ export async function importLogins(vault: ImportVault, rows: SaveLoginInput[]): 
   return { imported, replaced, failed };
 }
 
-/** Where a pending import came from. A later source (a direct browser reader) adds a kind here. */
-export type ImportSource = { kind: "csv"; fileName: string };
+/** Where a pending import came from. */
+export type ImportSource = { kind: "csv"; fileName: string } | { kind: "chrome"; profile: string };
 export interface PreviewRow {
   id: string;
   origin: string;

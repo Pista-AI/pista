@@ -58,12 +58,16 @@ export interface DesktopBrowserBridge {
     /** Saves the ticked rows by id; the token is spent either way. Only counts come back. */
     importCommit(input: { token: string; ids: string[]; trashFile: boolean }): Promise<LoginImportResult>;
     importCancel(token: string): Promise<void>;
+    /** macOS only: Chrome profiles that have saved logins. */
+    importChromeProfiles(): Promise<{ dir: string; name: string }[]>;
+    /** Decrypts that profile's logins in the main process (Keychain prompt) and returns a password-free preview. */
+    importChromePreview(profileDir: string): Promise<LoginImportPreview>;
   };
 }
 
 export interface LoginImportPreview {
   token: string;
-  source: { kind: "csv"; fileName: string };
+  source: { kind: "csv"; fileName: string } | { kind: "chrome"; profile: string };
   rows: { id: string; origin: string; username: string; label?: string; replaces: boolean }[];
   skipped: { line?: number; reason: string }[];
 }

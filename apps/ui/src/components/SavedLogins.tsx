@@ -208,7 +208,7 @@ export function SavedLogins() {
         {preview ? (
           <>
             <span className="help">
-              {preview.source.fileName}: {preview.rows.length === 1 ? "1 login" : `${preview.rows.length} logins`} to import
+              {preview.source.kind === "csv" ? preview.source.fileName : preview.source.profile}: {preview.rows.length === 1 ? "1 login" : `${preview.rows.length} logins`} to import
               {preview.skipped.length > 0 && `, ${preview.skipped.length} skipped`}.
             </span>
             {preview.rows.map((row) => (
