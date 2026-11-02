@@ -25,6 +25,7 @@ import type {
 } from "@pista/protocol";
 import { host } from "./host.ts";
 import { downloadActive } from "./llama.ts";
+import { describeTurnError } from "./errors.ts";
 import { browser, useBrowser } from "../browser/controller.ts";
 
 const useBrowserFocused = () => useBrowser.getState().focusedId;
@@ -624,7 +625,7 @@ export function reduceThread(view: ThreadView, event: AgentEvent): ThreadView {
     }
     case "auto_retry_start": {
       const e = event as { attempt: number; maxAttempts: number; errorMessage: string };
-      return { ...view, retry: `Retrying (${e.attempt}/${e.maxAttempts}): ${e.errorMessage}` };
+      return { ...view, retry: `Retrying (${e.attempt}/${e.maxAttempts}): ${describeTurnError(e.errorMessage, "The model").text}` };
     }
     case "auto_retry_end":
       return { ...view, retry: undefined };
