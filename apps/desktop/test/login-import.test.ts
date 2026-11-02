@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ImportError, importLogins, parseLoginCsv, runLoginImport } from "../src/login-import.ts";
+import { createImportStore, ImportError, importLogins, parseLoginCsv, previewLoginImport } from "../src/login-import.ts";
 import { createLoginVault, type VaultCrypto } from "../src/logins.ts";
 
 const crypto: VaultCrypto = {
@@ -107,22 +107,17 @@ test("importLogins dedupes by origin (last wins) and a failing row does not stop
 });
 
 function deps(over: Record<string, unknown> = {}) {
-  const trashed: string[] = [];
-  const csv = "name,url,username,password\nA,https://a.example.com,u,p\n";
+  const csv = "name,url,username,password\nA,https://a.example.com,u,SECRETPW\nB,https://b.example.com,v,SECRETPW2\nC,http://insecure.example.com,w,SECRETPW3\n";
   return {
-    trashed,
-    d: {
-      vault: { list: async () => [], save: async () => {} },
-      pick: async () => "/Users/me/secret-dir/export.csv",
-      size: async () => csv.length,
-      read: async () => Buffer.from(csv),
-      trash: async (f: string) => void trashed.push(f),
-      ...over,
-    } as Parameters<typeof runLoginImport>[0],
-  };
+    vault: { list: async () => [{ id: "1", label: "o", origin: "https://a.example.com", username: "u" }], save: async () => {} },
+    pick: async () => "/Users/me/secret-dir/export.csv",
+    size: async () => csv.length,
+    read: async () => Buffer.from(csv),
+    ...over,
+  } as Parameters<typeof previewLoginImport>[0];
 }
 
-test("runLoginImport errors carry fixed messages without paths", async () => {
+test("previewLoginImport errors carry fixed messages without paths", async () => {
   const cases: [Record<string, unknown>, string][] = [
     [{ size: async () => 5_000_001 }, "That file is too large to be a password export."],
     [{ size: async () => { throw new Error("ENOENT: no such file /Users/me/secret-dir/export.csv"); } }, "That file could not be read."],
@@ -131,22 +126,118 @@ test("runLoginImport errors carry fixed messages without paths", async () => {
     [{ read: async () => Buffer.alloc(0) }, "This doesn't look like a password export."],
   ];
   for (const [over, message] of cases) {
-    const err = await runLoginImport(deps(over).d).then(() => null, (e: Error) => e);
+    const err = await previewLoginImport(deps(over), createImportStore()).then(() => null, (e: Error) => e);
     assert.ok(err instanceof ImportError);
     assert.equal(err.message, message);
     assert.ok(!err.message.includes("/Users"));
   }
+  assert.deepEqual(await previewLoginImport(deps({ pick: async () => null }), createImportStore()), { canceled: true });
 });
 
-test("runLoginImport trashes only after a clean import, and only when asked", async () => {
-  const a = deps();
-  assert.equal((await runLoginImport(a.d, { trash: true })).trashed, true);
-  assert.deepEqual(a.trashed, ["/Users/me/secret-dir/export.csv"]);
-  const b = deps();
-  assert.equal((await runLoginImport(b.d, {})).trashed, false);
-  const c = deps({ vault: { list: async () => [], save: async () => { throw new Error("x"); } } });
-  const r = await runLoginImport(c.d, { trash: true });
+test("preview has no passwords, marks replaces, and lists skips with a line", async () => {
+  const p = await previewLoginImport(deps(), createImportStore());
+  assert.ok("token" in p);
+  const text = JSON.stringify(p);
+  assert.ok(!text.includes("SECRETPW") && !text.includes("password") && !text.includes("secret-dir"));
+  assert.deepEqual(p.source, { kind: "csv", fileName: "export.csv" });
+  assert.deepEqual(p.rows.map((r) => [r.origin, r.replaces]), [["https://a.example.com", true], ["https://b.example.com", false]]);
+  assert.deepEqual(p.skipped, [{ line: 4, reason: "not-https" }]);
+});
+
+test("commit saves only the chosen subset and trashes only after a clean import", async () => {
+  const saved: string[] = [];
+  const trashed: string[] = [];
+  const vault = { list: async () => [], save: async (r: { username: string }) => void saved.push(r.username) };
+  const store = createImportStore();
+  const p = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in p);
+  const sub = await store.commit(vault, async (f) => void trashed.push(f), { token: p.token, ids: [p.rows[1].id], trashFile: true });
+  assert.deepEqual(saved, ["v"]);
+  assert.equal(sub.imported, 1);
+  assert.equal(sub.trashed, false);
+  const all = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in all);
+  const r = await store.commit(vault, async (f) => void trashed.push(f), { token: all.token, ids: all.rows.map((x) => x.id), trashFile: true });
+  assert.equal(r.trashed, true);
+  assert.deepEqual(trashed, ["/Users/me/secret-dir/export.csv"]);
+
+  const failing = { list: async () => [], save: async () => { throw new Error("x"); } };
+  const q = await previewLoginImport(deps({ vault: failing }), store);
+  assert.ok("token" in q);
+  const r2 = await store.commit(failing, async (f) => void trashed.push(f), { token: q.token, ids: q.rows.map((x) => x.id), trashFile: true });
+  assert.equal(r2.trashed, false);
+  assert.equal(trashed.length, 1);
+
+  const s = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in s);
+  assert.equal((await store.commit(vault, async (f) => void trashed.push(f), { token: s.token, ids: s.rows.map((x) => x.id) })).trashed, false);
+});
+
+test("token is one-shot, expires, and cancel drops it", async () => {
+  let now = 1000;
+  const store = createImportStore({ now: () => now, ttlMs: 5 * 60_000 });
+  const vault = { list: async () => [], save: async () => {} };
+  const run = (token: string) => store.commit(vault, async () => {}, { token, ids: ["0"] });
+  const rejects = (token: string) => assert.rejects(run(token), { message: "That import has expired. Choose the file again." });
+
+  let p = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in p);
+  assert.equal((await run(p.token)).imported, 1);
+  await rejects(p.token);
+
+  p = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in p);
+  now += 5 * 60_000;
+  await rejects(p.token);
+
+  p = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in p);
+  store.cancel(p.token);
+  await rejects(p.token);
+
+  // A failed commit still spends the token, and a new preview replaces the pending one.
+  const bad = { list: async () => [], save: async () => { throw new Error("x"); } };
+  p = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in p);
+  assert.equal((await store.commit(bad, async () => {}, { token: p.token, ids: ["0"] })).failed, 1);
+  await rejects(p.token);
+  const first = await previewLoginImport(deps({ vault }), store);
+  await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in first);
+  await rejects(first.token);
+});
+
+test("forged tokens, foreign ids, partial selection and duplicates", async () => {
+  const saved: string[] = [];
+  const trashed: string[] = [];
+  const vault = { list: async () => [], save: async (r: { username: string }) => void saved.push(r.username) };
+  const store = createImportStore();
+  for (const t of ["nope", "", undefined as unknown as string, "../x"])
+    await assert.rejects(store.commit(vault, async () => {}, { token: t, ids: ["0"] }), { message: "That import has expired. Choose the file again." });
+
+  const dup = "name,url,username,password\nA,https://a.example.com/1,u1,p\nB,https://a.example.com/2,u2,p\nC,https://c.example.com,u3,p\n";
+  const p = await previewLoginImport(deps({ vault, read: async () => Buffer.from(dup), size: async () => dup.length }), store);
+  assert.ok("token" in p);
+  assert.deepEqual(p.skipped, [{ reason: "duplicate" }]);
+  assert.equal(p.rows.length, 2);
+  const r = await store.commit(vault, async (f) => void trashed.push(f), { token: p.token, ids: ["0", "99", "x"], trashFile: true });
+  assert.deepEqual(saved, ["u2"]);
   assert.equal(r.trashed, false);
-  assert.equal(c.trashed.length, 0);
-  assert.deepEqual(await runLoginImport(deps({ pick: async () => null }).d), { imported: 0, replaced: 0, skipped: 0, failed: 0, canceled: true });
+  assert.equal(trashed.length, 0);
+  assert.equal(r.skipped, 2);
+});
+
+test("vault failure during preview gives a fixed message", async () => {
+  const bad = { list: async () => { throw new Error("/secret/path"); }, save: async () => {} };
+  await assert.rejects(previewLoginImport(deps({ vault: bad }), createImportStore()), { message: "Saved logins could not be read." });
+});
+
+test("pending rows are dropped by the timer without any call", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const store = createImportStore({ ttlMs: 1000 });
+  const vault = { list: async () => [], save: async () => {} };
+  const p = await previewLoginImport(deps({ vault }), store);
+  assert.ok("token" in p);
+  t.mock.timers.tick(1001);
+  await assert.rejects(store.commit(vault, async () => {}, { token: p.token, ids: ["0"] }), { message: "That import has expired. Choose the file again." });
 });
