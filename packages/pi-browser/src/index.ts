@@ -5,6 +5,7 @@ export { checkUrl, normalizeDomainPattern, guardDriver, DomainBlockedError, type
 export { confineToFolder } from "./download.ts";
 export { registerBrowserTools, type BrowserToolOptions } from "./tools.ts";
 export { CdpDriver } from "./drivers/cdp.ts";
+export { ScreencastFeed, MIN_FRAME_INTERVAL_MS, type ScreencastFrame } from "./chrome/screencast.ts";
 export { ChromeDriver, type ChromeDriverOptions, type ChromeDriverDeps } from "./drivers/chrome.ts";
 export { PAGE_VIEW_TOOLS, prunePageViews, registerContextPruning, createPageViewCompactor, type CompactorOptions } from "./context.ts";
 export {

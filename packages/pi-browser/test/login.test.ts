@@ -67,3 +67,17 @@ test("browser_logins: returns label and origin, never the username", async () =>
 test("browser_logins: not registered when the driver cannot fill", () => {
   assert.equal(setup({ loginFill: undefined }).tools.has("browser_logins"), false);
 });
+
+test("browser_show_user: brings the browser forward and tells the model to wait; absent without bringToFront", async () => {
+  let shown = 0;
+  const s = setup({ bringToFront: async () => void shown++ });
+  const r = JSON.parse((await s.tools.get("browser_show_user")!.execute("1", {}, undefined)).content[0]!.text);
+  assert.equal(shown, 1);
+  assert.match(r.note, /wait for them/);
+  assert.equal(setup().tools.has("browser_show_user"), false);
+});
+
+test("domain rules keep bringToFront on the guarded driver", () => {
+  const inner = { bringToFront: async () => {} } as unknown as BrowserDriver;
+  assert.equal(typeof guardDriver(inner, { deniedDomains: ["x.test"] }).bringToFront, "function");
+});

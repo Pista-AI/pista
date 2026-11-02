@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: HostConfig = {
   defaultThinkingMode: "auto",
   instructions: "",
   linkTarget: "builtin",
+  browserEngine: "auto",
   memoryEnabled: true,
   webSearchEnabled: true,
   localServers: [],
@@ -122,6 +123,8 @@ export class ConfigStore {
       managedMcp: Array.isArray(loaded.managedMcp) ? loaded.managedMcp.filter((n): n is string => typeof n === "string") : [],
       managedPackages: Array.isArray(loaded.managedPackages) ? loaded.managedPackages.filter((n): n is string => typeof n === "string") : [],
     };
+    // A hand-edited or newer value this build does not know falls back to auto.
+    if (!["auto", "chrome", "embedded"].includes(this.state.config.browserEngine as string)) this.state.config.browserEngine = "auto";
     this.applyMcpPolicy(managed);
     if (this.state.projects.length === 0) {
       // A scratch workspace so the app is usable before any folder is added.

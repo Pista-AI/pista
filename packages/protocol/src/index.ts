@@ -312,6 +312,8 @@ export interface ProviderStatus {
 
 /** Where clicked links open: the built-in browser, the system browser, or in-app only for the home page's site. */
 export type LinkTarget = "builtin" | "home" | "external";
+/** Which browser the agent drives: `auto` is the external Chrome when one is installed, else the built-in browser. */
+export type BrowserEngineSetting = "auto" | "chrome" | "embedded";
 
 export type ApprovalMode = "full-access" | "ask-writes" | "read-only";
 
@@ -420,6 +422,8 @@ export interface HostConfig {
   /** Extra system-prompt text appended for every thread. */
   instructions: string;
   linkTarget: LinkTarget;
+  /** The agent's browser. Absent is `auto`. `PISTA_BROWSER_DRIVER` overrides it. */
+  browserEngine?: BrowserEngineSetting;
   /** Cross-thread agent memory (pi-memory: markdown files the agent reads and writes). */
   memoryEnabled: boolean;
   /** Web search and page fetching tools (pi-web-access; Exa by default, no API key). */
@@ -691,6 +695,23 @@ export interface HostInfo {
   /** Where each setting's current value comes from. */
   configSources: Partial<Record<keyof HostConfig, ConfigSource>>;
   projects: Project[];
+  /** Which browser the agent drives: the UI's pane, a CDP Chromium, or an external Chrome shown as a live view. Absent on older hosts (pane). */
+  browserEngine?: "pane" | "cdp" | "chrome";
+  /** Why that engine (for example `auto: no Chrome found`). */
+  browserEngineReason?: string;
+  /** Display name of the external browser when the engine is `chrome`. */
+  browserName?: string;
+  /** True when Chrome was wanted but none was found, so the built-in browser is used. */
+  browserEngineFallback?: boolean;
+}
+
+/** One live-view frame of the agent's Chrome tab (engine "chrome"). `data` is a base64 JPEG. */
+export interface BrowserFrame {
+  data: string;
+  width: number;
+  height: number;
+  url: string;
+  title: string;
 }
 
 export type ConfigSource = "locked" | "policy" | "user" | "default";
@@ -835,6 +856,10 @@ export interface Methods {
 
   /** `note` on a decline tells the agent what to do instead; it then continues with that guidance. */
   "approval.respond": { params: { approvalId: string; allow: boolean; always?: boolean; note?: string }; result: void };
+  /** Starts or stops the live view of the agent's Chrome tab for this window; frames arrive as `browser.frame` events only while subscribed. */
+  "browser.view": { params: { subscribe: boolean }; result: void };
+  /** Brings the agent's Chrome window to the front so the user can take over. */
+  "browser.showChrome": { params: {}; result: void };
   "browser.respond": {
     params: { requestId: string; ok: boolean; result?: BrowserResult; error?: string };
     result: void;
@@ -850,6 +875,7 @@ export type HostEvent =
   | { type: "thread.updated"; thread: ThreadSummary }
   | { type: "thread.removed"; threadId: string }
   | { type: "browser.request"; requestId: string; threadId: string; request: BrowserAction }
+  | ({ type: "browser.frame" } & BrowserFrame)
   | { type: "approval.request"; approvalId: string; threadId: string; toolName: string; args: unknown; reason: string; action?: string }
   | { type: "approval.resolved"; approvalId: string }
   | { type: "auth.prompt"; promptId: string; provider: string; prompt: AuthPrompt }

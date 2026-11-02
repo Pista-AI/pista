@@ -5,6 +5,7 @@ import { launchBrowser, pistaChromeProfileDir, type LaunchedBrowser } from "../c
 import type { CdpEvent } from "../chrome/pipe.ts";
 import { checkUrl, type DomainRules } from "../domains.ts";
 import type { BrowserDriver } from "../driver.ts";
+import { ScreencastFeed, type ScreencastFrame } from "../chrome/screencast.ts";
 import { CdpDriver } from "./cdp.ts";
 
 export interface ChromeDriverOptions {
@@ -37,6 +38,12 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
   private sessions = new Set<string>();
   private ownTarget: string | undefined;
   private downloadListeners = new Set<(event: CdpEvent) => void>();
+  private pageInfo = { url: "", title: "" };
+  private casting = false;
+  private feed = new ScreencastFeed({
+    start: () => void this.startCast(),
+    stop: () => void this.stopCast(),
+  });
 
   constructor(
     private options: ChromeDriverOptions,
@@ -109,6 +116,13 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
         ? this.browser!.transport.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, event.sessionId)
         : this.browser!.transport.send("Fetch.continueRequest", { requestId }, event.sessionId);
       answer.catch(() => undefined);
+    } else if (event.method === "Page.screencastFrame" && event.sessionId === sessionId) {
+      const { data, metadata, sessionId: castId } = event.params;
+      // Ack every frame so the browser keeps sending; the feed decides which ones are worth delivering.
+      this.sendRaw("Page.screencastFrameAck", { sessionId: castId }).catch(() => undefined);
+      this.feed.push({ data, width: metadata?.deviceWidth ?? 0, height: metadata?.deviceHeight ?? 0, ...this.pageInfo });
+    } else if (event.method === "Target.targetInfoChanged" && event.params?.targetInfo?.targetId === this.ownTarget) {
+      this.pageInfo = { url: event.params.targetInfo.url ?? "", title: event.params.targetInfo.title ?? "" };
     } else if (event.method.startsWith("Browser.download")) {
       for (const listener of this.downloadListeners) listener(event);
     }
@@ -119,6 +133,61 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     await this.browser!.transport.send("Browser.setDownloadBehavior", { behavior: "deny" });
     // Defence in depth: the guard checks agent-initiated navigations, this checks every document load, redirect and popup.
     if (this.rules) await this.guardSession(this.conn!.sessionId!);
+    this.casting = false; // a new tab has no screencast yet
+    if (this.feed.count > 0) await this.startCast();
+  }
+
+  /** Subscribes to live frames of the agent tab. The screencast runs only while someone listens, and never launches the browser by itself. */
+  onFrame(cb: (frame: ScreencastFrame) => void): () => void {
+    return this.feed.subscribe(cb);
+  }
+
+  // Start and stop run one after the other, so a quick stop can never overtake a start that is still setting up.
+  private castChain: Promise<void> = Promise.resolve();
+  private startCast() {
+    return (this.castChain = this.castChain.then(() => this.doStartCast()));
+  }
+  private stopCast() {
+    return (this.castChain = this.castChain.then(() => this.doStopCast()));
+  }
+
+  private async doStartCast() {
+    const transport = this.browser?.transport;
+    if (!this.conn || !transport || this.casting || this.feed.count === 0) return;
+    this.casting = true;
+    try {
+      await transport.send("Target.setDiscoverTargets", { discover: true });
+      if (this.ownTarget) {
+        const { targetInfo } = await transport.send("Target.getTargetInfo", { targetId: this.ownTarget });
+        this.pageInfo = { url: targetInfo?.url ?? "", title: targetInfo?.title ?? "" };
+      }
+      await this.sendRaw("Page.startScreencast", { format: "jpeg", quality: 60, maxWidth: 1280, everyNthFrame: 1 });
+    } catch {
+      this.casting = false;
+    }
+  }
+
+  private async doStopCast() {
+    if (!this.casting) return;
+    this.casting = false;
+    await this.sendRaw("Page.stopScreencast").catch(() => undefined);
+  }
+
+  /** Brings the browser window to the front (restoring it only if minimized), so the user can take over (sign-in, one-time codes). */
+  async bringToFront(): Promise<boolean> {
+    if (!this.conn || !this.browser) return false; // not running: never launch a browser just to show it
+    await this.sendRaw("Page.bringToFront");
+    const transport = this.browser?.transport;
+    if (!transport || !this.ownTarget) return true;
+    try {
+      const { windowId } = await transport.send("Browser.getWindowForTarget", { targetId: this.ownTarget });
+      // Only a minimized window is restored; fullscreen and maximized windows stay as the user left them.
+      const { bounds } = await transport.send("Browser.getWindowBounds", { windowId });
+      if (bounds?.windowState === "minimized") await transport.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+    } catch {
+      // Windowless or headless browsers have no window to restore.
+    }
+    return true;
   }
 
   protected async onAttachFailed() {
