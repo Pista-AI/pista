@@ -24,10 +24,12 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { create } from "zustand";
 import { browser, dismissNotice, hostLabel, loadErrorHint, useBrowser } from "../browser/controller.ts";
-import type { PlanStepStatus } from "@pista/protocol";
+import type { BrowserFrame, PlanStepStatus } from "@pista/protocol";
 import { actions, type PanelTab, toast, useApp } from "../lib/store.ts";
 import { host } from "../lib/host.ts";
+import { chromeTabLabel, frameLabel, frameSrc } from "../lib/chrome-view.ts";
 import { computeChanges } from "../lib/changes.ts";
 import { openExternal } from "../lib/links.ts";
 import { STEP_TONE } from "../lib/tones.ts";
@@ -45,20 +47,26 @@ export function Workspace({ drawerWidth }: { drawerWidth?: number }) {
   );
 }
 
+/** Latest frame of the agent's Chrome, shared by the live view and the tab strip. */
+const useChromeFrame = create<{ frame: BrowserFrame | null }>(() => ({ frame: null }));
+
 /** The tab strip plus panel controls. `lead` (nav buttons) is shown first when the sidebar is closed. */
 export function WorkspaceTabs({ lead, underTraffic }: { lead?: ReactNode; underTraffic?: boolean }) {
   const panel = useApp((s) => s.panel);
+  const chrome = useApp((s) => s.info?.browserEngine) === "chrome";
   return (
     <div className={`tb-panel drag ${lead ? "has-nav" : ""} ${underTraffic ? "under-traffic" : ""}`}>
       {lead}
       <div className="tabs no-drag" role="tablist">
         {panel.tabs.map((t) => (
-          <TabButton key={t.id} tab={t} active={t.id === panel.activeId} />
+          <TabButton key={t.id} tab={t} active={t.id === panel.activeId} chrome={chrome} />
         ))}
       </div>
-      <button className="icon-btn sm tab-new no-drag" title="New browser tab" aria-label="New browser tab" onClick={() => actions.newWebTab()}>
-        <Plus size={15} />
-      </button>
+      {!chrome && (
+        <button className="icon-btn sm tab-new no-drag" title="New browser tab" aria-label="New browser tab" onClick={() => actions.newWebTab()}>
+          <Plus size={15} />
+        </button>
+      )}
       <div style={{ flex: 1 }} />
       <button
         className="icon-btn no-drag"
@@ -94,7 +102,8 @@ function WorkspaceBody() {
   );
 }
 
-function TabButton({ tab, active }: { tab: PanelTab; active: boolean }) {
+function TabButton({ tab, active, chrome }: { tab: PanelTab; active: boolean; chrome: boolean }) {
+  const chromeFrame = useChromeFrame((s) => s.frame);
   const web = useBrowser((s) => (tab.kind === "web" ? s.tabs[tab.id] : undefined));
   const meta: Record<Exclude<PanelTab["kind"], "web">, { label: string; Icon: typeof Globe }> = {
     terminal: { label: "Terminal", Icon: SquareTerminal },
@@ -103,7 +112,10 @@ function TabButton({ tab, active }: { tab: PanelTab; active: boolean }) {
     plan: { label: "Plan", Icon: ClipboardList },
     decisions: { label: "Decisions", Icon: Scale },
   };
-  const { label, Icon } = tab.kind === "web" ? { label: web?.title || hostLabel(web?.url ?? "") || "New tab", Icon: Globe } : meta[tab.kind];
+  const chromeTab = chrome && tab.kind === "web";
+  const { label, Icon } = chromeTab
+    ? { label: chromeTabLabel(chromeFrame), Icon: Globe }
+    : tab.kind === "web" ? { label: web?.title || hostLabel(web?.url ?? "") || "New tab", Icon: Globe } : meta[tab.kind];
   return (
     <div
       role="tab"
@@ -125,16 +137,16 @@ function TabButton({ tab, active }: { tab: PanelTab; active: boolean }) {
           const next = all[(i + (e.key === "ArrowRight" ? 1 : -1) + all.length) % all.length];
           if (next?.dataset.tabId) actions.activatePanelTab(next.dataset.tabId);
           next?.focus();
-        } else if (e.key === "Delete" || e.key === "Backspace") {
+        } else if ((e.key === "Delete" || e.key === "Backspace") && !chromeTab) {
           e.preventDefault();
           actions.closePanelTab(tab.id);
         }
       }}
-      title={web?.url ?? label}
+      title={chromeTab ? chromeFrame?.url ?? label : web?.url ?? label}
     >
-      {web?.loading ? <span className="spinner" /> : <Icon size={14} />}
+      {!chromeTab && web?.loading ? <span className="spinner" /> : <Icon size={14} />}
       <span className="ellipsis">{label}</span>
-      <button
+      {!chromeTab && <button
         className="ptab-close"
         tabIndex={-1}
         aria-label={`Close ${label}`}
@@ -145,12 +157,58 @@ function TabButton({ tab, active }: { tab: PanelTab; active: boolean }) {
         }}
       >
         <X size={12} />
-      </button>
+      </button>}
     </div>
   );
 }
 
+/** Read-only live view of the agent's Chrome tab; clicking it brings Chrome to the front. */
+function ChromeLiveView({ visible }: { visible: boolean }) {
+  const frame = useChromeFrame((s) => s.frame);
+  const setFrame = (f: BrowserFrame | null) => useChromeFrame.setState({ frame: f });
+  // Subscribed only while the tab is showing; the host runs the screencast only while someone is subscribed.
+  useEffect(() => {
+    if (!visible) return;
+    const off = host.on((event) => event.type === "browser.frame" && setFrame(event));
+    const subscribe = () => void host.call("browser.view", { subscribe: true }).catch(() => {});
+    subscribe();
+    const offStatus = host.onStatus((connected) => connected && subscribe()); // a new socket starts unsubscribed
+    return () => {
+      off();
+      offStatus?.();
+      setFrame(null); // no stale page when the view opens again
+      void host.call("browser.view", { subscribe: false }).catch(() => {});
+    };
+  }, [visible]);
+  const show = () => void host.call("browser.showChrome", {}).catch(() => {});
+  return (
+    <>
+      <div className="browser-toolbar">
+        <span className="ellipsis" title={frame?.url}>
+          {frame ? frameLabel(frame) : "Agent browser"}
+        </span>
+        <button className="toolbar-pill" onClick={show}>
+          <ExternalLink size={15} /> <span className="txt">Show Chrome</span>
+        </button>
+      </div>
+      <div className="browser-surface" style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "#111" }}>
+        {frame ? (
+          <img src={frameSrc(frame)} alt={frame.title || "Agent browser"} onClick={show} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", cursor: "pointer" }} />
+        ) : (
+          <div className="workspace-empty">The agent's Chrome appears here once it opens a page.</div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function BrowserView({ webTabIds, activeId }: { webTabIds: string[]; activeId: string | null }) {
+  const engine = useApp((s) => s.info?.browserEngine);
+  if (engine === "chrome") return <ChromeLiveView visible={activeId !== null} />;
+  return <PaneBrowserView webTabIds={webTabIds} activeId={activeId} />;
+}
+
+function PaneBrowserView({ webTabIds, activeId }: { webTabIds: string[]; activeId: string | null }) {
   const tabs = useBrowser((s) => s.tabs);
   const native = useBrowser((s) => s.native);
   const agentActivity = useBrowser((s) => s.agentActivity);
