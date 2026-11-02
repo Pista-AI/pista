@@ -6,6 +6,7 @@ import { hostLabel, useBrowser } from "../browser/controller.ts";
 import { computeChanges } from "../lib/changes.ts";
 import { pickerName } from "../lib/llama.ts";
 import { useConfigField } from "../lib/useConfigField.ts";
+import { ModelMenuItems } from "./ModelMenu.tsx";
 import { ManagedBadge } from "./ManagedBadge.tsx";
 import { MenuItem, Popover } from "./Popover.tsx";
 import { GoalChip } from "./GoalControls.tsx";
@@ -42,7 +43,7 @@ function readImage(file: File): Promise<Attachment> {
   });
 }
 
-export function Composer({ autoFocusKey, seed, placeholder, simple, tall }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string; /** Hides the add, permissions and model controls (focused mode). */ simple?: boolean; /** Roomy text box for pasting (focused mode, empty thread). */ tall?: boolean }) {
+export function Composer({ autoFocusKey, seed, placeholder, simple, showModel, tall }: { autoFocusKey: string; seed?: { text: string; n: number }; placeholder?: string; /** Hides the add, permissions and model controls (focused mode). */ simple?: boolean; /** Keeps the model chip when `simple` hides the other controls. */ showModel?: boolean; /** Roomy text box for pasting (focused mode, empty thread). */ tall?: boolean }) {
   const { activeThreadId, views, models, config, pageContext } = useApp();
   const approvalField = useConfigField("approvalMode");
   const view = activeThreadId ? views[activeThreadId] : undefined;
@@ -80,12 +81,6 @@ export function Composer({ autoFocusKey, seed, placeholder, simple, tall }: { au
   const changes = useMemo(() => computeChanges(view?.messages ?? []), [view?.messages]);
   const added = changes.reduce((n, c) => n + c.added, 0);
   const removed = changes.reduce((n, c) => n + c.removed, 0);
-
-  const grouped = useMemo(() => {
-    const map = new Map<string, typeof models>();
-    for (const m of models) map.set(m.provider, [...(map.get(m.provider) ?? []), m]);
-    return [...map.entries()];
-  }, [models]);
 
   const submit = async (delivery?: "steer" | "followUp") => {
     const value = text.trim();
@@ -250,7 +245,7 @@ export function Composer({ autoFocusKey, seed, placeholder, simple, tall }: { au
               <span className="context-ring">{Math.round(view.contextUsage.percent)}%</span>
             )}
 
-            {!simple && (
+            {(!simple || showModel) && (
             <Popover
               placement="top-end"
               trigger={({ toggle }) => (
@@ -269,35 +264,7 @@ export function Composer({ autoFocusKey, seed, placeholder, simple, tall }: { au
             >
               {(close) => (
                 <>
-                  {grouped.length === 0 ? (
-                    <MenuItem
-                      description="No provider is signed in yet"
-                      onClick={() => {
-                        close();
-                        useApp.setState({ settingsOpen: "providers" });
-                      }}
-                    >
-                      Sign in to a model provider…
-                    </MenuItem>
-                  ) : (
-                    grouped.map(([provider, list]) => (
-                      <div key={provider}>
-                        <div className="menu-label">{provider === "llama.cpp" ? "Built-in (llama.cpp)" : provider}</div>
-                        {list.map((m) => (
-                          <MenuItem
-                            key={m.id}
-                            checked={m.provider === currentModel?.provider && m.id === currentModel?.id}
-                            onClick={() => {
-                              close();
-                              void actions.setModel(m.provider, m.id).catch((e: Error) => toast(e.message, "error"));
-                            }}
-                          >
-                            {pickerName(m.provider, m.name)}
-                          </MenuItem>
-                        ))}
-                      </div>
-                    ))
-                  )}
+                  <ModelMenuItems close={close} />
                   {(modelInfo?.reasoning ?? true) && (
                     <>
                       <div className="menu-sep" />

@@ -2736,6 +2736,10 @@ select:focus-visible {
   font-weight: 600;
 }
 .job-card p,
+.job-actions {
+  display: flex;
+  gap: 8px;
+}
 .job-error p {
   margin: 0;
   color: var(--text-2);

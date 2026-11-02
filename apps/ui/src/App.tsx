@@ -363,7 +363,7 @@ export function App() {
               )}
             </>
           )}
-          {!blocked && <Composer autoFocusKey={activeThreadId ?? "new"} seed={seed} {...(focused ? { simple: true, tall: !thread, placeholder: thread ? "Reply here (for example: done)" : "Paste your transactions here" } : {})} />}
+          {!blocked && <Composer autoFocusKey={activeThreadId ?? "new"} seed={seed} {...(focused ? { simple: true, showModel: true, tall: !thread, placeholder: thread ? "Reply here (for example: done)" : "Paste your transactions here" } : {})} />}
         </main>
       )}
 
