@@ -556,6 +556,9 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   });
   // The export file is read and parsed here only. The renderer gets a password-free preview, then confirms by token.
   const imports = createImportStore();
+  // Pending rows hold passwords: drop them when the window goes away or navigates.
+  owner.on("destroyed", () => imports.clear());
+  owner.on("did-start-navigation", (_e, _url, _inPlace, isMainFrame) => isMainFrame && imports.clear());
   guarded("logins:import:preview", () =>
     previewLoginImport(
       {
@@ -575,7 +578,11 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
     ),
   );
   guarded("logins:import:commit", (input: { token: string; ids: string[]; trashFile?: boolean }) =>
-    imports.commit(vault, (f) => shell.trashItem(f), { token: input?.token, ids: input?.ids, trashFile: input?.trashFile === true }),
+    imports.commit(vault, (f) => shell.trashItem(f), {
+      token: input?.token,
+      ids: Array.isArray(input?.ids) ? input.ids.filter((x): x is string => typeof x === "string") : [],
+      trashFile: input?.trashFile === true,
+    }),
   );
   guarded("logins:import:cancel", async (token: string) => imports.cancel(token));
 }

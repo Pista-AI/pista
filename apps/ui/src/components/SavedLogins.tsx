@@ -26,6 +26,7 @@ export function SavedLogins() {
   const [preview, setPreview] = useState<LoginImportPreview | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [presence, setPresence] = useState<"touchid" | "unavailable" | null>(null);
+  const previewToken = useRef<string | null>(null);
   const confirmSignIns = useConfigField("confirmSignIns");
   const alive = useRef(true);
 
@@ -54,6 +55,7 @@ export function SavedLogins() {
     }
     return () => {
       alive.current = false;
+      if (previewToken.current) logins?.importCancel(previewToken.current).catch(() => undefined);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -107,6 +109,7 @@ export function SavedLogins() {
     try {
       const r = await logins.importPreview();
       if (!alive.current || "canceled" in r) return;
+      previewToken.current = r.token;
       setPreview(r);
       setPicked(new Set(r.rows.map((row) => row.id)));
     } catch (err) {
@@ -117,17 +120,20 @@ export function SavedLogins() {
   };
   const cancelImport = () => {
     if (preview) logins.importCancel(preview.token).catch(() => undefined);
+    previewToken.current = null;
     setPreview(null);
   };
+  const allPicked = !!preview && picked.size === preview.rows.length;
   const commitImport = async () => {
     if (!preview) return;
     setImporting(true);
     setError(null);
     try {
       const r = await logins.importCommit({ token: preview.token, ids: [...picked], trashFile: trash });
-      if (alive.current) setImportNote(formatImportResult(r, trash));
-      await refresh();
+      previewToken.current = null;
+      if (alive.current) setImportNote(formatImportResult(r, trash && allPicked));
     } catch (err) {
+      previewToken.current = null;
       if (alive.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (alive.current) {
@@ -135,6 +141,7 @@ export function SavedLogins() {
         setImporting(false);
       }
     }
+    await refresh();
   };
   const toggle = (id: string) =>
     setPicked((prev) => {
@@ -232,6 +239,7 @@ export function SavedLogins() {
             <label className="login-trash">
               <input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} disabled={importing} /> Move the file to the Trash after importing
             </label>
+            {trash && !allPicked && <span className="help">The file stays where it is, because some rows are unticked.</span>}
             <div>
               <button type="button" className="pill-btn primary" disabled={importing || picked.size === 0} onClick={commitImport}>
                 Import {picked.size}

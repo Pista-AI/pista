@@ -50,5 +50,6 @@ const SKIP_LABELS: Record<string, string> = {
   "not-login": "not a website login",
   "missing-field": "username or password missing",
   "bad-url": "address could not be read",
+  duplicate: "another login for the same site is used instead",
 };
 export const skipReasonLabel = (reason: string) => SKIP_LABELS[reason] ?? "skipped";

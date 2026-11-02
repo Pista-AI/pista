@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import type { SaveLoginInput, SavedLoginMeta } from "./logins.js";
 
-export type SkipReason = "no-url" | "not-https" | "not-login" | "missing-field" | "bad-url";
+export type SkipReason = "no-url" | "not-https" | "not-login" | "missing-field" | "bad-url" | "duplicate";
 export interface ParsedLogins {
   rows: SaveLoginInput[];
   skipped: { reason: SkipReason; count: number }[];
@@ -176,6 +176,7 @@ export interface ImportPreview {
   skipped: { line?: number; reason: SkipReason }[];
 }
 export const IMPORT_EXPIRED = "That import has expired. Choose the file again.";
+export const VAULT_UNAVAILABLE = "Saved logins could not be read.";
 export const IMPORT_TTL_MS = 5 * 60_000;
 
 interface Pending {
@@ -212,13 +213,13 @@ export function createImportStore(opts: { now?: () => number; ttlMs?: number; to
       skipped: { line?: number; reason: SkipReason }[],
       trashPath?: string,
     ): Promise<ImportPreview> {
-      const existing = new Set((await vault.list()).map((l) => l.origin));
+      const existing = new Set((await vault.list().catch(() => Promise.reject(new ImportError(VAULT_UNAVAILABLE)))).map((l) => l.origin));
       const byOrigin = new Map<string, SaveLoginInput>();
       const skippedAll = [...skipped];
       for (const row of rows) {
         try {
           const origin = new URL(row.loginUrl).origin;
-          byOrigin.delete(origin);
+          if (byOrigin.delete(origin)) skippedAll.push({ reason: "duplicate" });
           byOrigin.set(origin, row);
         } catch {
           skippedAll.push({ reason: "bad-url" });
@@ -228,6 +229,8 @@ export function createImportStore(opts: { now?: () => number; ttlMs?: number; to
       const token = newToken();
       pending.clear();
       pending.set(token, { expires: now() + ttl, rows: kept.map(([, r]) => r), skipped: skippedAll.length, trashPath });
+      // Plaintext passwords must not outlive the window to confirm, even if nobody commits or cancels.
+      setTimeout(() => pending.delete(token), ttl).unref();
       return {
         token,
         source,
@@ -245,10 +248,13 @@ export function createImportStore(opts: { now?: () => number; ttlMs?: number; to
       const ids = new Set(Array.isArray(input.ids) ? input.ids.map(String) : []);
       const chosen = entry.rows.filter((_, i) => ids.has(String(i)));
       const done = await importLogins(vault, chosen);
-      // Trashing is reversible, and only done when every chosen row was stored; otherwise the user still needs the file.
+      // Trashing is reversible, and only done when every previewed row was chosen and stored; otherwise the user still needs the file.
       const trashed =
-        input.trashFile === true && entry.trashPath && done.imported > 0 && done.failed === 0 ? await trash(entry.trashPath).then(() => true, () => false) : false;
+        input.trashFile === true && entry.trashPath && chosen.length === entry.rows.length && done.imported > 0 && done.failed === 0 ? await trash(entry.trashPath).then(() => true, () => false) : false;
       return { ...done, skipped: entry.skipped + (entry.rows.length - chosen.length), trashed };
+    },
+    clear() {
+      pending.clear();
     },
     cancel(token: unknown) {
       if (typeof token === "string") pending.delete(token);
