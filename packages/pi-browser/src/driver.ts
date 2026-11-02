@@ -46,6 +46,8 @@ export interface BrowserDriver {
   loginList?(): Promise<SavedLoginMeta[]>;
   /** Optional: signs in to the current page with the saved login `site` (id or label). The desktop app types the secret; it never passes through here. */
   loginFill?(site: string): Promise<{ ok: boolean; note: string }>;
+  /** Optional: brings the browser window in front of the user so they can act in it (sign-in, passkey, 2FA, CAPTCHA). */
+  bringToFront?(): Promise<void>;
   /** Optional: what the agent is doing, for drivers that show it to the user. */
   setActivity?(label: string): void;
   /** Optional: protocol round trips so far, for per-step traces. Drivers that don't count leave it out. */

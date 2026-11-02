@@ -68,15 +68,16 @@ test("driver acks every frame, delivers at most the throttled ones, and runs the
   assert.ok(methods().includes("Page.stopScreencast"));
 });
 
-test("bringToFront raises the page and restores the window", async () => {
-  const calls: string[] = [];
+function windowTest(state: string) {
+  const calls: { method: string; params: any }[] = [];
   const transport: CdpTransport = {
-    async send(method) {
-      calls.push(method);
+    async send(method, params = {}) {
+      calls.push({ method, params });
       if (method === "Target.createTarget") return { targetId: "T1" };
       if (method === "Target.attachToTarget") return { sessionId: "S1" };
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "F1" } } };
       if (method === "Browser.getWindowForTarget") return { windowId: 7 };
+      if (method === "Browser.getWindowBounds") return { bounds: { windowState: state } };
       return {};
     },
     onEvent() {},
@@ -84,6 +85,21 @@ test("bringToFront raises the page and restores the window", async () => {
     close() {},
   };
   const driver = new ChromeDriver({ pistaHome: "/nowhere" }, { find: () => ({ kind: "chrome", path: "/c" }), launch: (async () => ({ transport, process: {}, close: async () => {} })) as any });
+  return { driver, calls };
+}
+
+test("bringToFront raises the page and restores a minimized window", async () => {
+  const { driver, calls } = windowTest("minimized");
   await driver.bringToFront();
-  assert.ok(calls.includes("Page.bringToFront") && calls.includes("Browser.setWindowBounds"));
+  assert.ok(calls.some((c) => c.method === "Page.bringToFront"));
+  assert.deepEqual(calls.find((c) => c.method === "Browser.setWindowBounds")!.params, { windowId: 7, bounds: { windowState: "normal" } });
+});
+
+test("bringToFront leaves fullscreen, maximized and normal windows alone", async () => {
+  for (const state of ["fullscreen", "maximized", "normal"]) {
+    const { driver, calls } = windowTest(state);
+    await driver.bringToFront();
+    assert.ok(calls.some((c) => c.method === "Page.bringToFront"), state);
+    assert.ok(!calls.some((c) => c.method === "Browser.setWindowBounds"), state);
+  }
 });

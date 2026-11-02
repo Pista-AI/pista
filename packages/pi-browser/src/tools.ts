@@ -300,6 +300,26 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       }),
     );
   }
+  // Registered only when the driver shows an external window (the chrome driver).
+  if (probe?.bringToFront) {
+    pi.registerTool(
+      defineTool({
+        name: "browser_show_user",
+        label: "Browser: show to user",
+        description:
+          "Bring the browser window to the front so the user can act in it. Call this when the user must do something you cannot: sign in, approve a passkey, enter a 2FA code or solve a CAPTCHA. Then stop and wait until the user says they are done. Takes no arguments.",
+        promptSnippet: "browser_show_user: bring the browser to the front when the user must act in it (sign-in, passkey, 2FA, CAPTCHA), then wait for them",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const d = await driver();
+          if (!d.bringToFront) throw new Error("browser_show_user is not supported with this browser driver.");
+          await d.bringToFront();
+          const r = { ok: true, note: "The browser is in front of the user. Tell them what to do, then wait for them to say they are done before you continue." };
+          return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r };
+        },
+      }),
+    );
+  }
   pi.registerTool(
     defineTool({
       name: "browser_screenshot",

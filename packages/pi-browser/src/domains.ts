@@ -136,6 +136,7 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
           return inner.loginFill!(site);
         }
       : undefined,
+    bringToFront: inner.bringToFront?.bind(inner),
     setActivity: inner.setActivity?.bind(inner),
     stats: inner.stats?.bind(inner),
   };

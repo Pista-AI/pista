@@ -164,7 +164,7 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     await this.sendRaw("Page.stopScreencast").catch(() => undefined);
   }
 
-  /** Brings the browser window to the front, un-minimized, so the user can take over (sign-in, one-time codes). */
+  /** Brings the browser window to the front (restoring it only if minimized), so the user can take over (sign-in, one-time codes). */
   async bringToFront() {
     await this.connect();
     await this.sendRaw("Page.bringToFront");
@@ -172,7 +172,9 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     if (!transport || !this.ownTarget) return;
     try {
       const { windowId } = await transport.send("Browser.getWindowForTarget", { targetId: this.ownTarget });
-      await transport.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+      // Only a minimized window is restored; fullscreen and maximized windows stay as the user left them.
+      const { bounds } = await transport.send("Browser.getWindowBounds", { windowId });
+      if (bounds?.windowState === "minimized") await transport.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
     } catch {
       // Windowless or headless browsers have no window to restore.
     }
