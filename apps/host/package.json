@@ -22,7 +22,7 @@
     "pi-memory": "^0.4.2",
     "pi-web-access": "^0.44.0",
     "typebox": "^1.4.3",
-    "undici": "7.30.0",
+    "undici": "7.30.1",
     "ws": "^8.22.0"
   },
   "devDependencies": {
