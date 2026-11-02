@@ -7,7 +7,7 @@ const MAX_READ_BYTES = 1_000_000;
 export const INVOICES_DIR = "invoices";
 
 /** Real path of `path`: the deepest existing ancestor is resolved through symlinks and the missing rest is appended. */
-function realpathLoose(path: string): string {
+export function realpathLoose(path: string): string {
   let existing = path;
   const rest: string[] = [];
   while (!existsSync(existing)) {

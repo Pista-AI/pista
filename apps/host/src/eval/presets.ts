@@ -400,7 +400,7 @@ const ENV_KEEP = /^(PATH|HOME|TMPDIR|SHELL|LANG|LC_[A-Z_]+|USER|LOGNAME|TERM|[A-
 export function childEnv(base: NodeJS.ProcessEnv, over: { home: string; agent: string; memory: string; auth?: { key?: string; plain?: boolean } }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined && ENV_KEEP.test(k)) env[k] = v;
-  // The encrypted store's key (or plain-mode flag) is the one PISTA_* value the child needs; it has no stdin, so it goes by env.
+  // The encrypted store's key (or plain-mode flag) is the one PISTA_* value the child needs; it is not an Electron utilityProcess, so it goes by env.
   if (over.auth?.key) env.PISTA_AUTH_KEY = over.auth.key;
   else if (over.auth?.plain) env.PISTA_AUTH_PLAIN = "1";
   return { ...env, PISTA_HOME: over.home, PI_CODING_AGENT_DIR: over.agent, PI_MEMORY_DIR: over.memory };

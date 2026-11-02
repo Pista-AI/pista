@@ -208,7 +208,8 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           ref: Type.Optional(Type.String({ description: "Snapshot ref of the element that starts the download when clicked" })),
           path: Type.String({ description: "Where to save it, relative to the project folder" }),
         }),
-        execute: async (_id, { url, ref, path }, signal) => {
+        execute: async (_id, { url: rawUrl, ref, path }, signal) => {
+          let url = rawUrl;
           if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
           const folder = root();
           if (!folder) throw new Error("browser_download: no project folder is known for this thread.");
@@ -216,6 +217,15 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const d = await driver();
           if (!d.download) throw new Error("browser_download is not supported with this browser driver (the cdp driver cannot save downloads).");
           d.setActivity?.(`Downloading ${path}`);
+          // A relative link ("/invoice.pdf") only means something against the page the model is looking at; the guard must see the absolute address.
+          if (url) {
+            const base = (await d.state()).url;
+            try {
+              url = new URL(url, base || undefined).href;
+            } catch {
+              throw new Error(`browser_download: "${url}" is not a valid address${base ? ` on ${base}` : ""}.`);
+            }
+          }
           // A link to a PDF would open in the inline viewer instead of downloading, so a link is downloaded by address with the pane's session.
           const href = ref ? String(await d.evaluate(scripts.href(ref)).catch(() => "")) : "";
           const trigger = ref && !href
@@ -245,6 +255,22 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     }
   })();
   if (probe?.loginFill && probe.loginList) {
+    pi.registerTool(
+      defineTool({
+        name: "browser_logins",
+        label: "Browser: saved logins",
+        description: "List the sites the owner saved a login for: each name and sign-in address. Never shows usernames or passwords. Takes no arguments.",
+        promptSnippet: "browser_logins: list the sites with a saved login",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const d = await driver();
+          if (!d.loginList) throw new Error("browser_logins is not supported with this browser driver.");
+          const logins = (await d.loginList()).map((l) => ({ label: l.label, origin: l.origin }));
+          const r = { logins };
+          return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r };
+        },
+      }),
+    );
     pi.registerTool(
       defineTool({
         name: "browser_login",

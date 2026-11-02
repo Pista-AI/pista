@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
 import { test } from "node:test";
-import { createAuthKeyVault, NO_AUTH_KEYCHAIN_MESSAGE, writeKeyToStdin } from "../src/auth-key.ts";
+import { createAuthKeyVault, NO_AUTH_KEYCHAIN_MESSAGE, sendKeyToHost } from "../src/auth-key.ts";
 import type { VaultCrypto } from "../src/logins.ts";
 
 const MARK = "FAKE:";
@@ -67,15 +66,21 @@ test("load errors never contain key material", async () => {
   for (const m of messages) assert.ok(!m.includes(key) && !/[0-9a-f]{32}/.test(m));
 });
 
-test("writeKeyToStdin writes hex and a newline, then ends the stream", async () => {
-  const stream = new PassThrough();
-  const chunks: Buffer[] = [];
-  stream.on("data", (c: Buffer) => chunks.push(c));
-  const ended = new Promise((r) => stream.on("end", r));
+test("sendKeyToHost posts a 32-byte Uint8Array copy, then zeroes the caller's buffer", () => {
+  const posted: unknown[] = [];
   const key = Buffer.alloc(32, 0xab);
-  await writeKeyToStdin(stream, key);
-  await ended;
-  assert.equal(Buffer.concat(chunks).toString(), `${key.toString("hex")}\n`);
+  sendKeyToHost({ postMessage: (m) => posted.push(structuredClone(m)) }, key);
+  assert.equal(posted.length, 1);
+  const msg = posted[0] as { type: string; key: Uint8Array };
+  assert.equal(msg.type, "auth-key");
+  assert.deepEqual([...msg.key], new Array(32).fill(0xab));
+  assert.ok(key.every((b) => b === 0));
+});
+
+test("sendKeyToHost zeroes the buffer even when postMessage throws", () => {
+  const key = Buffer.alloc(32, 1);
+  assert.throws(() => sendKeyToHost({ postMessage: () => { throw new Error("gone"); } }, key));
+  assert.ok(key.every((b) => b === 0));
 });
 
 test("a throwing decrypt gives a clear error and leaves the file unchanged", async () => {
@@ -110,14 +115,4 @@ test("decrypted content of the wrong length or uppercase hex is corrupt", async 
     await assert.rejects(createAuthKeyVault({ file, crypto: fakeCrypto() }).load(), /corrupt/);
     assert.equal(await readFile(file, "utf8"), content);
   }
-});
-
-test("writeKeyToStdin on a destroyed stream settles instead of hanging", async () => {
-  const stream = new PassThrough();
-  stream.destroy();
-  const result = await Promise.race([
-    writeKeyToStdin(stream, Buffer.alloc(32, 1), 200).then(() => "settled", () => "settled"),
-    new Promise((r) => setTimeout(() => r("hung"), 2000)),
-  ]);
-  assert.equal(result, "settled");
 });

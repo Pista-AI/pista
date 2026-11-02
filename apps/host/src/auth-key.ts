@@ -1,57 +1,61 @@
 // Where the host gets the key for its encrypted credential store (auth.enc.json).
-// Preferred: the desktop app writes the key as one hex line to the host's stdin (PISTA_AUTH_KEY_STDIN=1); it never
-// appears in argv or the environment. Headless: PISTA_AUTH_KEY (64 hex chars). A process's environment is visible to
-// other processes of the same user, so stdin is preferred; the variable is removed from process.env once read so
-// child processes (MCP servers, shell tools, `!command` values) do not inherit it.
+// Preferred: the desktop app posts the 32-byte key over the utilityProcess message channel right after fork
+// (PISTA_AUTH_KEY_PORT=1, read from process.parentPort); it never appears in argv, the environment or logs.
+// Headless: PISTA_AUTH_KEY (64 hex chars). A process's environment is visible to other processes of the same user,
+// so the channel is preferred; the variable is removed from process.env once read so child processes (MCP servers,
+// shell tools, `!command` values) do not inherit it.
 // PISTA_AUTH_PLAIN=1 keeps Pi's plain auth.json. Key material is never logged or echoed in errors.
 export type AuthKeySource = { kind: "key"; key: Buffer } | { kind: "plain" };
 
 const HEX_KEY = /^[0-9a-fA-F]{64}$/;
-const MAX_LINE = 1024;
 
 export function formatAuthKeyHex(key: Buffer): string {
   return key.toString("hex");
 }
 
-function readKeyLine(stdin: NodeJS.ReadableStream, timeoutMs: number): Promise<string> {
+/** The slice of Electron's process.parentPort the host uses (a utilityProcess child). Absent in plain Node. */
+export interface ParentPortLike {
+  once(event: "message", listener: (event: { data: unknown }) => void): unknown;
+  removeListener?(event: "message", listener: (event: { data: unknown }) => void): unknown;
+}
+
+export function currentParentPort(): ParentPortLike | undefined {
+  return "parentPort" in process ? (process as unknown as { parentPort?: ParentPortLike }).parentPort : undefined;
+}
+
+function readKeyMessage(port: ParentPortLike, timeoutMs: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    let buf = "";
-    const done = (fn: () => void) => {
+    const onMessage = (event: { data: unknown }) => {
       clearTimeout(timer);
-      stdin.removeListener("data", onData);
-      stdin.removeListener("end", onEnd);
-      stdin.removeListener("error", onError);
-      stdin.pause();
-      (stdin as { unref?: () => void }).unref?.();
-      fn();
+      const data = event.data as { type?: unknown; key?: unknown } | null;
+      const key = data && typeof data === "object" ? data.key : undefined;
+      if (data?.type !== "auth-key" || !(key instanceof Uint8Array) || key.byteLength !== 32) {
+        if (key instanceof Uint8Array) key.fill(0);
+        return reject(new Error("auth key message from the desktop app is malformed (expected 32 bytes)"));
+      }
+      const out = Buffer.from(key);
+      key.fill(0);
+      resolve(out);
     };
-    const onData = (chunk: Buffer | string) => {
-      buf += chunk.toString("utf-8");
-      const nl = buf.indexOf("\n");
-      if (nl >= 0) return done(() => resolve(buf.slice(0, nl).replace(/\r$/, "")));
-      if (buf.length > MAX_LINE) done(() => reject(new Error("auth key on stdin is malformed (line too long)")));
-    };
-    const onEnd = () => done(() => reject(new Error("auth key on stdin is malformed (stream ended before a newline)")));
-    const onError = () => done(() => reject(new Error("auth key could not be read from stdin")));
-    const timer = setTimeout(() => done(() => reject(new Error("timed out waiting for the auth key on stdin"))), timeoutMs);
-    stdin.on("data", onData);
-    stdin.on("end", onEnd);
-    stdin.on("error", onError);
+    const timer = setTimeout(() => {
+      port.removeListener?.("message", onMessage);
+      reject(new Error("timed out waiting for the auth key from the desktop app"));
+    }, timeoutMs);
+    port.once("message", onMessage);
   });
 }
 
 export async function resolveAuthKeySource(
   env: NodeJS.ProcessEnv,
-  stdin: NodeJS.ReadableStream,
+  parentPort: ParentPortLike | undefined,
   options: { timeoutMs?: number } = {},
 ): Promise<AuthKeySource> {
   // Taken out of the environment on every path, so children never inherit it.
   const envKey = env.PISTA_AUTH_KEY;
   delete env.PISTA_AUTH_KEY;
-  if (env.PISTA_AUTH_KEY_STDIN === "1") {
-    const line = await readKeyLine(stdin, options.timeoutMs ?? 5000);
-    if (!HEX_KEY.test(line)) throw new Error("auth key on stdin is malformed (expected 64 hex characters)");
-    return { kind: "key", key: Buffer.from(line, "hex") };
+  if (env.PISTA_AUTH_KEY_PORT === "1") {
+    if (!parentPort) throw new Error("PISTA_AUTH_KEY_PORT=1 needs the Pista desktop app (no parent message channel in this process)");
+    return { kind: "key", key: await readKeyMessage(parentPort, options.timeoutMs ?? 10_000) };
   }
   if (envKey !== undefined) {
     const value = envKey;

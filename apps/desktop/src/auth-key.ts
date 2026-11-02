@@ -75,24 +75,18 @@ export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto 
   };
 }
 
-/** Writes the key as one hex line and closes the stream. Never logs; messages carry no key content. */
-export function writeKeyToStdin(stdin: NodeJS.WritableStream, key: Buffer, timeoutMs = 5000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (error?: Error) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      stdin.removeListener("error", onError);
-      stdin.removeListener("close", onClose);
-      if (error) reject(error);
-      else resolve();
-    };
-    const onError = () => finish(new Error("The host did not accept the auth key."));
-    const onClose = () => finish();
-    const timer = setTimeout(() => finish(new Error("The host did not accept the auth key.")), timeoutMs);
-    stdin.once("error", onError);
-    stdin.once("close", onClose);
-    stdin.end(`${key.toString("hex")}\n`, () => finish());
-  });
+/** The slice of Electron's UtilityProcess used for the key handoff. */
+export interface KeyReceiver {
+  postMessage(message: unknown): void;
+}
+
+/** Posts the key to the host as a Uint8Array copy (structured clone), then zeroes the caller's buffer. Never logs. */
+export function sendKeyToHost(child: KeyReceiver, key: Buffer): void {
+  const copy = new Uint8Array(key);
+  try {
+    child.postMessage({ type: "auth-key", key: copy });
+  } finally {
+    copy.fill(0);
+    key.fill(0);
+  }
 }

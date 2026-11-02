@@ -17,7 +17,7 @@ import {
   type MethodName,
   type Methods,
 } from "@pista/protocol";
-import { resolveAuthKeySource } from "./auth-key.ts";
+import { currentParentPort, resolveAuthKeySource } from "./auth-key.ts";
 import { setupCredentials } from "./auth-setup.ts";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
 import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
@@ -88,7 +88,13 @@ for (const warning of store.policyWarnings) console.warn(`[pista-host] managed p
 const hub = new Hub();
 let credentials: Awaited<ReturnType<typeof setupCredentials>>["credentials"];
 try {
-  credentials = (await setupCredentials(await resolveAuthKeySource(process.env, process.stdin), piAgentDir(), console.log)).credentials;
+  const authSource = await resolveAuthKeySource(process.env, currentParentPort());
+  try {
+    credentials = (await setupCredentials(authSource, piAgentDir(), console.log)).credentials;
+  } finally {
+    // The store keeps its own copy of the key; do not retain this one.
+    if (authSource.kind === "key") authSource.key.fill(0);
+  }
 } catch (error) {
   console.error(`[pista-host] ${(error as Error).message}`);
   process.exit(1);

@@ -97,7 +97,7 @@ Isolation: every run is its own child process (the host reads `PISTA_HOME` and t
 
 ## Source of truth for settings
 
-Pista's `config.json` owns the model and provider defaults, the approval mode and every other setting the UI shows. Pi's `$PISTA_HOME/pi/settings.json` is derived: `buildSession` rewrites its `defaultProvider` and `defaultModel` from `config.defaultModel` on every session build (when Pista has one), and the host never reads those two values back from Pi, so hand-editing them has no effect. `models.json` is a Pi-owned input that Pista only reads through Pi. Provider credentials live in `auth.enc.json`, an AES-256-GCM file written by the host's own credential store (`auth-store.ts`) and keyed over stdin by the desktop app; a plain `auth.json` is migrated into it and removed on first start. A future managed-policy loader will generate the Pi files from policy rather than have users edit them.
+Pista's `config.json` owns the model and provider defaults, the approval mode and every other setting the UI shows. Pi's `$PISTA_HOME/pi/settings.json` is derived: `buildSession` rewrites its `defaultProvider` and `defaultModel` from `config.defaultModel` on every session build (when Pista has one), and the host never reads those two values back from Pi, so hand-editing them has no effect. `models.json` is a Pi-owned input that Pista only reads through Pi. Provider credentials live in `auth.enc.json`, an AES-256-GCM file written by the host's own credential store (`auth-store.ts`) and keyed by the desktop app over the utilityProcess message channel; a plain `auth.json` is migrated into it and removed on first start. A future managed-policy loader will generate the Pi files from policy rather than have users edit them.
 
 ## Browser tools
 

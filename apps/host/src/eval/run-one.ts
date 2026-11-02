@@ -74,10 +74,10 @@ async function review(runtime: typeof models, ref: { provider: string; id: strin
 /** Same store the host uses; the parent hands the key over PISTA_AUTH_KEY (or PISTA_AUTH_PLAIN=1). Fake runs have neither. */
 async function childCredentials(): Promise<{ credentials?: CredentialStore }> {
   if (job.fake) return {};
-  const { resolveAuthKeySource } = await import("../auth-key.ts");
+  const { currentParentPort, resolveAuthKeySource } = await import("../auth-key.ts");
   const { setupCredentials } = await import("../auth-setup.ts");
   const { piAgentDir } = await import("../pi-env.ts");
-  const { credentials } = await setupCredentials(await resolveAuthKeySource(process.env, process.stdin), piAgentDir(), () => {});
+  const { credentials } = await setupCredentials(await resolveAuthKeySource(process.env, currentParentPort()), piAgentDir(), () => {});
   return credentials ? { credentials } : {};
 }
 

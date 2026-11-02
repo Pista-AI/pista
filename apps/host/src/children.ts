@@ -10,6 +10,7 @@ import type { AgentRoleName, HostConfig, ModelRef, ThinkingMode, ThreadSummary }
 import type { ConfigStore } from "./config.ts";
 import { contextPruneExtension } from "./context-prune.ts";
 import { browsingTurnsExtension } from "./browsing-turns.ts";
+import { manifestMergeExtension } from "./manifest.ts";
 import { approvalExtension, browserExtension, loopGuardExtension, policyGateExtension, type ThreadRef } from "./extensions.ts";
 import type { Hub } from "./hub.ts";
 import type { RecordDecision } from "./decisions.ts";
@@ -123,6 +124,8 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     contextPruneExtension(store),
     // Children share the parent's cwd, so only role-less threads may write the plan file.
     ...(role ? [] : [planTool({ ...deps.plan, record: deps.record })]),
+    // Before approvals, so the owner sees the merged content.
+    ...(kind.role === "invoice-fetch" && !kind.hasParent && deps.cwd ? [manifestMergeExtension(deps.cwd)] : []),
     watch(approvalExtension(hub, store, ref, deps.alwaysAllowed, invoiceWriteGate(kind, deps.cwd), invoiceReadGate(kind, deps.cwd)), "approval"),
     // Last, so it sees the input as every other extension left it and nothing runs after its block.
     ...(store.toolRules ? [policyGateExtension(store.toolRules, tools ? (name, input, denial, id) => tools.decision(id, name, input, "deny", { source: "policy", rule: denial.rule }) : undefined)] : []),

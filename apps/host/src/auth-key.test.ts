@@ -1,75 +1,69 @@
 import assert from "node:assert/strict";
-import { PassThrough } from "node:stream";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
-import { formatAuthKeyHex, resolveAuthKeySource } from "./auth-key.ts";
+import { currentParentPort, formatAuthKeyHex, resolveAuthKeySource } from "./auth-key.ts";
 
 const HEX = "ab".repeat(32);
 
-test("stdin: reads one hex line", async () => {
-  const stdin = new PassThrough();
-  stdin.write(`${HEX}\n`);
-  const src = await resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, stdin);
-  assert.equal(src.kind, "key");
+function fakePort() {
+  const port = new EventEmitter();
+  return Object.assign(port, { send: (data: unknown) => port.emit("message", { data }) });
+}
+const keyBytes = () => new Uint8Array(Buffer.from(HEX, "hex"));
+
+test("port: reads the key message and zeroes the received bytes", async () => {
+  const port = fakePort();
+  const bytes = keyBytes();
+  const p = resolveAuthKeySource({ PISTA_AUTH_KEY_PORT: "1" }, port);
+  port.send({ type: "auth-key", key: bytes });
+  const src = await p;
   assert.equal(src.kind === "key" && formatAuthKeyHex(src.key), HEX);
+  assert.ok(bytes.every((b) => b === 0));
+  assert.equal(port.listenerCount("message"), 0);
 });
 
-test("stdin: key split across chunks, CRLF accepted", async () => {
-  const stdin = new PassThrough();
-  const p = resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, stdin);
-  stdin.write(HEX.slice(0, 10));
-  stdin.write(`${HEX.slice(10)}\r\n`);
-  assert.equal((await p).kind, "key");
+test("port: malformed messages throw without echoing content", async () => {
+  for (const data of [{ type: "auth-key", key: new Uint8Array(31).fill(7) }, { type: "auth-key", key: HEX }, { type: "other", key: keyBytes() }, null, "zzzz"]) {
+    const port = fakePort();
+    const p = resolveAuthKeySource({ PISTA_AUTH_KEY_PORT: "1" }, port);
+    port.send(data);
+    await assert.rejects(p, (e: Error) => /malformed/.test(e.message) && !e.message.includes(HEX) && !e.message.includes("zzzz"));
+  }
 });
 
-test("stdin: malformed, too long, ended and timeout all throw without echoing content", async () => {
-  const bad = new PassThrough();
-  bad.write("not-a-key-zzzz\n");
-  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, bad), (e: Error) => /malformed/.test(e.message) && !e.message.includes("zzzz"));
-  const long = new PassThrough();
-  long.write("a".repeat(2000));
-  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, long), /malformed/);
-  const ended = new PassThrough();
-  ended.end(HEX);
-  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, ended), (e: Error) => /malformed/.test(e.message) && !e.message.includes(HEX));
-  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, new PassThrough(), { timeoutMs: 20 }), /timed out/);
+test("port: timeout, and missing parent port, give clear errors", async () => {
+  const port = fakePort();
+  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_PORT: "1" }, port, { timeoutMs: 20 }), /timed out/);
+  assert.equal(port.listenerCount("message"), 0);
+  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_PORT: "1" }, undefined), /desktop app/);
+});
+
+test("currentParentPort is undefined in plain Node", () => {
+  assert.equal(currentParentPort(), undefined);
 });
 
 test("env: accepts a key and deletes the variable", async () => {
   const env: NodeJS.ProcessEnv = { PISTA_AUTH_KEY: HEX };
-  const src = await resolveAuthKeySource(env, new PassThrough());
+  const src = await resolveAuthKeySource(env, undefined);
   assert.equal(src.kind, "key");
   assert.equal(env.PISTA_AUTH_KEY, undefined);
 });
 
 test("env: malformed key throws and does not echo it", async () => {
   const env: NodeJS.ProcessEnv = { PISTA_AUTH_KEY: "secret-nonhex" };
-  await assert.rejects(resolveAuthKeySource(env, new PassThrough()), (e: Error) => /malformed/.test(e.message) && !e.message.includes("secret"));
+  await assert.rejects(resolveAuthKeySource(env, undefined), (e: Error) => /malformed/.test(e.message) && !e.message.includes("secret"));
   assert.equal(env.PISTA_AUTH_KEY, undefined);
 });
 
-test("stdin wins over env; plain; none", async () => {
-  const stdin = new PassThrough();
-  stdin.write(`${HEX}\n`);
-  assert.equal((await resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1", PISTA_AUTH_PLAIN: "1" }, stdin)).kind, "key");
-  assert.deepEqual(await resolveAuthKeySource({ PISTA_AUTH_PLAIN: "1" }, new PassThrough()), { kind: "plain" });
-  await assert.rejects(resolveAuthKeySource({}, new PassThrough()), /No auth key: start Pista from the desktop app/);
-});
-
-test("stdin wins over PISTA_AUTH_KEY and the env var is removed", async () => {
+test("port wins over env and removes the env var; plain; none", async () => {
   const other = "cd".repeat(32);
-  const env: NodeJS.ProcessEnv = { PISTA_AUTH_KEY_STDIN: "1", PISTA_AUTH_KEY: other };
-  const stdin = new PassThrough();
-  stdin.write(`${HEX}\n`);
-  const src = await resolveAuthKeySource(env, stdin);
+  const env: NodeJS.ProcessEnv = { PISTA_AUTH_KEY_PORT: "1", PISTA_AUTH_KEY: other };
+  const port = fakePort();
+  const p = resolveAuthKeySource(env, port);
+  port.send({ type: "auth-key", key: keyBytes() });
+  const src = await p;
   assert.equal(src.kind === "key" && formatAuthKeyHex(src.key), HEX);
   assert.equal(env.PISTA_AUTH_KEY, undefined);
-});
-
-test("stdin: no listeners remain after resolve or reject", async () => {
-  const ok = new PassThrough();
-  ok.write(`${HEX}\n`);
-  await resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, ok);
-  const bad = new PassThrough();
-  await assert.rejects(resolveAuthKeySource({ PISTA_AUTH_KEY_STDIN: "1" }, bad, { timeoutMs: 10 }));
-  for (const s of [ok, bad]) for (const ev of ["data", "end", "error"]) assert.equal(s.listenerCount(ev), 0, ev);
+  assert.deepEqual(await resolveAuthKeySource({ PISTA_AUTH_PLAIN: "1" }, undefined), { kind: "plain" });
+  await assert.rejects(resolveAuthKeySource({}, undefined), /No auth key: start Pista from the desktop app/);
 });

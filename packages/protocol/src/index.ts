@@ -436,6 +436,8 @@ export interface HostConfig {
   llamaEnabled: boolean;
   /** Focused mode: the app opens as one guided job (paste transactions, collect invoices) instead of the general projects and chats UI. Absent is off. */
   focusedMode?: boolean;
+  /** Ask before every saved-login sign-in (`browser_login`), even in full-access mode. Absent counts as on. */
+  confirmSignIns?: boolean;
   /** Upper clamp on each model's per-response output cap, in tokens; undefined keeps the model's default. */
   maxOutputTokens?: number;
   /** Default verify gate for sub-agents that change files; a trusted project's `.pista/verify.json` wins. */
@@ -712,8 +714,8 @@ export type BrowserAction = (
   | { action: "input"; event: BrowserInput }
   | { action: "back" }
   | { action: "reload" }
-  /** Arms the next download of the pane to save at `path` (absolute); with `url` it also starts that download using the pane's session. */
-  | { action: "download.arm"; path: string; url?: string }
+  /** Arms the next download of the pane to save at `path` (absolute) inside the project folder `root`, which the shell checks; with `url` it also starts that download using the pane's session. */
+  | { action: "download.arm"; path: string; root?: string; url?: string }
   /** Resolves with the armed download's result once it completed. Rejects when none started in time or it failed. */
   | { action: "download.wait" }
   /** Lists the saved logins (metadata only) the desktop shell holds. */

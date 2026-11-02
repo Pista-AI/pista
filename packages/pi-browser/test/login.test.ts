@@ -56,3 +56,14 @@ test("domain rules: a denied saved origin is never filled", async () => {
   const open = guardDriver(inner, { deniedDomains: ["other.test"] });
   assert.equal((await open.loginFill!("Fixture")).ok, true);
 });
+
+test("browser_logins: returns label and origin, never the username", async () => {
+  const s = setup();
+  const r = JSON.parse((await s.tools.get("browser_logins")!.execute("1", {}, undefined)).content[0]!.text);
+  assert.deepEqual(r, { logins: [{ label: "Fixture", origin: "https://shop.test" }] });
+  assert.ok(!JSON.stringify(r).includes("ann"));
+});
+
+test("browser_logins: not registered when the driver cannot fill", () => {
+  assert.equal(setup({ loginFill: undefined }).tools.has("browser_logins"), false);
+});
