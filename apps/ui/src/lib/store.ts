@@ -200,6 +200,18 @@ export function isLocked(key: keyof HostConfig): boolean {
   return get().policy.locked.includes(key);
 }
 
+/** Once per install: say so when the default (auto) found no Chrome and the built-in browser is used instead. */
+function notifyBrowserFallback(info: { browserEngineFallback?: boolean }) {
+  if (!info.browserEngineFallback) return;
+  try {
+    if (localStorage.getItem("pista.chromeFallbackNotice")) return;
+    localStorage.setItem("pista.chromeFallbackNotice", "1");
+  } catch {
+    // No storage: show it each start rather than never.
+  }
+  toast("Chrome not found, using the built-in browser. Install Chrome, Edge or Brave to sign in once and keep passkeys.", "warn");
+}
+
 let toastSeq = 0;
 export function toast(message: string, level: Toast["level"] = "info") {
   const id = ++toastSeq;
@@ -246,6 +258,7 @@ export const actions = {
       projects: info.projects,
       draftProjectId: get().draftProjectId ?? info.projects[0]?.id ?? null,
     });
+    notifyBrowserFallback(info);
     await Promise.all([actions.refreshThreads(), actions.refreshModels(), actions.refreshProviders()]);
     const active = get().activeThreadId;
     if (active) await actions.openThread(active);
@@ -400,6 +413,8 @@ export const actions = {
     const config = await host.call("config.set", { patch });
     set((s) => ({ config, configSources: { ...s.configSources, ...Object.fromEntries(Object.keys(patch).map((k) => [k, "user"])) } }));
     browser.baseUrl = config.homeUrl;
+    // The resolved engine (and its reason) comes from host.hello; refresh it when the setting changed.
+    if ("browserEngine" in patch) set({ info: await host.call("host.hello", { client: { nativeBrowser: Boolean(window.pistaDesktop?.browser) } }) });
     return config;
   },
 

@@ -1,6 +1,7 @@
-import { CdpDriver, type BrowserDriver, type PageState } from "@pista/pi-browser";
-import type { BrowserAction, BrowserInput, BrowserResult } from "@pista/protocol";
+import { CdpDriver, ChromeDriver, findBrowser, type BrowserDriver, type DomainRules, type FoundBrowser, type PageState } from "@pista/pi-browser";
+import type { BrowserAction, BrowserEngineSetting, BrowserInput, BrowserResult } from "@pista/protocol";
 import type { Hub } from "./hub.ts";
+import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Mutable binding so a driver created before the session knows which thread it serves. */
 export interface ThreadRef {
@@ -11,46 +12,122 @@ export interface ThreadRef {
 
 /**
  * Which browser the `browser_*` tools drive. `pane` is the UI's browser pane (native view in the
- * desktop shell, iframe fallback on the web); `cdp` is a Chromium reached over the DevTools Protocol.
+ * desktop shell, iframe fallback on the web); `cdp` is a Chromium reached over the DevTools Protocol;
+ * `chrome` is an external Chrome/Edge/Brave started with a dedicated profile over a private pipe (no TCP port).
  */
-export type BrowserDriverConfig = { kind: "pane" } | { kind: "cdp"; url: string };
+export type BrowserDriverConfig = { kind: "pane" } | { kind: "cdp"; url: string } | { kind: "chrome"; browserPath?: string };
 
-/** Reads PISTA_BROWSER_DRIVER (default `pane`) and PI_BROWSER_CDP_URL. Throws a startup-grade error on bad input. */
-export function resolveBrowserDriverConfig(env: Record<string, string | undefined> = process.env): BrowserDriverConfig {
-  const kind = env.PISTA_BROWSER_DRIVER?.trim() || "pane";
-  if (kind === "pane") return { kind };
-  if (kind === "cdp") {
+const BROWSER_NAMES = { chrome: "Google Chrome", edge: "Microsoft Edge", brave: "Brave" } as const;
+
+export interface BrowserEngineResolution {
+  config: BrowserDriverConfig;
+  /** Why this engine, for the UI (for example `auto: no Chrome found`). */
+  reason: string;
+  /** Display name of the external browser when the engine is `chrome`. */
+  browserName?: string;
+  /** True when Chrome was wanted (auto or the setting) but none was found, so the built-in browser is used. */
+  fallback?: boolean;
+}
+
+/**
+ * Picks the engine. Order: PISTA_BROWSER_DRIVER (dev and evals), then the `browser.engine` setting, then `auto`
+ * (`chrome` when a Chrome-family browser is found, else `pane`). Also reads PISTA_BROWSER_PATH and PI_BROWSER_CDP_URL.
+ * Throws a startup-grade error on bad env input.
+ */
+export function resolveBrowserEngine(
+  env: Record<string, string | undefined> = process.env,
+  setting: BrowserEngineSetting = "auto",
+  find: (overridePath?: string) => FoundBrowser | null = (overridePath) => findBrowser({ overridePath }),
+  /** A managed policy pins the setting: PISTA_BROWSER_DRIVER is then ignored. */
+  pinned = false,
+): BrowserEngineResolution {
+  const override = env.PISTA_BROWSER_PATH?.trim() || undefined;
+  const chrome = (reason: string, found: FoundBrowser | null): BrowserEngineResolution => ({
+    config: { kind: "chrome", ...(override ? { browserPath: override } : {}) },
+    reason,
+    ...(found ? { browserName: BROWSER_NAMES[found.kind] } : {}),
+  });
+  const envKind = pinned ? undefined : env.PISTA_BROWSER_DRIVER?.trim();
+  if (envKind === "pane") return { config: { kind: "pane" }, reason: "PISTA_BROWSER_DRIVER=pane" };
+  if (envKind === "cdp") {
     const url = env.PI_BROWSER_CDP_URL?.trim();
     if (!url) {
       throw new Error("PISTA_BROWSER_DRIVER=cdp needs PI_BROWSER_CDP_URL (e.g. http://127.0.0.1:9222) pointing at a Chromium started with --remote-debugging-port.");
     }
-    return { kind, url };
+    return { config: { kind: "cdp", url }, reason: "PISTA_BROWSER_DRIVER=cdp" };
   }
-  throw new Error(`Unknown PISTA_BROWSER_DRIVER "${kind}". Use "pane" (default) or "cdp".`);
+  if (envKind === "chrome") return chrome("PISTA_BROWSER_DRIVER=chrome", find(override));
+  if (envKind) throw new Error(`Unknown PISTA_BROWSER_DRIVER "${envKind}". Use "pane", "cdp" or "chrome".`);
+  if (setting === "embedded") return { config: { kind: "pane" }, reason: "setting: built-in browser" };
+  const found = find(override);
+  if (found) return chrome(setting === "chrome" ? "setting: Chrome" : "auto: found a Chrome-family browser", found);
+  return { config: { kind: "pane" }, reason: setting === "chrome" ? "setting: Chrome, but no Chrome found" : "auto: no Chrome found", fallback: true };
 }
 
-let active: BrowserDriverConfig | undefined;
+/** Like `resolveBrowserEngine`, without the explanation. */
+export function resolveBrowserDriverConfig(...args: Parameters<typeof resolveBrowserEngine>): BrowserDriverConfig {
+  return resolveBrowserEngine(...args).config;
+}
 
-/** The configuration for this process, resolved once from the environment. */
+let engineSetting: BrowserEngineSetting = "auto";
+let enginePinned = false;
+let warnedPinned = false;
+
+/** Sets the persisted `browser.engine` value. A thread picks the engine when its session is built, so a change reaches new threads and idle ones the host reloads. */
+export function setBrowserEngineSetting(value: BrowserEngineSetting | undefined, pinned = false): void {
+  engineSetting = value ?? "auto";
+  enginePinned = pinned;
+}
+
+/** The resolution for this process right now (environment, then setting, then auto). */
+export function activeBrowserEngine(): BrowserEngineResolution {
+  if (enginePinned && process.env.PISTA_BROWSER_DRIVER?.trim() && !warnedPinned) {
+    warnedPinned = true;
+    console.log("[pista-host] browser engine is pinned by policy; PISTA_BROWSER_DRIVER is ignored");
+  }
+  return resolveBrowserEngine(process.env, engineSetting, undefined, enginePinned);
+}
+
 export function activeBrowserDriverConfig(): BrowserDriverConfig {
-  return (active ??= resolveBrowserDriverConfig());
+  return activeBrowserEngine().config;
 }
 
 /** One log line naming the active driver, for startup. */
 export function describeBrowserDriver(config: BrowserDriverConfig): string {
-  return config.kind === "cdp" ? `browser driver: cdp (${config.url})` : "browser driver: pane";
+  return config.kind === "cdp" ? `browser driver: cdp (${config.url})` : `browser driver: ${config.kind}`;
 }
 
 // CdpDriver attaches to one page (see packages/pi-browser/src/drivers/cdp.ts), so every thread shares one
 // connection and one tab. The cdp driver is a seam for single-thread use until per-thread targets exist.
 const cdpDrivers = new Map<string, CdpDriver>();
+// One external browser per host, so the chrome driver is shared the same way.
+let chromeDriver: ChromeDriver | undefined;
+
+/** Brings the agent's Chrome to the front; a no-op for other drivers. */
+export async function bringChromeToFront(): Promise<void> {
+  await chromeDriver?.bringToFront(); // never launches Chrome: a browser that is not running has nothing to show
+}
 
 /** The single selection point: builds the driver for a thread according to the configuration. */
-export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hub; ref: ThreadRef }): BrowserDriver {
+export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hub; ref: ThreadRef; domainRules?: DomainRules; pistaHome?: string }): BrowserDriver {
   if (config.kind === "cdp") {
     let driver = cdpDrivers.get(config.url);
     if (!driver) cdpDrivers.set(config.url, (driver = new CdpDriver(config.url)));
     return driver;
+  }
+  if (config.kind === "chrome") {
+    if (!chromeDriver) {
+      const created = (chromeDriver = new ChromeDriver({ pistaHome: deps.pistaHome ?? CLIENT_DIR, domainRules: deps.domainRules, browserPath: config.browserPath }));
+      // The screencast runs only while at least one window shows the live view.
+      let stop: (() => void) | undefined;
+      const apply = (count: number) => {
+        if (count > 0 && !stop) stop = created.onFrame((frame) => deps.hub.emitFrame(frame));
+        else if (count === 0) (stop?.(), (stop = undefined));
+      };
+      deps.hub.onViewersChanged(apply);
+      apply(deps.hub.viewerCount); // a window may have subscribed before this driver existed
+    }
+    return chromeDriver;
   }
   return new PaneBrowserDriver(deps.hub, deps.ref);
 }

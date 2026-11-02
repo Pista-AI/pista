@@ -37,7 +37,7 @@ import { registerPolicyGateways } from "./policy-providers.ts";
 import { readMemory } from "./memory.ts";
 import { createLlama } from "./llama.ts";
 import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
-import { activeBrowserDriverConfig, describeBrowserDriver } from "./browser-driver.ts";
+import { activeBrowserDriverConfig, activeBrowserEngine, bringChromeToFront, describeBrowserDriver, setBrowserEngineSetting } from "./browser-driver.ts";
 import { resetHarnessPackageCache } from "./harness/packages.ts";
 
 // Installed before any top-level await so an early stray error is logged; startup failures (not yet listening) still exit 1.
@@ -65,6 +65,12 @@ const ALLOWED_ORIGINS = new Set([
   ...(process.env.PISTA_ALLOWED_ORIGINS?.split(",").map((s) => s.trim()) ?? []),
 ]);
 
+/** The resolved agent browser for `host.hello`, with the reason. */
+function browserInfo() {
+  const { config, reason, browserName, fallback } = activeBrowserEngine();
+  return { browserEngine: config.kind, browserEngineReason: reason, browserEngineFallback: Boolean(fallback), ...(browserName ? { browserName } : {}) };
+}
+
 function piVersion(): string {
   try {
     const entry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
@@ -74,7 +80,9 @@ function piVersion(): string {
   }
 }
 
+const store = new ConfigStore(loadedPolicy);
 // Fail at startup, not on the first browser action, when the driver is misconfigured.
+setBrowserEngineSetting(store.config.browserEngine, store.policy.locked.includes("browserEngine"));
 try {
   console.log(`[pista-host] ${describeBrowserDriver(activeBrowserDriverConfig())}`);
 } catch (error) {
@@ -82,7 +90,6 @@ try {
   process.exit(1);
 }
 
-const store = new ConfigStore(loadedPolicy);
 console.log(
   store.policySource
     ? `[pista-host] managed policy: ${store.policySource}, ${store.policy.locked.length} locked, ${Object.keys(loadedPolicy.policy?.defaults ?? {}).length} defaults, ${loadedPolicy.policy?.providers?.gateways?.length ?? 0} gateways${accessSummary(loadedPolicy.policy)}${extensionsSummary(loadedPolicy.policy)}${store.toolRules ? ", tool rules on" : ""}`
@@ -150,13 +157,15 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     updates,
     configSources: store.sources(),
     projects: store.projects,
+    ...browserInfo(),
   }),
   "config.set": async ({ patch }) => {
     store.assertUnlocked(patch);
     const config = store.patchConfig(patch, { userSet: true });
+    if ("browserEngine" in patch) setBrowserEngineSetting(config.browserEngine, store.policy.locked.includes("browserEngine"));
     hub.emit({ type: "config.changed", config, configSources: store.sources() });
     resetHarnessPackageCache();
-    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.harness !== undefined || patch.harnessConfig !== undefined || patch.sliced !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
+    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.harness !== undefined || patch.harnessConfig !== undefined || patch.sliced !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.browserEngine !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
     return config;
   },
 
@@ -241,6 +250,8 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     hub.settle(approvalId, { allow, always, note });
     hub.emit({ type: "approval.resolved", approvalId });
   },
+  "browser.view": () => {}, // handled per socket in the dispatcher
+  "browser.showChrome": () => bringChromeToFront(),
   "browser.respond": ({ requestId, ok, result, error }) =>
     hub.settle(requestId, ok ? (result ?? {}) : new Error(error ?? "Browser action failed")),
 };
@@ -325,6 +336,7 @@ wss.on("connection", (ws) => {
     const reply = (out: HostFrame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(out));
     if (frame.method !== "host.ping") hub.touch(ws); // idle liveness pings must not make a background window look active
     if (frame.method === "host.hello") hub.describe(ws, (frame.params as Methods["host.hello"]["params"]).client);
+    if (frame.method === "browser.view") hub.setViewer(ws, Boolean((frame.params as Methods["browser.view"]["params"]).subscribe));
     const handler = handlers[frame.method] as Handler<MethodName> | undefined;
     if (!handler) return reply({ kind: "res", id: frame.id, ok: false, error: `Unknown method ${frame.method}` });
     const blocked = blockedReason(versionGate, frame.method); // blocked mode: the one place agent work is refused

@@ -16,6 +16,7 @@ Only the latest release receives security fixes.
 
 - Electron fuses disable running as Node, `NODE_OPTIONS` and inspect arguments; cookie encryption, ASAR integrity and loading only from the ASAR are on.
 - Packaged builds refuse remote-debugging and inspect flags, and DevTools is unavailable.
+- The optional `chrome` browser engine (`PISTA_BROWSER_DRIVER=chrome`) is different: it starts a separate Chrome, Edge or Brave process with a dedicated profile under the Pista home (never your own profile) and talks to it over a private pipe (`--remote-debugging-pipe`, inherited file descriptors). No TCP port is opened, so no other local process can attach to it. Managed domain rules are also enforced inside that browser: every document load in the agent's own tab, in popups and in frames is checked, redirects included, and a page that cannot be guarded is closed. Subresource requests (fetch, XHR, WebSocket, images) to denied hosts are not blocked, the same as in the embedded pane. Downloads are refused except the ones `browser_download` asks for; they land in the confined project folder, are limited to 200 MB, and a download by address checks every redirect hop against the rules. One browser and one tab serve all threads, and the rules of the first thread that used it apply.
 - The renderer sandbox is enabled and the UI window has a strict content security policy.
 
 ### Host and browser pane
