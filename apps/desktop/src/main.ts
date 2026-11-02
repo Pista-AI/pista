@@ -137,7 +137,7 @@ async function spawnHost(port: number): Promise<void> {
     const line = chunk.toString().trim().split("\n").filter(Boolean).pop();
     if (line) lastError = line.slice(0, 500);
   });
-  hostProcess.on("exit", (code, signal) => {
+  hostProcess.on("exit", (code) => {
     log.end();
     if (quitting) return;
     const next = nextRespawn(respawn, Date.now() - startedAt);
@@ -146,7 +146,7 @@ async function spawnHost(port: number): Promise<void> {
       dialog.showErrorBox("Pista agent host stopped", `${lastError ? `${lastError}\n\n` : ""}Exit code ${code}. Giving up after ${next.state.failures - 1} restarts. See ${path.join(CLIENT_HOME, "host.log")}.`);
       return;
     }
-    console.warn(`Pista host exited (code ${code}, signal ${signal ?? "none"}); restarting on port ${port} in ${next.delayMs} ms`);
+    console.warn(`Pista host exited (code ${code}); restarting on port ${port} in ${next.delayMs} ms`);
     respawnTimer = setTimeout(() => {
       spawnHost(port).catch((e: Error) => console.warn(`Pista host restart failed: ${e.message}`));
     }, next.delayMs);
