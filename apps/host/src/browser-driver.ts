@@ -50,6 +50,11 @@ const cdpDrivers = new Map<string, CdpDriver>();
 // One external browser per host, so the chrome driver is shared the same way.
 let chromeDriver: ChromeDriver | undefined;
 
+/** Brings the agent's Chrome to the front; a no-op for other drivers. */
+export async function bringChromeToFront(): Promise<void> {
+  await chromeDriver?.bringToFront();
+}
+
 /** The single selection point: builds the driver for a thread according to the configuration. */
 export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hub; ref: ThreadRef; domainRules?: DomainRules; pistaHome?: string }): BrowserDriver {
   if (config.kind === "cdp") {
@@ -58,7 +63,15 @@ export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hu
     return driver;
   }
   if (config.kind === "chrome") {
-    chromeDriver ??= new ChromeDriver({ pistaHome: deps.pistaHome ?? CLIENT_DIR, domainRules: deps.domainRules, browserPath: config.browserPath });
+    if (!chromeDriver) {
+      const created = (chromeDriver = new ChromeDriver({ pistaHome: deps.pistaHome ?? CLIENT_DIR, domainRules: deps.domainRules, browserPath: config.browserPath }));
+      // The screencast runs only while at least one window shows the live view.
+      let stop: (() => void) | undefined;
+      deps.hub.onViewersChanged((count) => {
+        if (count > 0 && !stop) stop = created.onFrame((frame) => deps.hub.emitFrame(frame));
+        else if (count === 0) (stop?.(), (stop = undefined));
+      });
+    }
     return chromeDriver;
   }
   return new PaneBrowserDriver(deps.hub, deps.ref);

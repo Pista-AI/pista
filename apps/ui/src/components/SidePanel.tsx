@@ -25,9 +25,10 @@ import {
   X,
 } from "lucide-react";
 import { browser, dismissNotice, hostLabel, loadErrorHint, useBrowser } from "../browser/controller.ts";
-import type { PlanStepStatus } from "@pista/protocol";
+import type { BrowserFrame, PlanStepStatus } from "@pista/protocol";
 import { actions, type PanelTab, toast, useApp } from "../lib/store.ts";
 import { host } from "../lib/host.ts";
+import { frameLabel, frameSrc } from "../lib/chrome-view.ts";
 import { computeChanges } from "../lib/changes.ts";
 import { openExternal } from "../lib/links.ts";
 import { STEP_TONE } from "../lib/tones.ts";
@@ -150,7 +151,51 @@ function TabButton({ tab, active }: { tab: PanelTab; active: boolean }) {
   );
 }
 
+/** Read-only live view of the agent's Chrome tab; clicking it brings Chrome to the front. */
+function ChromeLiveView({ visible }: { visible: boolean }) {
+  const [frame, setFrame] = useState<BrowserFrame | null>(null);
+  // Subscribed only while the tab is showing; the host runs the screencast only while someone is subscribed.
+  useEffect(() => {
+    if (!visible) return;
+    const off = host.on((event) => event.type === "browser.frame" && setFrame(event));
+    const subscribe = () => void host.call("browser.view", { subscribe: true }).catch(() => {});
+    subscribe();
+    const offStatus = host.onStatus((connected) => connected && subscribe()); // a new socket starts unsubscribed
+    return () => {
+      off();
+      offStatus?.();
+      void host.call("browser.view", { subscribe: false }).catch(() => {});
+    };
+  }, [visible]);
+  const show = () => void host.call("browser.showChrome", {}).catch(() => {});
+  return (
+    <>
+      <div className="browser-toolbar">
+        <span className="ellipsis" title={frame?.url}>
+          {frame ? frameLabel(frame) : "Agent browser"}
+        </span>
+        <button className="toolbar-pill" onClick={show}>
+          <ExternalLink size={15} /> <span className="txt">Show Chrome</span>
+        </button>
+      </div>
+      <div className="browser-surface" style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "#111" }}>
+        {frame ? (
+          <img src={frameSrc(frame)} alt={frame.title || "Agent browser"} onClick={show} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", cursor: "pointer" }} />
+        ) : (
+          <div className="workspace-empty">The agent's Chrome appears here once it opens a page.</div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function BrowserView({ webTabIds, activeId }: { webTabIds: string[]; activeId: string | null }) {
+  const engine = useApp((s) => s.info?.browserEngine);
+  if (engine === "chrome") return <ChromeLiveView visible={activeId !== null} />;
+  return <PaneBrowserView webTabIds={webTabIds} activeId={activeId} />;
+}
+
+function PaneBrowserView({ webTabIds, activeId }: { webTabIds: string[]; activeId: string | null }) {
   const tabs = useBrowser((s) => s.tabs);
   const native = useBrowser((s) => s.native);
   const agentActivity = useBrowser((s) => s.agentActivity);

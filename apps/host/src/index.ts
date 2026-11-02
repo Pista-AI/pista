@@ -37,7 +37,7 @@ import { registerPolicyGateways } from "./policy-providers.ts";
 import { readMemory } from "./memory.ts";
 import { createLlama } from "./llama.ts";
 import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
-import { activeBrowserDriverConfig, describeBrowserDriver } from "./browser-driver.ts";
+import { activeBrowserDriverConfig, bringChromeToFront, describeBrowserDriver } from "./browser-driver.ts";
 import { resetHarnessPackageCache } from "./harness/packages.ts";
 
 // Installed before any top-level await so an early stray error is logged; startup failures (not yet listening) still exit 1.
@@ -150,6 +150,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     updates,
     configSources: store.sources(),
     projects: store.projects,
+    browserEngine: activeBrowserDriverConfig().kind,
   }),
   "config.set": async ({ patch }) => {
     store.assertUnlocked(patch);
@@ -241,6 +242,8 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     hub.settle(approvalId, { allow, always, note });
     hub.emit({ type: "approval.resolved", approvalId });
   },
+  "browser.view": () => {}, // handled per socket in the dispatcher
+  "browser.showChrome": () => bringChromeToFront(),
   "browser.respond": ({ requestId, ok, result, error }) =>
     hub.settle(requestId, ok ? (result ?? {}) : new Error(error ?? "Browser action failed")),
 };
@@ -325,6 +328,7 @@ wss.on("connection", (ws) => {
     const reply = (out: HostFrame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(out));
     if (frame.method !== "host.ping") hub.touch(ws); // idle liveness pings must not make a background window look active
     if (frame.method === "host.hello") hub.describe(ws, (frame.params as Methods["host.hello"]["params"]).client);
+    if (frame.method === "browser.view") hub.setViewer(ws, Boolean((frame.params as Methods["browser.view"]["params"]).subscribe));
     const handler = handlers[frame.method] as Handler<MethodName> | undefined;
     if (!handler) return reply({ kind: "res", id: frame.id, ok: false, error: `Unknown method ${frame.method}` });
     const blocked = blockedReason(versionGate, frame.method); // blocked mode: the one place agent work is refused

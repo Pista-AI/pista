@@ -89,6 +89,13 @@ export function browserApprover(hub: Hub, ref: ThreadRef, timeoutMs = BROWSER_AS
   };
 }
 
+/** When the agent needs the user (a held action), the agent's Chrome comes to the front so they can see and act on the page. */
+function handoffToChrome<A extends unknown[], R>(ask: (...args: A) => Promise<R>, driver: unknown): (...args: A) => Promise<R> {
+  const chrome = driver as { bringToFront?: () => Promise<void> };
+  if (typeof chrome.bringToFront !== "function") return ask;
+  return (...args) => (void chrome.bringToFront!().catch(() => undefined), ask(...args));
+}
+
 export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules): InlineExtension {
   const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref, domainRules });
   return {
@@ -98,7 +105,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         navigateHint: "The browser pane is visible to the user. Relative paths resolve against the home page.",
         // A consequential click, submit or Enter always asks the user here with the exact action, whatever the approval mode or an earlier generic approval of the call.
         // With no window connected, hub.ask rejects and the tool keeps the action stopped.
-        askApproval: browserApprover(hub, ref),
+        askApproval: handoffToChrome(browserApprover(hub, ref), driver),
         traceDir: CLIENT_DIR,
         threadId: ref.threadId,
         domainRules,

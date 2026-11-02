@@ -691,6 +691,17 @@ export interface HostInfo {
   /** Where each setting's current value comes from. */
   configSources: Partial<Record<keyof HostConfig, ConfigSource>>;
   projects: Project[];
+  /** Which browser the agent drives: the UI's pane, a CDP Chromium, or an external Chrome shown as a live view. Absent on older hosts (pane). */
+  browserEngine?: "pane" | "cdp" | "chrome";
+}
+
+/** One live-view frame of the agent's Chrome tab (engine "chrome"). `data` is a base64 JPEG. */
+export interface BrowserFrame {
+  data: string;
+  width: number;
+  height: number;
+  url: string;
+  title: string;
 }
 
 export type ConfigSource = "locked" | "policy" | "user" | "default";
@@ -835,6 +846,10 @@ export interface Methods {
 
   /** `note` on a decline tells the agent what to do instead; it then continues with that guidance. */
   "approval.respond": { params: { approvalId: string; allow: boolean; always?: boolean; note?: string }; result: void };
+  /** Starts or stops the live view of the agent's Chrome tab for this window; frames arrive as `browser.frame` events only while subscribed. */
+  "browser.view": { params: { subscribe: boolean }; result: void };
+  /** Brings the agent's Chrome window to the front so the user can take over. */
+  "browser.showChrome": { params: {}; result: void };
   "browser.respond": {
     params: { requestId: string; ok: boolean; result?: BrowserResult; error?: string };
     result: void;
@@ -850,6 +865,7 @@ export type HostEvent =
   | { type: "thread.updated"; thread: ThreadSummary }
   | { type: "thread.removed"; threadId: string }
   | { type: "browser.request"; requestId: string; threadId: string; request: BrowserAction }
+  | ({ type: "browser.frame" } & BrowserFrame)
   | { type: "approval.request"; approvalId: string; threadId: string; toolName: string; args: unknown; reason: string; action?: string }
   | { type: "approval.resolved"; approvalId: string }
   | { type: "auth.prompt"; promptId: string; provider: string; prompt: AuthPrompt }

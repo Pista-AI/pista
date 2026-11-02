@@ -38,7 +38,7 @@ test("chrome selects one shared chrome driver with no login tools", () => {
   const config = resolveBrowserDriverConfig({ PISTA_BROWSER_DRIVER: "chrome", PISTA_BROWSER_PATH: " /opt/chrome " });
   assert.deepEqual(config, { kind: "chrome", browserPath: "/opt/chrome" });
   assert.deepEqual(resolveBrowserDriverConfig({ PISTA_BROWSER_DRIVER: "chrome" }), { kind: "chrome" });
-  const deps = { hub: {} as Hub, ref: { threadId: "t" }, pistaHome: "/tmp/none" };
+  const deps = { hub: { onViewersChanged() {} } as unknown as Hub, ref: { threadId: "t" }, pistaHome: "/tmp/none" };
   const a = createBrowserDriver(config, deps);
   assert.ok(a instanceof ChromeDriver);
   assert.equal(createBrowserDriver(config, { ...deps, ref: { threadId: "u" } }), a);

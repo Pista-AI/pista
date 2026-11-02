@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
-import type { HostEvent, HostFrame } from "@pista/protocol";
+import type { BrowserFrame, HostEvent, HostFrame } from "@pista/protocol";
 
 interface Pending<T> {
   resolve: (value: T) => void;
@@ -21,10 +21,38 @@ interface ClientInfo {
 export class Hub {
   private clients = new Map<WebSocket, ClientInfo>();
   private pending = new Map<string, Pending<unknown>>();
+  private viewers = new Set<WebSocket>();
+  private viewerListeners: ((count: number) => void)[] = [];
 
   add(ws: WebSocket): void {
     this.clients.set(ws, { nativeBrowser: false, lastActive: Date.now() });
-    ws.on("close", () => this.clients.delete(ws));
+    ws.on("close", () => {
+      this.clients.delete(ws);
+      this.setViewer(ws, false);
+    });
+  }
+
+  /** Windows that asked for the live view of the Chrome tab; only they receive frames. */
+  setViewer(ws: WebSocket, on: boolean): void {
+    if (on === this.viewers.has(ws)) return;
+    if (on) this.viewers.add(ws);
+    else this.viewers.delete(ws);
+    for (const listener of this.viewerListeners) listener(this.viewers.size);
+  }
+
+  /** Called with the viewer count whenever it changes. */
+  onViewersChanged(listener: (count: number) => void): void {
+    this.viewerListeners.push(listener);
+  }
+
+  /** Sends a live-view frame to each viewer, skipping one whose socket still holds unsent data (slow consumer: drop, never queue). */
+  emitFrame(frame: BrowserFrame, maxBuffered = 2 * 1024 * 1024): void {
+    let text: string | undefined;
+    for (const ws of this.viewers) {
+      if (ws.readyState !== ws.OPEN || ws.bufferedAmount > maxBuffered) continue;
+      text ??= JSON.stringify({ kind: "evt", event: { type: "browser.frame", ...frame } } satisfies HostFrame);
+      ws.send(text);
+    }
   }
 
   describe(ws: WebSocket, client: { nativeBrowser?: boolean } | undefined): void {
