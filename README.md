@@ -147,7 +147,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the protocol, the browser b
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) to get started and [SECURITY.md](SECURITY.md) to report a vulnerability. Release notes are in [CHANGELOG.md](CHANGELOG.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started and [SECURITY.md](SECURITY.md) to report a vulnerability. How saved website logins are protected is in [docs/security/saved-logins.md](docs/security/saved-logins.md). Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
