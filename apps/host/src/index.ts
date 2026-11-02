@@ -37,7 +37,7 @@ import { registerPolicyGateways } from "./policy-providers.ts";
 import { readMemory } from "./memory.ts";
 import { createLlama } from "./llama.ts";
 import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
-import { activeBrowserDriverConfig, bringChromeToFront, describeBrowserDriver } from "./browser-driver.ts";
+import { activeBrowserDriverConfig, activeBrowserEngine, bringChromeToFront, describeBrowserDriver, setBrowserEngineSetting } from "./browser-driver.ts";
 import { resetHarnessPackageCache } from "./harness/packages.ts";
 
 // Installed before any top-level await so an early stray error is logged; startup failures (not yet listening) still exit 1.
@@ -65,6 +65,12 @@ const ALLOWED_ORIGINS = new Set([
   ...(process.env.PISTA_ALLOWED_ORIGINS?.split(",").map((s) => s.trim()) ?? []),
 ]);
 
+/** The resolved agent browser for `host.hello`, with the reason. */
+function browserInfo() {
+  const { config, reason, browserName } = activeBrowserEngine();
+  return { browserEngine: config.kind, browserEngineReason: reason, ...(browserName ? { browserName } : {}) };
+}
+
 function piVersion(): string {
   try {
     const entry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
@@ -74,7 +80,9 @@ function piVersion(): string {
   }
 }
 
+const store = new ConfigStore(loadedPolicy);
 // Fail at startup, not on the first browser action, when the driver is misconfigured.
+setBrowserEngineSetting(store.config.browserEngine);
 try {
   console.log(`[pista-host] ${describeBrowserDriver(activeBrowserDriverConfig())}`);
 } catch (error) {
@@ -82,7 +90,6 @@ try {
   process.exit(1);
 }
 
-const store = new ConfigStore(loadedPolicy);
 console.log(
   store.policySource
     ? `[pista-host] managed policy: ${store.policySource}, ${store.policy.locked.length} locked, ${Object.keys(loadedPolicy.policy?.defaults ?? {}).length} defaults, ${loadedPolicy.policy?.providers?.gateways?.length ?? 0} gateways${accessSummary(loadedPolicy.policy)}${extensionsSummary(loadedPolicy.policy)}${store.toolRules ? ", tool rules on" : ""}`
@@ -150,14 +157,15 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     updates,
     configSources: store.sources(),
     projects: store.projects,
-    browserEngine: activeBrowserDriverConfig().kind,
+    ...browserInfo(),
   }),
   "config.set": async ({ patch }) => {
     store.assertUnlocked(patch);
     const config = store.patchConfig(patch, { userSet: true });
+    if ("browserEngine" in patch) setBrowserEngineSetting(config.browserEngine);
     hub.emit({ type: "config.changed", config, configSources: store.sources() });
     resetHarnessPackageCache();
-    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.harness !== undefined || patch.harnessConfig !== undefined || patch.sliced !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
+    if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.harness !== undefined || patch.harnessConfig !== undefined || patch.sliced !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.browserEngine !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();
     return config;
   },
 

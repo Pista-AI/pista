@@ -312,6 +312,8 @@ export interface ProviderStatus {
 
 /** Where clicked links open: the built-in browser, the system browser, or in-app only for the home page's site. */
 export type LinkTarget = "builtin" | "home" | "external";
+/** Which browser the agent drives: `auto` is the external Chrome when one is installed, else the built-in browser. */
+export type BrowserEngineSetting = "auto" | "chrome" | "embedded";
 
 export type ApprovalMode = "full-access" | "ask-writes" | "read-only";
 
@@ -420,6 +422,8 @@ export interface HostConfig {
   /** Extra system-prompt text appended for every thread. */
   instructions: string;
   linkTarget: LinkTarget;
+  /** The agent's browser. Absent is `auto`. `PISTA_BROWSER_DRIVER` overrides it. */
+  browserEngine?: BrowserEngineSetting;
   /** Cross-thread agent memory (pi-memory: markdown files the agent reads and writes). */
   memoryEnabled: boolean;
   /** Web search and page fetching tools (pi-web-access; Exa by default, no API key). */
@@ -693,6 +697,10 @@ export interface HostInfo {
   projects: Project[];
   /** Which browser the agent drives: the UI's pane, a CDP Chromium, or an external Chrome shown as a live view. Absent on older hosts (pane). */
   browserEngine?: "pane" | "cdp" | "chrome";
+  /** Why that engine (for example `auto: no Chrome found`). */
+  browserEngineReason?: string;
+  /** Display name of the external browser when the engine is `chrome`. */
+  browserName?: string;
 }
 
 /** One live-view frame of the agent's Chrome tab (engine "chrome"). `data` is a base64 JPEG. */

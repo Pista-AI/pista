@@ -114,6 +114,7 @@ function General() {
   const config = useApp((s) => s.config);
   const info = useApp((s) => s.info);
   const linkTarget = useConfigField("linkTarget");
+  const engine = useConfigField("browserEngine");
   const webSearch = useConfigField("webSearchEnabled");
   const approval = useConfigField("approvalMode");
   const focusedMode = useConfigField("focusedMode");
@@ -209,7 +210,34 @@ function General() {
         </div>
         <span className="help">Opens the app as one guided job: paste your transactions and Pista collects the matching invoices. Turn it off to get the full app back.</span>
       </div>
-      <SavedLogins />
+      <div className="field">
+        <label>
+          Agent browser <ManagedBadge field={engine} />
+        </label>
+        <div className="seg">
+          {(
+            [
+              ["auto", "Automatic"],
+              ["chrome", "Chrome"],
+              ["embedded", "Built-in"],
+            ] as const
+          ).map(([value, label]) => (
+            <button key={value} className={(engine.value ?? "auto") === value ? "on" : ""} disabled={engine.locked} onClick={() => engine.set(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="help">
+          {info?.browserEngine === "chrome"
+            ? `Using ${info.browserName ?? "Chrome"} (Pista profile).`
+            : info?.browserEngineReason?.includes("no Chrome found")
+              ? "Chrome not found, using the built-in browser."
+              : "Using the built-in browser."}{" "}
+          Automatic uses Chrome, Edge or Brave when installed. Pista keeps its own profile for it: sign in to sites once there, and if you sign in to your Google account in that profile you get your saved
+          passwords and passkeys through Google Password Manager. Your everyday Chrome profile is not touched. A change applies to new chats.
+        </span>
+      </div>
+      {info?.browserEngine !== "chrome" && <SavedLogins />}
       <div className="field">
         <label>
           Permissions <ManagedBadge field={approval} />

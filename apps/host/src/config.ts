@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: HostConfig = {
   defaultThinkingMode: "auto",
   instructions: "",
   linkTarget: "builtin",
+  browserEngine: "auto",
   memoryEnabled: true,
   webSearchEnabled: true,
   localServers: [],
