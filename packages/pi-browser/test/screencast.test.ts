@@ -90,7 +90,8 @@ function windowTest(state: string) {
 
 test("bringToFront raises the page and restores a minimized window", async () => {
   const { driver, calls } = windowTest("minimized");
-  await driver.bringToFront();
+  await driver.evaluate("1").catch(() => {});
+  assert.equal(await driver.bringToFront(), true);
   assert.ok(calls.some((c) => c.method === "Page.bringToFront"));
   assert.deepEqual(calls.find((c) => c.method === "Browser.setWindowBounds")!.params, { windowId: 7, bounds: { windowState: "normal" } });
 });
@@ -98,8 +99,39 @@ test("bringToFront raises the page and restores a minimized window", async () =>
 test("bringToFront leaves fullscreen, maximized and normal windows alone", async () => {
   for (const state of ["fullscreen", "maximized", "normal"]) {
     const { driver, calls } = windowTest(state);
+    await driver.evaluate("1").catch(() => {});
     await driver.bringToFront();
     assert.ok(calls.some((c) => c.method === "Page.bringToFront"), state);
     assert.ok(!calls.some((c) => c.method === "Browser.setWindowBounds"), state);
   }
+});
+
+test("bringToFront does not launch a browser that is not running", async () => {
+  const { driver, calls } = windowTest("normal");
+  assert.equal(await driver.bringToFront(), false);
+  assert.equal(calls.length, 0);
+});
+
+test("a quick unsubscribe stops the screencast only after the start finished", async () => {
+  const order: string[] = [];
+  const transport: CdpTransport = {
+    async send(method) {
+      if (method === "Target.createTarget") return { targetId: "T1" };
+      if (method === "Target.attachToTarget") return { sessionId: "S1" };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "F1" } } };
+      if (method === "Target.setDiscoverTargets") await new Promise((r) => setTimeout(r, 30));
+      if (method === "Page.startScreencast" || method === "Page.stopScreencast") order.push(method);
+      return {};
+    },
+    onEvent() {},
+    onClose() {},
+    close() {},
+  };
+  const driver = new ChromeDriver({ pistaHome: "/nowhere" }, { find: () => ({ kind: "chrome", path: "/c" }), launch: (async () => ({ transport, process: {}, close: async () => {} })) as any });
+  await driver.evaluate("1").catch(() => {}); // connected, nobody listening
+  const off = driver.onFrame(() => {});
+  await new Promise((r) => setTimeout(r, 10)); // the start is mid-setup
+  off();
+  await new Promise((r) => setTimeout(r, 120));
+  assert.deepEqual(order, ["Page.startScreencast", "Page.stopScreencast"]);
 });

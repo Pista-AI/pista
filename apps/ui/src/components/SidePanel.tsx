@@ -164,6 +164,7 @@ function ChromeLiveView({ visible }: { visible: boolean }) {
     return () => {
       off();
       offStatus?.();
+      setFrame(null); // no stale page when the view opens again
       void host.call("browser.view", { subscribe: false }).catch(() => {});
     };
   }, [visible]);

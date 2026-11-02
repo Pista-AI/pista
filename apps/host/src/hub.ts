@@ -40,6 +40,10 @@ export class Hub {
     for (const listener of this.viewerListeners) listener(this.viewers.size);
   }
 
+  get viewerCount(): number {
+    return this.viewers.size;
+  }
+
   /** Called with the viewer count whenever it changes. */
   onViewersChanged(listener: (count: number) => void): void {
     this.viewerListeners.push(listener);

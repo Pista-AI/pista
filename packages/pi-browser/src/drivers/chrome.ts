@@ -142,9 +142,18 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     return this.feed.subscribe(cb);
   }
 
-  private async startCast() {
+  // Start and stop run one after the other, so a quick stop can never overtake a start that is still setting up.
+  private castChain: Promise<void> = Promise.resolve();
+  private startCast() {
+    return (this.castChain = this.castChain.then(() => this.doStartCast()));
+  }
+  private stopCast() {
+    return (this.castChain = this.castChain.then(() => this.doStopCast()));
+  }
+
+  private async doStartCast() {
     const transport = this.browser?.transport;
-    if (!this.conn || !transport || this.casting) return;
+    if (!this.conn || !transport || this.casting || this.feed.count === 0) return;
     this.casting = true;
     try {
       await transport.send("Target.setDiscoverTargets", { discover: true });
@@ -158,18 +167,18 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     }
   }
 
-  private async stopCast() {
+  private async doStopCast() {
     if (!this.casting) return;
     this.casting = false;
     await this.sendRaw("Page.stopScreencast").catch(() => undefined);
   }
 
   /** Brings the browser window to the front (restoring it only if minimized), so the user can take over (sign-in, one-time codes). */
-  async bringToFront() {
-    await this.connect();
+  async bringToFront(): Promise<boolean> {
+    if (!this.conn || !this.browser) return false; // not running: never launch a browser just to show it
     await this.sendRaw("Page.bringToFront");
     const transport = this.browser?.transport;
-    if (!transport || !this.ownTarget) return;
+    if (!transport || !this.ownTarget) return true;
     try {
       const { windowId } = await transport.send("Browser.getWindowForTarget", { targetId: this.ownTarget });
       // Only a minimized window is restored; fullscreen and maximized windows stay as the user left them.
@@ -178,6 +187,7 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     } catch {
       // Windowless or headless browsers have no window to restore.
     }
+    return true;
   }
 
   protected async onAttachFailed() {

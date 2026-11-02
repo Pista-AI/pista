@@ -313,7 +313,10 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         execute: async () => {
           const d = await driver();
           if (!d.bringToFront) throw new Error("browser_show_user is not supported with this browser driver.");
-          await d.bringToFront();
+          if ((await d.bringToFront()) === false) {
+            const none = { ok: false, note: "No browser window is open yet. Open a page with browser_navigate first." };
+            return { content: [{ type: "text" as const, text: JSON.stringify(none, null, 2) }], details: none };
+          }
           const r = { ok: true, note: "The browser is in front of the user. Tell them what to do, then wait for them to say they are done before you continue." };
           return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r };
         },
