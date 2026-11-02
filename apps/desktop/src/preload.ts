@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
   shell: "electron",
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder"),
+  onResume: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on("host:resume", handler);
+    return () => ipcRenderer.removeListener("host:resume", handler);
+  },
   browser: {
     setBounds: (rect: Rect | null) => ipcRenderer.send("browser:setBounds", rect),
     navigate: (url: string) => ipcRenderer.invoke("browser:navigate", url),

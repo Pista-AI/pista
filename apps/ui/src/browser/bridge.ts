@@ -74,6 +74,8 @@ export interface PistaDesktop {
   browser?: DesktopBrowserBridge;
   openExternal?(url: string): void;
   pickFolder?(): Promise<string | null>;
+  /** Fires after the machine wakes from sleep; returns an unsubscribe function. */
+  onResume?(listener: () => void): () => void;
 }
 
 declare global {

@@ -28,6 +28,11 @@ class HostClient {
   private retry = 0;
   connected = false;
 
+  constructor() {
+    // After sleep the socket is often dead without a close event; closing it runs the normal backoff reconnect.
+    window.pistaDesktop?.onResume?.(() => this.ws?.close());
+  }
+
   connect(): void {
     const ws = new WebSocket(hostSocketUrl());
     this.ws = ws;
@@ -52,6 +57,7 @@ class HostClient {
       }
     };
     ws.onclose = () => {
+      if (this.ws !== ws) return;
       this.setConnected(false);
       for (const p of this.pending.values()) p.reject(new Error("Disconnected from agent host"));
       this.pending.clear();

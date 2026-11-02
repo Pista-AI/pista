@@ -21,6 +21,7 @@ import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
 import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { createPresenceGate } from "./presence.js";
+import { nextRespawn, type RespawnState } from "./respawn.js";
 import { findDebugFlag } from "./debug-flags.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { decidePanePermission, isWebUrl, sameOrigin } from "./web-policy.js";
@@ -88,13 +89,41 @@ async function waitFor(url: string, timeoutMs: number): Promise<void> {
 }
 
 async function startHost(): Promise<string> {
+  // The port is chosen once: the UI learns the host URL a single time, so every respawn must reuse it.
   const port = await freePort(4417);
+  const url = `http://127.0.0.1:${port}`;
+  await spawnHost(port);
+  await waitFor(`${url}/health`, 20_000);
+  return url;
+}
+
+let respawn: RespawnState = { failures: 0 };
+let respawnTimer: NodeJS.Timeout | undefined;
+
+/** Retries on the same port with backoff; every failed attempt, including a spawn that throws, counts toward the cap. */
+function scheduleRespawn(port: number, uptimeMs: number, reason: string, lastError: string) {
+  const next = nextRespawn(respawn, uptimeMs);
+  respawn = next.state;
+  if (next.delayMs === null) {
+    dialog.showErrorBox("Pista agent host stopped", `${lastError ? `${lastError}\n\n` : ""}${reason}. Giving up after ${next.state.failures - 1} restarts. See ${path.join(CLIENT_HOME, "host.log")}.`);
+    return;
+  }
+  console.warn(`Pista host stopped (${reason}); restarting on port ${port} in ${next.delayMs} ms`);
+  respawnTimer = setTimeout(() => {
+    spawnHost(port).catch((e: Error) => scheduleRespawn(port, 0, `restart failed: ${e.message}`, e.message));
+  }, next.delayMs);
+}
+
+async function spawnHost(port: number): Promise<void> {
   const resources = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "../build");
   const entry = path.join(resources, "host", "dist", "host.mjs");
   mkdirSync(CLIENT_HOME, { recursive: true });
   // The host's data key is wrapped by the OS keychain and reaches the host only over the utilityProcess message channel (never argv, env or logs).
   const key = await createAuthKeyVault({ file: path.join(app.getPath("userData"), "auth-key.json"), crypto: safeStorageCrypto(safeStorage) }).load();
+  if (quitting) return;
+  const startedAt = Date.now();
   const log = createWriteStream(path.join(CLIENT_HOME, "host.log"), { flags: "a" });
+  log.on("error", (e) => console.warn(`Pista host log error: ${e.message}`));
 
   // A packaged build may ship llama-server (see scripts/fetch-llama.mjs); the host only learns of it through this variable.
   const bundledLlama = path.join(resources, "llama");
@@ -116,8 +145,19 @@ async function startHost(): Promise<string> {
   });
   // Sent as a Uint8Array copy right after fork; the local buffer is zeroed at once. Never logged.
   sendKeyToHost(hostProcess, key);
-  hostProcess.stdout?.pipe(log);
-  hostProcess.stderr?.pipe(log);
+  // end: false, and the log closes only after both streams have, so late chunks never hit an ended stream.
+  let open = 2;
+  for (const stream of [hostProcess.stdout, hostProcess.stderr]) {
+    if (!stream) {
+      open--;
+      continue;
+    }
+    stream.pipe(log, { end: false });
+    stream.once("close", () => {
+      if (--open === 0) log.end();
+    });
+  }
+  if (open === 0) log.end();
   // The host's last stderr line is its fatal reason (for example a broken managed policy); show it in the error box.
   let lastError = "";
   hostProcess.stderr?.on("data", (chunk: Buffer) => {
@@ -125,12 +165,10 @@ async function startHost(): Promise<string> {
     if (line) lastError = line.slice(0, 500);
   });
   hostProcess.on("exit", (code) => {
-    if (code && !quitting) dialog.showErrorBox("Pista agent host stopped", `${lastError ? `${lastError}\n\n` : ""}Exit code ${code}. See ${path.join(CLIENT_HOME, "host.log")}.`);
+    // Exit code 0 is the host's own deliberate shutdown (for example its parent is gone): do not bring it back.
+    if (quitting || code === 0) return;
+    scheduleRespawn(port, Date.now() - startedAt, `exit code ${code}`, lastError);
   });
-
-  const url = `http://127.0.0.1:${port}`;
-  await waitFor(`${url}/health`, 20_000);
-  return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,7 +542,10 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   // Touch ID once per app run (re-asked after 8 hours or a resume from sleep). Where it is unavailable the fill is not gated.
   const canPrompt = () => process.platform === "darwin" && systemPreferences.canPromptTouchID();
   const presence = createPresenceGate({ canPrompt, prompt: () => systemPreferences.promptTouchID("use a saved login"), now: Date.now, ttlMs: 8 * 60 * 60_000 });
-  powerMonitor.on("resume", () => presence.lock());
+  powerMonitor.on("resume", () => {
+    presence.lock();
+    if (!owner.isDestroyed()) owner.send("host:resume");
+  });
   guarded("logins:status", async () => ({ ...(await vault.status()), presence: canPrompt() ? "touchid" : "unavailable" }));
   guarded("logins:list", () => vault.list());
   guarded("logins:save", (input) => vault.save(input));
@@ -606,6 +647,7 @@ ipcMain.handle("dialog:pickFolder", async () => {
 let quitting = false;
 app.on("before-quit", () => {
   quitting = true;
+  clearTimeout(respawnTimer);
   hostProcess?.kill();
 });
 
