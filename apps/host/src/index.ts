@@ -39,6 +39,10 @@ import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, upd
 import { activeBrowserDriverConfig, describeBrowserDriver } from "./browser-driver.ts";
 import { resetHarnessPackageCache } from "./harness/packages.ts";
 
+// Installed before any top-level await so an early stray error is logged; startup failures (not yet listening) still exit 1.
+let listening = false;
+installCrashGuards(() => listening);
+
 const VERSION = resolveAppVersion(process.env, (message) => console.warn(`[pista-host] ${message}`));
 const PORT = Number(process.env.PISTA_HOST_PORT ?? DEFAULT_HOST_PORT);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -331,14 +335,15 @@ wss.on("connection", (ws) => {
   });
 });
 
-let listening = false;
-installCrashGuards(() => listening);
 server.listen(PORT, "127.0.0.1", () => {
   listening = true;
   console.log(`[pista-host] pi ${piVersion()} · listening on http://127.0.0.1:${PORT} (ws: /ws)`);
 });
 
+let shuttingDown = false;
 const shutdown = () => {
+  if (shuttingDown) return; // SIGTERM and the parent watchdog can both land
+  shuttingDown = true;
   threads.dispose();
   llama.stop();
   server.close();

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const guards = fileURLToPath(new URL("./crash-guards.ts", import.meta.url));
 const run = (listening: boolean, body: string) =>
-  spawnSync(process.execPath, ["--import", "tsx", "-e", `import { installCrashGuards } from ${JSON.stringify(guards)}; installCrashGuards(() => ${listening}); ${body}`], { encoding: "utf8" });
+  spawnSync(process.execPath, ["--import", "tsx", "-e", `import { installCrashGuards } from ${JSON.stringify(guards)}; installCrashGuards(() => ${listening}); ${body}`], { encoding: "utf8", timeout: 15000 });
 
 test("a rejected promise is logged and the process keeps running", () => {
   const result = run(true, `Promise.reject(new Error("boom")); setTimeout(() => console.log("alive"), 50);`);
