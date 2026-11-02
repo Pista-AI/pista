@@ -3,12 +3,16 @@
  * (URLs, usernames, passwords) may be returned to the renderer, logged, or put in an error.
  * Results carry counts only.
  */
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import type { SaveLoginInput, SavedLoginMeta } from "./logins.js";
 
 export type SkipReason = "no-url" | "not-https" | "not-login" | "missing-field" | "bad-url";
 export interface ParsedLogins {
   rows: SaveLoginInput[];
   skipped: { reason: SkipReason; count: number }[];
+  /** The same skips one by one, with the 1-based CSV record number (the header is record 1). No row content. */
+  skippedRows: { line: number; reason: SkipReason }[];
   total: number;
 }
 export interface ImportVault {
@@ -80,10 +84,16 @@ export function parseLoginCsv(text: string): ParsedLogins {
   const col = { url: findCol(header, URL_COLS), user: findCol(header, USER_COLS), pass: findCol(header, PASS_COLS), label: findCol(header, LABEL_COLS), type: header.indexOf("type") };
   if (col.url < 0 || col.pass < 0) throw new ImportError(NOT_AN_EXPORT);
   const counts = new Map<SkipReason, number>();
-  const skip = (r: SkipReason) => counts.set(r, (counts.get(r) ?? 0) + 1);
+  const skippedRows: { line: number; reason: SkipReason }[] = [];
+  let line = 1;
+  const skip = (r: SkipReason) => {
+    counts.set(r, (counts.get(r) ?? 0) + 1);
+    skippedRows.push({ line, reason: r });
+  };
   const rows: SaveLoginInput[] = [];
   const body = table.slice(1);
   for (const r of body) {
+    line++;
     const cell = (i: number) => (i >= 0 ? (r[i] ?? "").trim() : "");
     if (col.type >= 0 && cell(col.type).toLowerCase() !== "login") {
       skip("not-login");
@@ -114,7 +124,7 @@ export function parseLoginCsv(text: string): ParsedLogins {
     }
     rows.push({ label: cell(col.label) || url.hostname, loginUrl: rawUrl, username, password });
   }
-  return { rows, skipped: [...counts].map(([reason, count]) => ({ reason, count })), total: body.length };
+  return { rows, skipped: [...counts].map(([reason, count]) => ({ reason, count })), skippedRows, total: body.length };
 }
 
 /**
@@ -149,22 +159,118 @@ export async function importLogins(vault: ImportVault, rows: SaveLoginInput[]): 
   return { imported, replaced, failed };
 }
 
+/** Where a pending import came from. A later source (a direct browser reader) adds a kind here. */
+export type ImportSource = { kind: "csv"; fileName: string };
+export interface PreviewRow {
+  id: string;
+  origin: string;
+  username: string;
+  label?: string;
+  /** True when a saved login for this origin already exists and would be overwritten. */
+  replaces: boolean;
+}
+export interface ImportPreview {
+  token: string;
+  source: ImportSource;
+  rows: PreviewRow[];
+  skipped: { line?: number; reason: SkipReason }[];
+}
+export const IMPORT_EXPIRED = "That import has expired. Choose the file again.";
+export const IMPORT_TTL_MS = 5 * 60_000;
+
+interface Pending {
+  expires: number;
+  rows: SaveLoginInput[];
+  skipped: number;
+  /** Main-process only: the file to trash after a clean import. */
+  trashPath?: string;
+}
+
+/**
+ * Holds already-parsed entries (with passwords) in memory until the user confirms. Takes entries from any source;
+ * the renderer only ever sees the preview, which has no passwords. One pending import at a time. A token works once.
+ */
+export function createImportStore(opts: { now?: () => number; ttlMs?: number; token?: () => string } = {}) {
+  const now = opts.now ?? Date.now;
+  const ttl = opts.ttlMs ?? IMPORT_TTL_MS;
+  const newToken = opts.token ?? (() => randomUUID());
+  const pending = new Map<string, Pending>();
+
+  const take = (token: unknown): Pending => {
+    const entry = typeof token === "string" ? pending.get(token) : undefined;
+    pending.delete(token as string);
+    if (!entry || entry.expires <= now()) throw new ImportError(IMPORT_EXPIRED);
+    return entry;
+  };
+
+  return {
+    /** Dedupes by origin (the last row wins, as the vault keeps one login per origin) and returns the password-free preview. */
+    async put(
+      vault: Pick<ImportVault, "list">,
+      source: ImportSource,
+      rows: SaveLoginInput[],
+      skipped: { line?: number; reason: SkipReason }[],
+      trashPath?: string,
+    ): Promise<ImportPreview> {
+      const existing = new Set((await vault.list()).map((l) => l.origin));
+      const byOrigin = new Map<string, SaveLoginInput>();
+      const skippedAll = [...skipped];
+      for (const row of rows) {
+        try {
+          const origin = new URL(row.loginUrl).origin;
+          byOrigin.delete(origin);
+          byOrigin.set(origin, row);
+        } catch {
+          skippedAll.push({ reason: "bad-url" });
+        }
+      }
+      const kept = [...byOrigin];
+      const token = newToken();
+      pending.clear();
+      pending.set(token, { expires: now() + ttl, rows: kept.map(([, r]) => r), skipped: skippedAll.length, trashPath });
+      return {
+        token,
+        source,
+        rows: kept.map(([origin, r], i) => ({ id: String(i), origin, username: r.username, label: r.label, replaces: existing.has(origin) })),
+        skipped: skippedAll,
+      };
+    },
+    /** Saves the chosen rows. The token is spent whether this succeeds or fails. */
+    async commit(
+      vault: ImportVault,
+      trash: (path: string) => Promise<void>,
+      input: { token: string; ids: string[]; trashFile?: boolean },
+    ) {
+      const entry = take(input.token);
+      const ids = new Set(Array.isArray(input.ids) ? input.ids.map(String) : []);
+      const chosen = entry.rows.filter((_, i) => ids.has(String(i)));
+      const done = await importLogins(vault, chosen);
+      // Trashing is reversible, and only done when every chosen row was stored; otherwise the user still needs the file.
+      const trashed =
+        input.trashFile === true && entry.trashPath && done.imported > 0 && done.failed === 0 ? await trash(entry.trashPath).then(() => true, () => false) : false;
+      return { ...done, skipped: entry.skipped + (entry.rows.length - chosen.length), trashed };
+    },
+    cancel(token: unknown) {
+      if (typeof token === "string") pending.delete(token);
+    },
+  };
+}
+
 export interface ImportDeps {
   vault: ImportVault;
   /** Resolves the chosen file path, or null when the dialog was canceled. */
   pick(): Promise<string | null>;
   size(path: string): Promise<number>;
   read(path: string): Promise<Buffer>;
-  trash(path: string): Promise<void>;
 }
 
-/** The whole import flow. Every failure surfaces as a fixed message; the result holds counts only. */
-export async function runLoginImport(deps: ImportDeps, opts: { trash?: boolean } = {}) {
+/** Picks and parses a CSV into the store. Every failure surfaces as a fixed message; the preview holds no passwords. */
+export async function previewLoginImport(deps: ImportDeps, store: ReturnType<typeof createImportStore>) {
   let path: string | null;
   let parsed: ParsedLogins;
   try {
     path = await deps.pick();
-    if (!path) return { imported: 0, replaced: 0, skipped: 0, failed: 0, canceled: true as const };
+    if (!path) return { canceled: true as const };
     if ((await deps.size(path)) > MAX_IMPORT_BYTES) throw new ImportError(TOO_LARGE);
     const bytes = await deps.read(path);
     if (bytes.length > MAX_IMPORT_BYTES) throw new ImportError(TOO_LARGE);
@@ -172,8 +278,5 @@ export async function runLoginImport(deps: ImportDeps, opts: { trash?: boolean }
   } catch (e) {
     throw new ImportError(e instanceof ImportError ? e.message : UNREADABLE);
   }
-  const done = await importLogins(deps.vault, parsed.rows);
-  // Trashing is reversible, and only done when every importable row was stored; otherwise the user still needs the file.
-  const trashed = opts.trash === true && done.imported > 0 && done.failed === 0 ? await deps.trash(path).then(() => true, () => false) : false;
-  return { ...done, skipped: parsed.skipped.reduce((n, x) => n + x.count, 0), trashed };
+  return store.put(deps.vault, { kind: "csv", fileName: basename(path) }, parsed.rows, parsed.skippedRows, path);
 }

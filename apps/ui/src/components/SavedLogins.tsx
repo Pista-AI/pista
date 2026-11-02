@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { SavedLoginMeta } from "@pista/protocol";
 import { useConfigField } from "../lib/useConfigField.ts";
-import { formatImportResult, hostOf, validateLoginInput } from "../focused/saved-logins.ts";
+import { formatImportResult, hostOf, skipReasonLabel, validateLoginInput } from "../focused/saved-logins.ts";
+import type { LoginImportPreview } from "../browser/bridge.ts";
 
 const EMPTY = { label: "", loginUrl: "", username: "", password: "" };
 
@@ -22,6 +23,8 @@ export function SavedLogins() {
   const [trash, setTrash] = useState(true);
   const [importing, setImporting] = useState(false);
   const [importNote, setImportNote] = useState("");
+  const [preview, setPreview] = useState<LoginImportPreview | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [presence, setPresence] = useState<"touchid" | "unavailable" | null>(null);
   const confirmSignIns = useConfigField("confirmSignIns");
   const alive = useRef(true);
@@ -97,20 +100,48 @@ export function SavedLogins() {
     }
   };
 
-  const runImport = async () => {
+  const startImport = async () => {
     setImporting(true);
     setError(null);
     setImportNote("");
     try {
-      const r = await logins.import({ trash });
-      if (alive.current) setImportNote(formatImportResult(r, trash));
-      await refresh();
+      const r = await logins.importPreview();
+      if (!alive.current || "canceled" in r) return;
+      setPreview(r);
+      setPicked(new Set(r.rows.map((row) => row.id)));
     } catch (err) {
       if (alive.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (alive.current) setImporting(false);
     }
   };
+  const cancelImport = () => {
+    if (preview) logins.importCancel(preview.token).catch(() => undefined);
+    setPreview(null);
+  };
+  const commitImport = async () => {
+    if (!preview) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const r = await logins.importCommit({ token: preview.token, ids: [...picked], trashFile: trash });
+      if (alive.current) setImportNote(formatImportResult(r, trash));
+      await refresh();
+    } catch (err) {
+      if (alive.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (alive.current) {
+        setPreview(null);
+        setImporting(false);
+      }
+    }
+  };
+  const toggle = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   return (
     <div className="field saved-logins">
@@ -167,12 +198,52 @@ export function SavedLogins() {
       <div className="login-import">
         <strong>Import from a file</strong>
         <span className="help">Export your passwords from Chrome, Firefox, Safari, Bitwarden or 1Password as a CSV file, then import it here. Only website logins are imported, and the file is read by the desktop app only.</span>
-        <label className="login-trash">
-          <input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} disabled={!ready || importing} /> Move the file to the Trash after importing
-        </label>
-        <div>
-          <button type="button" className="pill-btn" disabled={!ready || importing} onClick={runImport}>Choose file and import</button>
-        </div>
+        {preview ? (
+          <>
+            <span className="help">
+              {preview.source.fileName}: {preview.rows.length === 1 ? "1 login" : `${preview.rows.length} logins`} to import
+              {preview.skipped.length > 0 && `, ${preview.skipped.length} skipped`}.
+            </span>
+            {preview.rows.map((row) => (
+              <label className="login-row" key={row.id}>
+                <input type="checkbox" checked={picked.has(row.id)} onChange={() => toggle(row.id)} disabled={importing} />
+                <span className="login-info">
+                  <strong>{row.label || hostOf(row.origin)}</strong>
+                  <small>
+                    {hostOf(row.origin)}
+                    {row.username ? ` · ${row.username}` : ""}
+                    {row.replaces ? " · replaces existing" : ""}
+                  </small>
+                </span>
+              </label>
+            ))}
+            {preview.skipped.length > 0 && (
+              <details>
+                <summary className="help">Skipped rows</summary>
+                {preview.skipped.map((x, i) => (
+                  <small key={i} className="help">
+                    {x.line ? `Row ${x.line}: ` : ""}
+                    {skipReasonLabel(x.reason)}
+                    <br />
+                  </small>
+                ))}
+              </details>
+            )}
+            <label className="login-trash">
+              <input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} disabled={importing} /> Move the file to the Trash after importing
+            </label>
+            <div>
+              <button type="button" className="pill-btn primary" disabled={importing || picked.size === 0} onClick={commitImport}>
+                Import {picked.size}
+              </button>{" "}
+              <button type="button" className="pill-btn" disabled={importing} onClick={cancelImport}>Cancel</button>
+            </div>
+          </>
+        ) : (
+          <div>
+            <button type="button" className="pill-btn" disabled={!ready || importing} onClick={startImport}>Choose file</button>
+          </div>
+        )}
         {importNote && <span className="help" role="status">{importNote}</span>}
       </div>
     </div>

@@ -43,3 +43,12 @@ export function formatImportResult(r: { imported: number; replaced: number; skip
   if (trashRequested && !r.trashed) s += " The file could not be moved to the Trash. Delete it yourself.";
   return s;
 }
+
+const SKIP_LABELS: Record<string, string> = {
+  "no-url": "no website address",
+  "not-https": "not a secure (https) address",
+  "not-login": "not a website login",
+  "missing-field": "username or password missing",
+  "bad-url": "address could not be read",
+};
+export const skipReasonLabel = (reason: string) => SKIP_LABELS[reason] ?? "skipped";

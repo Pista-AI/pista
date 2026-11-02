@@ -53,9 +53,19 @@ export interface DesktopBrowserBridge {
     save(input: { label: string; loginUrl: string; username: string; password: string }): Promise<SavedLoginMeta>;
     remove(id: string): Promise<void>;
     fill(site: string): Promise<{ ok: boolean; note: string }>;
-    /** Opens a file dialog in the main process, which reads and imports the CSV. Only counts come back, never rows. */
-    import(opts: { trash: boolean }): Promise<LoginImportResult>;
+    /** Opens a file dialog in the main process, which reads and parses the CSV. The preview holds no passwords. */
+    importPreview(): Promise<LoginImportPreview | { canceled: true }>;
+    /** Saves the ticked rows by id; the token is spent either way. Only counts come back. */
+    importCommit(input: { token: string; ids: string[]; trashFile: boolean }): Promise<LoginImportResult>;
+    importCancel(token: string): Promise<void>;
   };
+}
+
+export interface LoginImportPreview {
+  token: string;
+  source: { kind: "csv"; fileName: string };
+  rows: { id: string; origin: string; username: string; label?: string; replaces: boolean }[];
+  skipped: { line?: number; reason: string }[];
 }
 
 export interface LoginImportResult {

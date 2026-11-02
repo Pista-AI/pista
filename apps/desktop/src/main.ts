@@ -18,7 +18,7 @@ import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
 import { buildUiCsp } from "./csp.js";
 import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
-import { runLoginImport } from "./login-import.js";
+import { createImportStore, previewLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { createPresenceGate } from "./presence.js";
 import { nextRespawn, type RespawnState } from "./respawn.js";
@@ -496,7 +496,7 @@ function registerBrowserIpc(pane: BrowserPane) {
   });
 }
 
-const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import"];
+const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import:preview", "logins:import:commit", "logins:import:cancel"];
 
 function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   const vault = createLoginVault({ file: path.join(app.getPath("userData"), "logins.json"), crypto: safeStorageCrypto(safeStorage) });
@@ -554,9 +554,10 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
     const confirmed = await presence.ensure();
     return confirmed.ok ? fill.fill(String(site)) : { error: confirmed.error };
   });
-  // The export file is read and parsed here only. The renderer gets counts back, never rows.
-  guarded("logins:import", (opts?: { trash?: boolean }) =>
-    runLoginImport(
+  // The export file is read and parsed here only. The renderer gets a password-free preview, then confirms by token.
+  const imports = createImportStore();
+  guarded("logins:import:preview", () =>
+    previewLoginImport(
       {
         vault,
         pick: async () => {
@@ -569,11 +570,14 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
         },
         size: async (f) => (await stat(f)).size,
         read: (f) => readFile(f),
-        trash: (f) => shell.trashItem(f),
       },
-      { trash: opts?.trash === true },
+      imports,
     ),
   );
+  guarded("logins:import:commit", (input: { token: string; ids: string[]; trashFile?: boolean }) =>
+    imports.commit(vault, (f) => shell.trashItem(f), { token: input?.token, ids: input?.ids, trashFile: input?.trashFile === true }),
+  );
+  guarded("logins:import:cancel", async (token: string) => imports.cancel(token));
 }
 
 // ---------------------------------------------------------------------------
