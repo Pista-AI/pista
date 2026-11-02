@@ -14,6 +14,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
 import { buildUiCsp } from "./csp.js";
 import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
@@ -91,6 +92,8 @@ async function startHost(): Promise<string> {
   const resources = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "../build");
   const entry = path.join(resources, "host", "dist", "host.mjs");
   mkdirSync(CLIENT_HOME, { recursive: true });
+  // The host's data key is wrapped by the OS keychain and reaches the host only over the utilityProcess message channel (never argv, env or logs).
+  const key = await createAuthKeyVault({ file: path.join(app.getPath("userData"), "auth-key.json"), crypto: safeStorageCrypto(safeStorage) }).load();
   const log = createWriteStream(path.join(CLIENT_HOME, "host.log"), { flags: "a" });
 
   // A packaged build may ship llama-server (see scripts/fetch-llama.mjs); the host only learns of it through this variable.
@@ -100,17 +103,19 @@ async function startHost(): Promise<string> {
   // utilityProcess (not ELECTRON_RUN_AS_NODE) so the RunAsNode fuse can stay off in packaged builds.
   hostProcess = utilityProcess.fork(entry, [], {
     serviceName: "pista-host",
-    env: {
-      ...process.env,
+    env: hostChildEnv(process.env, {
       PATH: loginShellPath() ?? process.env.PATH,
       PISTA_HOST_PORT: String(port),
       PISTA_UI_DIR: path.join(resources, "ui"),
       PISTA_PARENT_PID: String(process.pid),
       PISTA_APP_VERSION: app.getVersion(),
+      PISTA_AUTH_KEY_PORT: "1",
       ...llamaEnv,
-    },
+    }),
     stdio: "pipe",
   });
+  // Sent as a Uint8Array copy right after fork; the local buffer is zeroed at once. Never logged.
+  sendKeyToHost(hostProcess, key);
   hostProcess.stdout?.pipe(log);
   hostProcess.stderr?.pipe(log);
   // The host's last stderr line is its fatal reason (for example a broken managed policy); show it in the error box.

@@ -172,7 +172,7 @@ What the IdP app registration needs: a public (no secret) client with the device
 How it behaves:
 
 - Settings shows the gateway with a "Sign in with <name>" button and an SSO label. Clicking it opens a panel under the provider with the one-time code in large type and a Copy button, the verification link, an Open sign-in page button, an "Expires in m:ss" countdown, and a Cancel button that aborts the sign-in. The desktop app also opens the link in the system browser by itself; a plain browser does not, so popup blockers cannot hide the code. When sign-in completes the row reads "Signed in as <subject>" (the subject is shown until the host restarts; Pi's stored credential is not readable by the host).
-- Tokens are stored by Pi in `auth.json` under `$PISTA_HOME/pi` (outside the policy file, never logged). A stored sign-in belongs to the gateway; no environment variable is consulted.
+- Tokens are stored encrypted in `auth.enc.json` under `$PISTA_HOME/pi` (key from the OS keychain via the desktop app, or `PISTA_AUTH_KEY` when headless), outside the policy file and never logged. A stored sign-in belongs to the gateway; no environment variable is consulted.
 - The token is refreshed before it expires (when less than five minutes remain) using the refresh token, and the rotated refresh token is stored if the IdP issues one. When the IdP no longer accepts the refresh token (revoked, password reset, session limit) the request fails with "Sign in again to <name>".
 - The only outbound calls are to the discovery, device authorization and token endpoints of the configured issuer.
 - `providers.disableDirectLogin` does not block this sign-in: it only closes the built-in providers and API-key logins. An SSO gateway stays visible and signable when `providers.allow` lists it.
@@ -520,7 +520,7 @@ What the purge does: it removes a thread the same way a user's delete does (so t
 
 What it does not delete: the LLM gateway's and the model provider's own retention, MCP servers' data, audit data already exported, pi-memory notes, `PLAN.md` files written into projects, traces written to a `PI_BROWSER_TRACE_DIR` outside `PISTA_HOME`, and Pi session files of projects Pista no longer lists. Deleted files are unlinked, not securely wiped.
 
-Details: only `.jsonl` files under Pi's `sessions` folder (session files) and `$PISTA_HOME/browser-traces` (traces) are ever deleted, so `config.json`, `auth.json` and the like are out of reach. Files that fail a safety check are skipped and counted in the log. The path check and the unlink are two steps, so someone who can already write to `PISTA_HOME` could swap a file in between; that is not a privilege gain.
+Details: only `.jsonl` files under Pi's `sessions` folder (session files) and `$PISTA_HOME/browser-traces` (traces) are ever deleted, so `config.json`, `auth.enc.json` and the like are out of reach. Files that fail a safety check are skipped and counted in the log. The path check and the unlink are two steps, so someone who can already write to `PISTA_HOME` could swap a file in between; that is not a privilege gain.
 
 ## Fail closed
 

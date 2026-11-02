@@ -16,7 +16,7 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n host,ui -c blue,magenta \"pnpm --filter @pista/host dev\" \"pnpm --filter @pista/ui dev\"",
+    "dev": "concurrently -k -n host,ui -c blue,magenta \"PISTA_AUTH_PLAIN=${PISTA_AUTH_PLAIN:-1} pnpm --filter @pista/host dev\" \"pnpm --filter @pista/ui dev\"",
     "build": "pnpm --filter @pista/ui build && pnpm --filter @pista/host build",
     "start": "pnpm --filter @pista/host start",
     "typecheck": "pnpm -r typecheck",
