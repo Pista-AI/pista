@@ -2,6 +2,7 @@
 import "./cli.ts";
 // Sets PI_CODING_AGENT_DIR before any Pi code runs; keep it right after the CLI.
 import "./pi-env.ts";
+import { installCrashGuards } from "./crash-guards.ts";
 import { bootAuthSource } from "./auth-boot.ts";
 import { loadedPolicy } from "./policy-boot.ts";
 import { createServer } from "node:http";
@@ -37,6 +38,10 @@ import { createLlama } from "./llama.ts";
 import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
 import { activeBrowserDriverConfig, describeBrowserDriver } from "./browser-driver.ts";
 import { resetHarnessPackageCache } from "./harness/packages.ts";
+
+// Installed before any top-level await so an early stray error is logged; startup failures (not yet listening) still exit 1.
+let listening = false;
+installCrashGuards(() => listening);
 
 const VERSION = resolveAppVersion(process.env, (message) => console.warn(`[pista-host] ${message}`));
 const PORT = Number(process.env.PISTA_HOST_PORT ?? DEFAULT_HOST_PORT);
@@ -331,10 +336,14 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
+  listening = true;
   console.log(`[pista-host] pi ${piVersion()} · listening on http://127.0.0.1:${PORT} (ws: /ws)`);
 });
 
+let shuttingDown = false;
 const shutdown = () => {
+  if (shuttingDown) return; // SIGTERM and the parent watchdog can both land
+  shuttingDown = true;
   threads.dispose();
   llama.stop();
   server.close();
@@ -351,7 +360,10 @@ if (process.env.PISTA_PARENT_PID) {
   setInterval(() => {
     try {
       process.kill(parent, 0);
-    } catch {
+    } catch (error) {
+      // EPERM means the parent exists but is not ours to signal; only ESRCH means it is gone.
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return;
+      console.log(`[pista-host] parent process ${parent} is gone (ESRCH); shutting down`);
       shutdown();
     }
   }, 2000).unref();
