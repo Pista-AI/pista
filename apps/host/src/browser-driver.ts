@@ -1,6 +1,7 @@
-import { CdpDriver, type BrowserDriver, type PageState } from "@pista/pi-browser";
+import { CdpDriver, ChromeDriver, type BrowserDriver, type DomainRules, type PageState } from "@pista/pi-browser";
 import type { BrowserAction, BrowserInput, BrowserResult } from "@pista/protocol";
 import type { Hub } from "./hub.ts";
+import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Mutable binding so a driver created before the session knows which thread it serves. */
 export interface ThreadRef {
@@ -11,9 +12,10 @@ export interface ThreadRef {
 
 /**
  * Which browser the `browser_*` tools drive. `pane` is the UI's browser pane (native view in the
- * desktop shell, iframe fallback on the web); `cdp` is a Chromium reached over the DevTools Protocol.
+ * desktop shell, iframe fallback on the web); `cdp` is a Chromium reached over the DevTools Protocol;
+ * `chrome` is an external Chrome/Edge/Brave started with a dedicated profile over a private pipe (no TCP port).
  */
-export type BrowserDriverConfig = { kind: "pane" } | { kind: "cdp"; url: string };
+export type BrowserDriverConfig = { kind: "pane" } | { kind: "cdp"; url: string } | { kind: "chrome"; browserPath?: string };
 
 /** Reads PISTA_BROWSER_DRIVER (default `pane`) and PI_BROWSER_CDP_URL. Throws a startup-grade error on bad input. */
 export function resolveBrowserDriverConfig(env: Record<string, string | undefined> = process.env): BrowserDriverConfig {
@@ -26,7 +28,8 @@ export function resolveBrowserDriverConfig(env: Record<string, string | undefine
     }
     return { kind, url };
   }
-  throw new Error(`Unknown PISTA_BROWSER_DRIVER "${kind}". Use "pane" (default) or "cdp".`);
+  if (kind === "chrome") return { kind, ...(env.PISTA_BROWSER_PATH?.trim() ? { browserPath: env.PISTA_BROWSER_PATH.trim() } : {}) };
+  throw new Error(`Unknown PISTA_BROWSER_DRIVER "${kind}". Use "pane" (default), "cdp" or "chrome".`);
 }
 
 let active: BrowserDriverConfig | undefined;
@@ -38,19 +41,25 @@ export function activeBrowserDriverConfig(): BrowserDriverConfig {
 
 /** One log line naming the active driver, for startup. */
 export function describeBrowserDriver(config: BrowserDriverConfig): string {
-  return config.kind === "cdp" ? `browser driver: cdp (${config.url})` : "browser driver: pane";
+  return config.kind === "cdp" ? `browser driver: cdp (${config.url})` : `browser driver: ${config.kind}`;
 }
 
 // CdpDriver attaches to one page (see packages/pi-browser/src/drivers/cdp.ts), so every thread shares one
 // connection and one tab. The cdp driver is a seam for single-thread use until per-thread targets exist.
 const cdpDrivers = new Map<string, CdpDriver>();
+// One external browser per host, so the chrome driver is shared the same way.
+let chromeDriver: ChromeDriver | undefined;
 
 /** The single selection point: builds the driver for a thread according to the configuration. */
-export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hub; ref: ThreadRef }): BrowserDriver {
+export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hub; ref: ThreadRef; domainRules?: DomainRules; pistaHome?: string }): BrowserDriver {
   if (config.kind === "cdp") {
     let driver = cdpDrivers.get(config.url);
     if (!driver) cdpDrivers.set(config.url, (driver = new CdpDriver(config.url)));
     return driver;
+  }
+  if (config.kind === "chrome") {
+    chromeDriver ??= new ChromeDriver({ pistaHome: deps.pistaHome ?? CLIENT_DIR, domainRules: deps.domainRules, browserPath: config.browserPath });
+    return chromeDriver;
   }
   return new PaneBrowserDriver(deps.hub, deps.ref);
 }

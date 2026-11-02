@@ -90,7 +90,7 @@ export function browserApprover(hub: Hub, ref: ThreadRef, timeoutMs = BROWSER_AS
 }
 
 export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules): InlineExtension {
-  const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref });
+  const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref, domainRules });
   return {
     name: "browser",
     factory: (pi: ExtensionAPI) =>
