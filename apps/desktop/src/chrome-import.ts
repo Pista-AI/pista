@@ -87,8 +87,13 @@ export async function readChromeLogins(opts: { chromeDir?: string; profileDir: s
   try {
     tmp = await mkdtemp(join(tmpdir(), "pista-chrome-"));
     const copy = join(tmp, "Login Data");
-    await copyFile(join(chromeDir, opts.profileDir, "Login Data"), copy);
-    await chmod(copy, 0o600);
+    // The journal and WAL hold writes SQLite has not checkpointed yet; they must sit next to the copy.
+    for (const suffix of ["", "-journal", "-wal"]) {
+      const from = join(chromeDir, opts.profileDir, "Login Data" + suffix);
+      if (suffix && !(await exists(from))) continue;
+      await copyFile(from, copy + suffix);
+      await chmod(copy + suffix, 0o600);
+    }
     const passphrase = await getKey();
     const aesKey = pbkdf2Sync(passphrase, "saltysalt", 1003, 16, "sha1");
     db = new DatabaseSync(copy, { readOnly: true });

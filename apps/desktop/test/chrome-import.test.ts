@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createCipheriv, pbkdf2Sync } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,5 +69,24 @@ test("preview rejects profiles that are not listed (path traversal)", darwin, as
   assert.deepEqual(p.source, { kind: "chrome", profile: "Personal" });
   assert.equal(p.rows.length, 1);
   assert.ok(!JSON.stringify(p).includes("s3cret"));
+  await rm(dir, { recursive: true });
+});
+
+test("copies the journal and WAL next to the temp copy with 0600, then removes them", darwin, async () => {
+  const dir = await fixture();
+  await writeFile(join(dir, "Default", "Login Data-journal"), "");
+  await writeFile(join(dir, "Default", "Login Data-wal"), "");
+  const seen: { name: string; mode: number }[] = [];
+  await readChromeLogins({
+    chromeDir: dir,
+    profileDir: "Default",
+    getKey: async () => {
+      for (const t of await tmpEntries()) for (const f of await readdir(join(tmpdir(), t))) seen.push({ name: f, mode: (await stat(join(tmpdir(), t, f))).mode & 0o777 });
+      return PASS;
+    },
+  }).catch(() => {});
+  assert.deepEqual(seen.map((s) => s.name).sort(), ["Login Data", "Login Data-journal", "Login Data-wal"]);
+  assert.ok(seen.every((s) => s.mode === 0o600));
+  assert.deepEqual(await tmpEntries(), []);
   await rm(dir, { recursive: true });
 });
