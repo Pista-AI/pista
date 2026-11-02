@@ -24,6 +24,13 @@ test("engine resolution: env beats setting beats auto", () => {
   assert.equal(resolveBrowserEngine({}, undefined, none).config.kind, "pane");
 });
 
+test("a policy-pinned engine ignores PISTA_BROWSER_DRIVER", () => {
+  const r = resolveBrowserEngine({ PISTA_BROWSER_DRIVER: "pane" }, "chrome", found, true);
+  assert.equal(r.config.kind, "chrome");
+  assert.equal(resolveBrowserEngine({ PISTA_BROWSER_DRIVER: "bogus" }, "embedded", found, true).config.kind, "pane");
+  assert.equal(resolveBrowserEngine({}, "auto", none).fallback, true);
+});
+
 test("engine resolution explains itself", () => {
   assert.equal(resolveBrowserEngine({}, "auto", none).reason, "auto: no Chrome found");
   assert.equal(resolveBrowserEngine({}, "auto", found).browserName, "Google Chrome");

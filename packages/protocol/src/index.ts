@@ -701,6 +701,8 @@ export interface HostInfo {
   browserEngineReason?: string;
   /** Display name of the external browser when the engine is `chrome`. */
   browserName?: string;
+  /** True when Chrome was wanted but none was found, so the built-in browser is used. */
+  browserEngineFallback?: boolean;
 }
 
 /** One live-view frame of the agent's Chrome tab (engine "chrome"). `data` is a base64 JPEG. */

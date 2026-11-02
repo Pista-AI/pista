@@ -230,11 +230,11 @@ function General() {
         <span className="help">
           {info?.browserEngine === "chrome"
             ? `Using ${info.browserName ?? "Chrome"} (Pista profile).`
-            : info?.browserEngineReason?.includes("no Chrome found")
+            : info?.browserEngineFallback
               ? "Chrome not found, using the built-in browser."
               : "Using the built-in browser."}{" "}
-          Automatic uses Chrome, Edge or Brave when installed. Pista keeps its own profile for it: sign in to sites once there, and if you sign in to your Google account in that profile you get your saved
-          passwords and passkeys through Google Password Manager. Your everyday Chrome profile is not touched. A change applies to new chats.
+          Automatic uses Chrome, Edge or Brave when installed. Pista keeps its own profile for it: sign in to sites once there, and signing in to Google in the Pista profile can sync your saved
+          passwords and passkeys from Google Password Manager. Your everyday Chrome profile is not touched. A change applies to new and idle chats.
         </span>
       </div>
       {info?.browserEngine !== "chrome" && <SavedLogins />}

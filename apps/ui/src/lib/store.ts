@@ -201,8 +201,8 @@ export function isLocked(key: keyof HostConfig): boolean {
 }
 
 /** Once per install: say so when the default (auto) found no Chrome and the built-in browser is used instead. */
-function notifyBrowserFallback(info: { browserEngine?: string; browserEngineReason?: string }) {
-  if (info.browserEngineReason !== "auto: no Chrome found") return;
+function notifyBrowserFallback(info: { browserEngineFallback?: boolean }) {
+  if (!info.browserEngineFallback) return;
   try {
     if (localStorage.getItem("pista.chromeFallbackNotice")) return;
     localStorage.setItem("pista.chromeFallbackNotice", "1");

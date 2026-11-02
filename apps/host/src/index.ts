@@ -67,8 +67,8 @@ const ALLOWED_ORIGINS = new Set([
 
 /** The resolved agent browser for `host.hello`, with the reason. */
 function browserInfo() {
-  const { config, reason, browserName } = activeBrowserEngine();
-  return { browserEngine: config.kind, browserEngineReason: reason, ...(browserName ? { browserName } : {}) };
+  const { config, reason, browserName, fallback } = activeBrowserEngine();
+  return { browserEngine: config.kind, browserEngineReason: reason, browserEngineFallback: Boolean(fallback), ...(browserName ? { browserName } : {}) };
 }
 
 function piVersion(): string {
@@ -82,7 +82,7 @@ function piVersion(): string {
 
 const store = new ConfigStore(loadedPolicy);
 // Fail at startup, not on the first browser action, when the driver is misconfigured.
-setBrowserEngineSetting(store.config.browserEngine);
+setBrowserEngineSetting(store.config.browserEngine, store.policy.locked.includes("browserEngine"));
 try {
   console.log(`[pista-host] ${describeBrowserDriver(activeBrowserDriverConfig())}`);
 } catch (error) {
@@ -162,7 +162,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
   "config.set": async ({ patch }) => {
     store.assertUnlocked(patch);
     const config = store.patchConfig(patch, { userSet: true });
-    if ("browserEngine" in patch) setBrowserEngineSetting(config.browserEngine);
+    if ("browserEngine" in patch) setBrowserEngineSetting(config.browserEngine, store.policy.locked.includes("browserEngine"));
     hub.emit({ type: "config.changed", config, configSources: store.sources() });
     resetHarnessPackageCache();
     if (patch.mcpServers || patch.homeUrl !== undefined || patch.instructions !== undefined || patch.orchestratorMode !== undefined || patch.harness !== undefined || patch.harnessConfig !== undefined || patch.sliced !== undefined || patch.memoryEnabled !== undefined || patch.webSearchEnabled !== undefined || patch.browserEnabled !== undefined || patch.browserEngine !== undefined || patch.maxOutputTokens !== undefined || patch.maxToolCalls !== undefined || patch.agentOverrides !== undefined) await threads.reloadIdle();

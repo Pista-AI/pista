@@ -25,6 +25,8 @@ export interface BrowserEngineResolution {
   reason: string;
   /** Display name of the external browser when the engine is `chrome`. */
   browserName?: string;
+  /** True when Chrome was wanted (auto or the setting) but none was found, so the built-in browser is used. */
+  fallback?: boolean;
 }
 
 /**
@@ -36,6 +38,8 @@ export function resolveBrowserEngine(
   env: Record<string, string | undefined> = process.env,
   setting: BrowserEngineSetting = "auto",
   find: (overridePath?: string) => FoundBrowser | null = (overridePath) => findBrowser({ overridePath }),
+  /** A managed policy pins the setting: PISTA_BROWSER_DRIVER is then ignored. */
+  pinned = false,
 ): BrowserEngineResolution {
   const override = env.PISTA_BROWSER_PATH?.trim() || undefined;
   const chrome = (reason: string, found: FoundBrowser | null): BrowserEngineResolution => ({
@@ -43,7 +47,7 @@ export function resolveBrowserEngine(
     reason,
     ...(found ? { browserName: BROWSER_NAMES[found.kind] } : {}),
   });
-  const envKind = env.PISTA_BROWSER_DRIVER?.trim();
+  const envKind = pinned ? undefined : env.PISTA_BROWSER_DRIVER?.trim();
   if (envKind === "pane") return { config: { kind: "pane" }, reason: "PISTA_BROWSER_DRIVER=pane" };
   if (envKind === "cdp") {
     const url = env.PI_BROWSER_CDP_URL?.trim();
@@ -57,7 +61,7 @@ export function resolveBrowserEngine(
   if (setting === "embedded") return { config: { kind: "pane" }, reason: "setting: built-in browser" };
   const found = find(override);
   if (found) return chrome(setting === "chrome" ? "setting: Chrome" : "auto: found a Chrome-family browser", found);
-  return { config: { kind: "pane" }, reason: setting === "chrome" ? "setting: Chrome, but no Chrome found" : "auto: no Chrome found" };
+  return { config: { kind: "pane" }, reason: setting === "chrome" ? "setting: Chrome, but no Chrome found" : "auto: no Chrome found", fallback: true };
 }
 
 /** Like `resolveBrowserEngine`, without the explanation. */
@@ -66,15 +70,22 @@ export function resolveBrowserDriverConfig(...args: Parameters<typeof resolveBro
 }
 
 let engineSetting: BrowserEngineSetting = "auto";
+let enginePinned = false;
+let warnedPinned = false;
 
 /** Sets the persisted `browser.engine` value. A thread picks the engine when its session is built, so a change reaches new threads and idle ones the host reloads. */
-export function setBrowserEngineSetting(value: BrowserEngineSetting | undefined): void {
+export function setBrowserEngineSetting(value: BrowserEngineSetting | undefined, pinned = false): void {
   engineSetting = value ?? "auto";
+  enginePinned = pinned;
 }
 
 /** The resolution for this process right now (environment, then setting, then auto). */
 export function activeBrowserEngine(): BrowserEngineResolution {
-  return resolveBrowserEngine(process.env, engineSetting);
+  if (enginePinned && process.env.PISTA_BROWSER_DRIVER?.trim() && !warnedPinned) {
+    warnedPinned = true;
+    console.log("[pista-host] browser engine is pinned by policy; PISTA_BROWSER_DRIVER is ignored");
+  }
+  return resolveBrowserEngine(process.env, engineSetting, undefined, enginePinned);
 }
 
 export function activeBrowserDriverConfig(): BrowserDriverConfig {
