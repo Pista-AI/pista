@@ -13,6 +13,7 @@ import { browsingTurnsExtension } from "./browsing-turns.ts";
 import { manifestMergeExtension } from "./manifest.ts";
 import { approvalExtension, browserExtension, loopGuardExtension, policyGateExtension, type ThreadRef } from "./extensions.ts";
 import type { Hub } from "./hub.ts";
+import type { McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
 import { abortLabelExtension } from "./abort-label.ts";
@@ -69,6 +70,8 @@ export interface ExtensionDeps {
   harness?: HarnessContext;
   /** The thread's project folder. */
   cwd?: string;
+  /** Encrypted MCP token store; absent in plain mode, where Pi keeps mcp-auth.json. */
+  mcpCredentials?: McpOAuthCredentialStoreLike;
 }
 
 function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
@@ -108,7 +111,8 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
       : [
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),
-          createMcpExtension(),
+          // Pi's option is typed as its own McpOAuthCredentialStore class, which the package does not export; the store comes from that class (pi-mcp-oauth.ts), so the cast is safe.
+          createMcpExtension(deps.mcpCredentials ? { credentials: deps.mcpCredentials as unknown as NonNullable<Parameters<typeof createMcpExtension>[0]>["credentials"] } : undefined),
           ...(store.config.browserEnabled === false ? [] : [browserExtension(hub, ref, store.managedPolicy?.browser)]),
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),

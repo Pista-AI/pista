@@ -27,7 +27,7 @@ We use these. We do not rebuild them.
 - **MCP extension.** `createMcpExtension()` in `@earendil-works/pi-coding-agent`.
   - Reads `<agentDir>/mcp.json` and the trusted `<cwd>/.pi/mcp.json`.
   - Supports stdio and streamable HTTP, with `${ENV}` expansion.
-  - OAuth with dynamic client registration and CIMD. Tokens go to `<agentDir>/mcp-auth.json`. The log goes to `<agentDir>/mcp.log`.
+  - OAuth with dynamic client registration and CIMD. Tokens go to `<agentDir>/mcp-auth.json` in Pi; in Pista they are encrypted in `mcp-auth.enc.json` (plain only with `PISTA_AUTH_PLAIN=1`). The log goes to `<agentDir>/mcp.log`.
   - Per-server tool exposure: `codemode` (default), `deferred` (via tool_search), `direct`, `hidden`.
   - MCP resources through list and read tools.
   - Options hook: `loadConfig`, `createTransport`, `credentials`, `openUrl`, `updateConfig`.
@@ -79,7 +79,7 @@ Pista writes these parts. Each one has a reason.
 |---|---|---|---|---|
 | MCP config location | `.mcp.json`, `~/.claude.json` | Plugin `mcp.json` | `<agentDir>/mcp.json`, `<cwd>/.pi/mcp.json` | `$PISTA_HOME/pi/mcp.json` |
 | Transports | stdio, streamable HTTP. SSE deprecated. | stdio, streamable HTTP. SSE deprecated. | stdio, streamable HTTP. SSE rejected. | stdio, streamable HTTP. No SSE. |
-| OAuth | DCR and CIMD. Keychain. | DCR and CIMD. `auth = oauth or chatgpt`. Env var headers. | DCR and CIMD. `mcp-auth.json`. | Pi's |
+| OAuth | DCR and CIMD. Keychain. | DCR and CIMD. `auth = oauth or chatgpt`. Env var headers. | DCR and CIMD. `mcp-auth.json`. | Pi's, stored encrypted (`mcp-auth.enc.json`) |
 | Tool exposure | Tool search by default. `alwaysLoad`. | tool_search by default. | codemode by default. `deferred` and `direct` available. | Pi's, set per server in the UI |
 | Approvals | `mcp__server__tool` allow, ask and deny rules. `requiresUserInteraction` meta. | `default_tools_approval_mode`: auto, prompt, writes or approve, per tool, app or plugin. | None built in. | Pista `tool_call` gate (slice 3) |
 | Skills discovery paths | `.claude/skills`, `~/.claude/skills` | `.agents/skills`, `~/.agents/skills` | `<agentDir>/skills`, `.pi/skills`, `.agents/skills` | Pi's, plus `.claude/skills` |

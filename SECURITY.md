@@ -38,12 +38,12 @@ Only the latest release receives security fixes.
 ### Provider credentials
 
 - Pi provider credentials live in an AES-256-GCM `auth.enc.json` under `$PISTA_HOME/pi`.
+- MCP OAuth tokens live in `mcp-auth.enc.json` next to it, with the same key and file handling; a plain `mcp-auth.json` is migrated and removed. The host refuses to start if Pi no longer exposes the token store class it hooks into.
 - The desktop generates the key, wraps it with safeStorage and hands it to the host over the utility-process message channel, never through argv, env or logs.
 - Headless use needs an explicit key or `PISTA_AUTH_PLAIN=1`.
 
 ### Known gaps
 
-- `mcp-auth.json` is still stored in plain text.
 - Windows has no app-bound-encryption equivalent, so other processes of the same user can call DPAPI.
 - Unsigned builds weaken the macOS Keychain access control.
 - There is no cross-process lock for two hosts sharing one `PISTA_HOME`.

@@ -87,9 +87,10 @@ if (mcpLine) console.log(mcpLine);
 for (const warning of store.policyWarnings) console.warn(`[pista-host] managed policy: ${warning}`);
 const hub = new Hub();
 let credentials: Awaited<ReturnType<typeof setupCredentials>>["credentials"];
+let mcpCredentials: Awaited<ReturnType<typeof setupCredentials>>["mcpCredentials"];
 try {
   try {
-    credentials = (await setupCredentials(bootAuthSource, piAgentDir(), console.log)).credentials;
+    ({ credentials, mcpCredentials } = await setupCredentials(bootAuthSource, piAgentDir(), console.log));
   } finally {
     // The store keeps its own copy of the key; do not retain this one.
     if (bootAuthSource.kind === "key") bootAuthSource.key.fill(0);
@@ -114,7 +115,7 @@ const updates = updatesSummary(loadedPolicy.policy?.updates, process.env);
 if (versionGate.status !== "ok") console.error(`[pista-host] ${gateMessage(versionGate)} The host stays up in blocked mode: agent work is refused.`);
 const audit = createAudit(loadedPolicy.policy, { version: VERSION, subject: currentSubject });
 if (loadedPolicy.policy?.audit) console.log(`[pista-host] audit export: OTLP/HTTP to ${new URL(loadedPolicy.policy.audit.otlpEndpoint).origin}`);
-const threads = new ThreadManager(store, hub, models, prepareWith([localPreparer(store, hub), llama.prepare]), undefined, audit);
+const threads = new ThreadManager(store, hub, models, prepareWith([localPreparer(store, hub), llama.prepare]), undefined, audit, mcpCredentials);
 startRetention(loadedPolicy.policy?.retention, { purgeThreads: (cutoff, stats) => threads.purgeThreads(cutoff, join(piAgentDir(), "sessions"), stats) }, CLIENT_DIR, audit);
 
 llama.start();
