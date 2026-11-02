@@ -21,6 +21,7 @@ import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
 import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { createPresenceGate } from "./presence.js";
+import { nextRespawn, type RespawnState } from "./respawn.js";
 import { findDebugFlag } from "./debug-flags.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
 import { decidePanePermission, isWebUrl, sameOrigin } from "./web-policy.js";
@@ -88,12 +89,24 @@ async function waitFor(url: string, timeoutMs: number): Promise<void> {
 }
 
 async function startHost(): Promise<string> {
+  // The port is chosen once: the UI learns the host URL a single time, so every respawn must reuse it.
   const port = await freePort(4417);
+  const url = `http://127.0.0.1:${port}`;
+  await spawnHost(port);
+  await waitFor(`${url}/health`, 20_000);
+  return url;
+}
+
+let respawn: RespawnState = { failures: 0 };
+let respawnTimer: NodeJS.Timeout | undefined;
+
+async function spawnHost(port: number): Promise<void> {
   const resources = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "../build");
   const entry = path.join(resources, "host", "dist", "host.mjs");
   mkdirSync(CLIENT_HOME, { recursive: true });
   // The host's data key is wrapped by the OS keychain and reaches the host only over the utilityProcess message channel (never argv, env or logs).
   const key = await createAuthKeyVault({ file: path.join(app.getPath("userData"), "auth-key.json"), crypto: safeStorageCrypto(safeStorage) }).load();
+  const startedAt = Date.now();
   const log = createWriteStream(path.join(CLIENT_HOME, "host.log"), { flags: "a" });
 
   // A packaged build may ship llama-server (see scripts/fetch-llama.mjs); the host only learns of it through this variable.
@@ -124,13 +137,20 @@ async function startHost(): Promise<string> {
     const line = chunk.toString().trim().split("\n").filter(Boolean).pop();
     if (line) lastError = line.slice(0, 500);
   });
-  hostProcess.on("exit", (code) => {
-    if (code && !quitting) dialog.showErrorBox("Pista agent host stopped", `${lastError ? `${lastError}\n\n` : ""}Exit code ${code}. See ${path.join(CLIENT_HOME, "host.log")}.`);
+  hostProcess.on("exit", (code, signal) => {
+    log.end();
+    if (quitting) return;
+    const next = nextRespawn(respawn, Date.now() - startedAt);
+    respawn = next.state;
+    if (next.delayMs === null) {
+      dialog.showErrorBox("Pista agent host stopped", `${lastError ? `${lastError}\n\n` : ""}Exit code ${code}. Giving up after ${next.state.failures - 1} restarts. See ${path.join(CLIENT_HOME, "host.log")}.`);
+      return;
+    }
+    console.warn(`Pista host exited (code ${code}, signal ${signal ?? "none"}); restarting on port ${port} in ${next.delayMs} ms`);
+    respawnTimer = setTimeout(() => {
+      spawnHost(port).catch((e: Error) => console.warn(`Pista host restart failed: ${e.message}`));
+    }, next.delayMs);
   });
-
-  const url = `http://127.0.0.1:${port}`;
-  await waitFor(`${url}/health`, 20_000);
-  return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,7 +524,10 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   // Touch ID once per app run (re-asked after 8 hours or a resume from sleep). Where it is unavailable the fill is not gated.
   const canPrompt = () => process.platform === "darwin" && systemPreferences.canPromptTouchID();
   const presence = createPresenceGate({ canPrompt, prompt: () => systemPreferences.promptTouchID("use a saved login"), now: Date.now, ttlMs: 8 * 60 * 60_000 });
-  powerMonitor.on("resume", () => presence.lock());
+  powerMonitor.on("resume", () => {
+    presence.lock();
+    if (!owner.isDestroyed()) owner.send("host:resume");
+  });
   guarded("logins:status", async () => ({ ...(await vault.status()), presence: canPrompt() ? "touchid" : "unavailable" }));
   guarded("logins:list", () => vault.list());
   guarded("logins:save", (input) => vault.save(input));
@@ -606,6 +629,7 @@ ipcMain.handle("dialog:pickFolder", async () => {
 let quitting = false;
 app.on("before-quit", () => {
   quitting = true;
+  clearTimeout(respawnTimer);
   hostProcess?.kill();
 });
 

@@ -28,6 +28,11 @@ class HostClient {
   private retry = 0;
   connected = false;
 
+  constructor() {
+    // After sleep the socket is often dead without a close event; closing it runs the normal backoff reconnect.
+    window.pistaDesktop?.onResume?.(() => this.ws?.close());
+  }
+
   connect(): void {
     const ws = new WebSocket(hostSocketUrl());
     this.ws = ws;
