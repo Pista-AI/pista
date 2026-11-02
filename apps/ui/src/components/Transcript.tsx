@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { ChatMessage, ToolCallBlock } from "@pista/protocol";
 import { RoleBadge } from "./RoleBadge.tsx";
+import { describeTurnError } from "../lib/errors.ts";
 import { actions, childrenOf, type Approval, type ThreadView, type ToolRun, useApp } from "../lib/store.ts";
 import { duration, fmtTokens } from "../lib/format.ts";
 import { openLink } from "../lib/links.ts";
@@ -50,7 +51,7 @@ interface Turn {
  * Codex-style layout: commentary stays inline as prose, and each run of consecutive
  * tool calls collapses into one summary line ("Edited a file, read files, ran commands").
  */
-function buildTurns(messages: ChatMessage[], hideErrors = false): Turn[] {
+function buildTurns(messages: ChatMessage[], hideErrors = false, providerName: (id: string) => string = (id) => id): Turn[] {
   const turns: Turn[] = [];
   let turn: Turn | undefined;
   const begin = (ts: number) => {
@@ -80,7 +81,7 @@ function buildTurns(messages: ChatMessage[], hideErrors = false): Turn[] {
         else if (block.type === "toolCall" && block.name === "agent") t.items.push({ kind: "agent", call: block });
         else if (block.type === "toolCall") group(t).steps.push({ kind: "tool", call: block });
       }
-      if (m.stopReason === "error" && !hideErrors) t.items.push({ kind: "error", text: m.errorMessage ?? "The model returned an error." });
+      if (m.stopReason === "error" && !hideErrors) t.items.push({ kind: "error", text: describeTurnError(m.errorMessage, providerName(m.provider)).text });
       if (m.stopReason === "aborted") t.items.push({ kind: "note", text: "Stopped" });
     } else if (m.role === "compactionSummary") {
       t.items.push({ kind: "note", text: "Context compacted" });
@@ -293,7 +294,8 @@ export function Transcript({ view, threadId, footer, hideErrors }: { view: Threa
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const turns = useMemo(() => buildTurns(view.messages, hideErrors), [view.messages, hideErrors]);
+  const providers = useApp((s) => s.providers);
+  const turns = useMemo(() => buildTurns(view.messages, hideErrors, (id) => providers.find((p) => p.id === id)?.name ?? id), [view.messages, hideErrors, providers]);
   const homeUrl = useApp((s) => s.config?.homeUrl);
   const grounded = useMemo(() => groundedHosts(view.messages, homeUrl), [view.messages, homeUrl]);
   const results = useMemo(() => {

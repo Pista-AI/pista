@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ThreadSummary } from "@pista/protocol";
 import { toast, useApp, type ThreadView } from "../lib/store.ts";
 import { host } from "../lib/host.ts";
+import { describeTurnError } from "../lib/errors.ts";
 import { ManifestTable } from "./ManifestTable.tsx";
 import { parseManifest, type ManifestRow } from "./manifest.ts";
 
@@ -68,12 +69,15 @@ export function JobStrip({ thread }: { thread: ThreadSummary | undefined }) {
 /** Last item of the transcript: the error card, or the results once the thread is idle with a manifest. */
 export function JobFooter({ thread, view }: { thread: ThreadSummary; view: ThreadView }) {
   const rows = useManifest(thread);
+  const providers = useApp((s) => s.providers);
   if (thread.role !== JOB_ROLE) return null;
   const last = view.messages[view.messages.length - 1];
   if (thread.status === "error" || (last?.role === "assistant" && last.stopReason === "error")) {
+    const failed = last?.role === "assistant" ? last : undefined;
+    const label = failed ? (providers.find((p) => p.id === failed.provider)?.name ?? failed.provider) : "The model";
     return (
       <div className="job-error">
-        <p>Something went wrong. Open settings to check your AI connection, then try again.</p>
+        <p>{describeTurnError(failed?.errorMessage, label).text}</p>
         <button className="pill-btn primary" onClick={() => useApp.setState({ settingsOpen: "providers" })}>
           Open settings
         </button>
