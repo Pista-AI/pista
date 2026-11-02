@@ -195,6 +195,11 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
 
 const WRITE_VERBS = /(mutation|create|update|delete|remove|save|apply|promote|release|publish|write|set_|select)/i;
 
+/** A saved-login sign-in is asked about every time (not covered by "Always allow" or a role exemption) unless the owner turned `confirmSignIns` off. */
+export function signInNeedsConfirmation(toolName: string, confirmSignIns: boolean | undefined): boolean {
+  return toolName === "browser_login" && confirmSignIns !== false;
+}
+
 /** `alwaysAllowed` is shared with the host so approvals it asks for itself (the goal check) honour "Always allow" too. */
 export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, alwaysAllowed = new Set<string>(), autoAllow?: (toolName: string, input: Record<string, unknown>) => boolean, block?: (toolName: string, input: Record<string, unknown>) => string | undefined): InlineExtension {
   /** Set by a plain decline: the rest of this run may only reply, not act. Cleared when the user prompts again. */
@@ -231,15 +236,16 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
           return { block: true, terminate: true, reason: "Tools are paused because the user declined an action. Reply to the user instead." };
         }
         const mode = store.config.approvalMode;
-        if (mode === "full-access") return undefined;
+        const forced = signInNeedsConfirmation(event.toolName, store.config.confirmSignIns);
+        if (mode === "full-access" && !forced) return undefined;
         // The policy gate (last in line) refuses this call anyway; do not ask the user about it.
         if (store.toolRules && denyToolCall(store.toolRules, event.toolName, event.input)) return undefined;
         const reason = isWrite(event.toolName);
         if (!reason) return undefined;
         if (mode === "read-only") return { block: true, reason: `Blocked: read-only mode (${reason}).` };
-        if (alwaysAllowed.has(event.toolName)) return undefined;
+        if (!forced && alwaysAllowed.has(event.toolName)) return undefined;
         // Narrow, per-role exemptions (see extensionsFor); anything they do not name still asks.
-        if (autoAllow?.(event.toolName, event.input as Record<string, unknown>)) return undefined;
+        if (!forced && autoAllow?.(event.toolName, event.input as Record<string, unknown>)) return undefined;
 
         try {
           const answer = await hub.ask<{ allow: boolean; always?: boolean; note?: string }>(
@@ -253,7 +259,7 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
             }),
             10 * 60_000,
           );
-          if (answer.always) alwaysAllowed.add(event.toolName);
+          if (answer.always && !forced) alwaysAllowed.add(event.toolName);
           if (answer.allow) {
             // This approval does not lift the browser tools' consequential-action stops: it showed only a ref, so the user never saw what would be clicked. The tool asks again, with the exact action.
             return undefined;

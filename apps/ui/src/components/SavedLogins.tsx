@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SavedLoginMeta } from "@pista/protocol";
+import { useConfigField } from "../lib/useConfigField.ts";
 import { formatImportResult, hostOf, validateLoginInput } from "../focused/saved-logins.ts";
 
 const EMPTY = { label: "", loginUrl: "", username: "", password: "" };
@@ -21,6 +22,8 @@ export function SavedLogins() {
   const [trash, setTrash] = useState(true);
   const [importing, setImporting] = useState(false);
   const [importNote, setImportNote] = useState("");
+  const [presence, setPresence] = useState<"touchid" | "unavailable" | null>(null);
+  const confirmSignIns = useConfigField("confirmSignIns");
   const alive = useRef(true);
 
   const refresh = async () => {
@@ -37,7 +40,11 @@ export function SavedLogins() {
     alive.current = true;
     if (logins) {
       logins.status().then(
-        (s) => alive.current && setAvailable(s.available),
+        (s) => {
+          if (!alive.current) return;
+          setAvailable(s.available);
+          setPresence(s.presence ?? null);
+        },
         () => alive.current && setAvailable(false),
       );
       void refresh();
@@ -109,6 +116,20 @@ export function SavedLogins() {
     <div className="field saved-logins">
       <label>Saved logins</label>
       <span className="help">Pista signs in to these sites for you. Passwords are kept in your computer's keychain and are never shown to the AI.</span>
+      <div className="field-row">
+        <label>Ask before each sign-in</label>
+        <div className="seg">
+          {([true, false] as const).map((on) => (
+            <button key={String(on)} type="button" className={(confirmSignIns.value !== false) === on ? "on" : ""} disabled={confirmSignIns.locked} onClick={() => confirmSignIns.set(on)}>
+              {on ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
+        <span className="help">Pista asks you to approve every time it signs in with a saved login, even when it otherwise acts without asking.</span>
+      </div>
+      {presence && (
+        <span className="help">{presence === "touchid" ? "Touch ID is asked once each time you open Pista, before its first sign-in." : "Touch ID not available on this device."}</span>
+      )}
       {available === false && <div role="alert" className="login-error">Pista can't store passwords safely on this computer, so saving logins is turned off.</div>}
       {items.length === 0 && ready && <span className="help">No saved logins yet.</span>}
       {items.map((l) => (

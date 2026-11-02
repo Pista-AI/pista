@@ -436,6 +436,8 @@ export interface HostConfig {
   llamaEnabled: boolean;
   /** Focused mode: the app opens as one guided job (paste transactions, collect invoices) instead of the general projects and chats UI. Absent is off. */
   focusedMode?: boolean;
+  /** Ask before every saved-login sign-in (`browser_login`), even in full-access mode. Absent counts as on. */
+  confirmSignIns?: boolean;
   /** Upper clamp on each model's per-response output cap, in tokens; undefined keeps the model's default. */
   maxOutputTokens?: number;
   /** Default verify gate for sub-agents that change files; a trusted project's `.pista/verify.json` wins. */
