@@ -8,9 +8,9 @@
  */
 import { execFile } from "node:child_process";
 import { createDecipheriv, pbkdf2Sync } from "node:crypto";
-import { chmod, copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdtemp, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { ImportError, type createImportStore, type ImportVault, type SkipReason } from "./login-import.ts";
 import type { SaveLoginInput } from "./logins.js";
@@ -20,6 +20,21 @@ export const CHROME_NOT_FOUND = "Chrome's saved logins could not be found.";
 export const CHROME_KEY_DENIED = "Chrome's encryption key could not be read. Allow access in the Keychain prompt and try again.";
 export const CHROME_UNREADABLE = "Chrome's saved logins could not be read.";
 export const CHROME_BAD_PROFILE = "That Chrome profile was not found.";
+
+export const CHROME_BUSY = "An import from Chrome is already running.";
+export const CHROME_COOLDOWN = "Chrome's encryption key was just denied. Wait a few seconds and try again.";
+export const MAX_LOGIN_DATA_BYTES = 200_000_000;
+const MAX_ROWS = 10_000;
+const COOLDOWN_MS = 3000;
+const TMP_PREFIX = "pista-chrome-";
+
+let running = false;
+let deniedAt = 0;
+/** Test hook: clears the in-flight lock and the denial cooldown. */
+export function resetChromeImportGuards() {
+  running = false;
+  deniedAt = 0;
+}
 
 export const defaultChromeDir = () => join(homedir(), "Library", "Application Support", "Google", "Chrome");
 
@@ -78,26 +93,39 @@ export interface ChromeRead {
 
 const isLocalHost = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]";
 
-export async function readChromeLogins(opts: { chromeDir?: string; profileDir: string; getKey?: () => Promise<string> }): Promise<ChromeRead> {
+export async function readChromeLogins(opts: { chromeDir?: string; profileDir: string; getKey?: () => Promise<string | Buffer> }): Promise<ChromeRead> {
   if (process.platform !== "darwin") throw new ImportError(CHROME_UNSUPPORTED);
+  if (running) throw new ImportError(CHROME_BUSY);
+  if (Date.now() - deniedAt < COOLDOWN_MS) throw new ImportError(CHROME_COOLDOWN);
+  running = true;
   const chromeDir = opts.chromeDir ?? defaultChromeDir();
   const getKey = opts.getKey ?? keychainKey;
   let tmp: string | undefined;
   let db: DatabaseSync | undefined;
+  let passphrase: string | Buffer | undefined;
+  let aesKey: Buffer | undefined;
   try {
-    tmp = await mkdtemp(join(tmpdir(), "pista-chrome-"));
+    // Only plain files that really live under the Chrome dir are copied; a symlink could point anywhere.
+    const root = await realpath(chromeDir);
+    const profileReal = await realpath(join(chromeDir, opts.profileDir));
+    if (!profileReal.startsWith(root + sep)) throw new ImportError(CHROME_UNREADABLE);
+    tmp = await mkdtemp(join(tmpdir(), TMP_PREFIX));
+    await chmod(tmp, 0o700);
     const copy = join(tmp, "Login Data");
     // The journal and WAL hold writes SQLite has not checkpointed yet; they must sit next to the copy.
     for (const suffix of ["", "-journal", "-wal"]) {
       const from = join(chromeDir, opts.profileDir, "Login Data" + suffix);
-      if (suffix && !(await exists(from))) continue;
+      const info = await lstat(from).catch(() => null);
+      if (!info && suffix) continue;
+      if (!info || !info.isFile() || info.size > MAX_LOGIN_DATA_BYTES) throw new ImportError(CHROME_UNREADABLE);
+      if (!(await realpath(from)).startsWith(profileReal + sep)) throw new ImportError(CHROME_UNREADABLE);
       await copyFile(from, copy + suffix);
       await chmod(copy + suffix, 0o600);
     }
-    const passphrase = await getKey();
-    const aesKey = pbkdf2Sync(passphrase, "saltysalt", 1003, 16, "sha1");
+    passphrase = await getKey();
+    aesKey = pbkdf2Sync(passphrase, "saltysalt", 1003, 16, "sha1");
     db = new DatabaseSync(copy, { readOnly: true });
-    const found = db.prepare("SELECT origin_url, username_value, password_value FROM logins WHERE blacklisted_by_user = 0").all() as {
+    const found = db.prepare("SELECT origin_url, username_value, password_value FROM logins WHERE blacklisted_by_user = 0 LIMIT " + MAX_ROWS).all() as {
       origin_url: string;
       username_value: string;
       password_value: Uint8Array;
@@ -124,14 +152,32 @@ export async function readChromeLogins(opts: { chromeDir?: string; profileDir: s
     }
     return { rows, skipped };
   } catch (e) {
+    if (e instanceof ImportError && e.message === CHROME_KEY_DENIED) deniedAt = Date.now();
     // Node and sqlite errors embed paths; only our own fixed messages pass through.
     throw new ImportError(e instanceof ImportError ? e.message : CHROME_UNREADABLE);
   } finally {
+    running = false;
+    aesKey?.fill(0);
+    if (Buffer.isBuffer(passphrase)) passphrase.fill(0);
     try {
       db?.close();
     } catch {}
     if (tmp) await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** Removes pista-chrome-* temp dirs left by a crash. Only directories owned by this user; run once at app start. */
+export async function sweepStaleChromeTemps(dir = tmpdir()): Promise<number> {
+  let n = 0;
+  const uid = process.getuid?.();
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!name.startsWith(TMP_PREFIX)) continue;
+    const p = join(dir, name);
+    const info = await lstat(p).catch(() => null);
+    if (!info || !info.isDirectory() || (uid !== undefined && info.uid !== uid)) continue;
+    if (await rm(p, { recursive: true, force: true }).then(() => true, () => false)) n++;
+  }
+  return n;
 }
 
 /** Validates the profile against the listing, reads it, and hands the entries to the store. */

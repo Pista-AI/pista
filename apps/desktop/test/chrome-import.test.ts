@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { createCipheriv, pbkdf2Sync } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { listChromeProfiles, previewChromeImport, readChromeLogins } from "../src/chrome-import.ts";
-import { createImportStore } from "../src/login-import.ts";
+import { CHROME_BUSY, CHROME_KEY_DENIED, listChromeProfiles, previewChromeImport, readChromeLogins, resetChromeImportGuards, sweepStaleChromeTemps } from "../src/chrome-import.ts";
+import { createImportStore, ImportError } from "../src/login-import.ts";
+
+test.beforeEach(() => resetChromeImportGuards());
 
 const darwin = { skip: process.platform !== "darwin" && "macOS only" };
 const PASS = "fixture-passphrase";
@@ -89,4 +91,61 @@ test("copies the journal and WAL next to the temp copy with 0600, then removes t
   assert.ok(seen.every((s) => s.mode === 0o600));
   assert.deepEqual(await tmpEntries(), []);
   await rm(dir, { recursive: true });
+});
+
+test("refuses a symlinked Login Data", darwin, async () => {
+  const dir = await fixture();
+  const target = join(dir, "elsewhere");
+  await writeFile(target, "x");
+  await rm(join(dir, "Default", "Login Data"));
+  await symlink(target, join(dir, "Default", "Login Data"));
+  await assert.rejects(readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey }), (e: Error) => !e.message.includes(dir));
+  assert.deepEqual(await tmpEntries(), []);
+  await rm(dir, { recursive: true });
+});
+
+test("refuses a symlinked profile dir that escapes the Chrome dir", darwin, async () => {
+  const dir = await fixture();
+  const outside = await fixture();
+  await symlink(join(outside, "Default"), join(dir, "Link"));
+  await assert.rejects(readChromeLogins({ chromeDir: dir, profileDir: "Link", getKey }));
+  await rm(dir, { recursive: true });
+  await rm(outside, { recursive: true });
+});
+
+test("a second read while one is running is refused; the lock is released after", darwin, async () => {
+  const dir = await fixture();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const first = readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey: async () => (await gate, PASS) });
+  await assert.rejects(readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey }), (e: Error) => e.message === CHROME_BUSY);
+  release();
+  assert.equal((await first).rows.length, 1);
+  assert.equal((await readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey })).rows.length, 1);
+  await rm(dir, { recursive: true });
+});
+
+test("a denied Keychain prompt starts a cooldown", darwin, async () => {
+  const dir = await fixture();
+  await assert.rejects(readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey: async () => Promise.reject(new ImportError(CHROME_KEY_DENIED)) }));
+  await assert.rejects(readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey }), (e: Error) => e.message !== CHROME_BUSY && /just denied/.test(e.message));
+  await rm(dir, { recursive: true });
+});
+
+test("refuses a Login Data over the size cap", darwin, async () => {
+  const dir = await fixture();
+  await truncate(join(dir, "Default", "Login Data"), 201_000_000);
+  await assert.rejects(readChromeLogins({ chromeDir: dir, profileDir: "Default", getKey }));
+  assert.deepEqual(await tmpEntries(), []);
+  await rm(dir, { recursive: true });
+});
+
+test("sweeps stale pista-chrome-* dirs and leaves others", async () => {
+  const base = await mkdtemp(join(tmpdir(), "sweep-"));
+  await mkdir(join(base, "pista-chrome-old"));
+  await writeFile(join(base, "pista-chrome-old", "Login Data"), "x");
+  await mkdir(join(base, "other"));
+  assert.equal(await sweepStaleChromeTemps(base), 1);
+  assert.deepEqual(await readdir(base), ["other"]);
+  await rm(base, { recursive: true });
 });

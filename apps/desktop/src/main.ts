@@ -18,7 +18,7 @@ import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
 import { buildUiCsp } from "./csp.js";
 import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
-import { listChromeProfiles, previewChromeImport } from "./chrome-import.js";
+import { listChromeProfiles, previewChromeImport, sweepStaleChromeTemps } from "./chrome-import.js";
 import { createImportStore, previewLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { createPresenceGate } from "./presence.js";
@@ -670,6 +670,7 @@ app.on("before-quit", () => {
 app.enableSandbox();
 
 app.whenReady().then(async () => {
+  void sweepStaleChromeTemps();
   app.setName("Pista");
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
