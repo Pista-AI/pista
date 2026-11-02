@@ -33,7 +33,8 @@ process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
 if (await isUp(HOST_PORT)) console.log(`[dev:desktop] reusing agent host on :${HOST_PORT}`);
-else start("host", ["--filter", "@pista/host", "dev"]);
+// PISTA_HOST_WATCH=0 runs the host without file watching (see dev:stable in the root package.json).
+else start("host", ["--filter", "@pista/host", process.env.PISTA_HOST_WATCH === "0" ? "dev:stable" : "dev"]);
 
 if (await isUp(UI_PORT)) console.log(`[dev:desktop] reusing UI dev server on :${UI_PORT}`);
 else start("ui", ["--filter", "@pista/ui", "dev"]);

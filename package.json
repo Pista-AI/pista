@@ -21,6 +21,7 @@
     "start": "pnpm --filter @pista/host start",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r --if-present test",
+    "dev:stable": "concurrently -k -n host,ui -c blue,magenta \"PISTA_AUTH_PLAIN=${PISTA_AUTH_PLAIN:-1} pnpm --filter @pista/host dev:stable\" \"pnpm --filter @pista/ui dev\"",
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "package:desktop": "pnpm --filter @pista/desktop package",
     "policy:check": "pnpm --filter @pista/host policy:check",
