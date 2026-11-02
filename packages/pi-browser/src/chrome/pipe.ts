@@ -58,7 +58,11 @@ export class PipeTransport implements CdpTransport {
       else p?.resolve(msg.result);
       return;
     }
-    if (msg.method) for (const h of this.eventHandlers) h({ method: msg.method, params: msg.params, sessionId: msg.sessionId });
+    if (msg.method) for (const h of this.eventHandlers) {
+        try {
+          h({ method: msg.method, params: msg.params, sessionId: msg.sessionId });
+        } catch {}
+      }
   }
 
   send(method: string, params: object = {}, sessionId?: string): Promise<any> {
@@ -67,7 +71,12 @@ export class PipeTransport implements CdpTransport {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       const message = sessionId ? { id, method, params, sessionId } : { id, method, params };
-      this.out.write(JSON.stringify(message) + "\0");
+      try {
+        this.out.write(JSON.stringify(message) + "\0");
+      } catch (e) {
+        this.pending.delete(id);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
     });
   }
 
@@ -76,8 +85,11 @@ export class PipeTransport implements CdpTransport {
   }
 
   onClose(handler: (error: Error) => void) {
-    if (this.closed) handler(this.closed);
-    else this.closeHandlers.push(handler);
+    if (this.closed) {
+      try {
+        handler(this.closed);
+      } catch {}
+    } else this.closeHandlers.push(handler);
   }
 
   /** Fails everything in flight; safe to call more than once. */
@@ -86,7 +98,11 @@ export class PipeTransport implements CdpTransport {
     this.closed = error;
     for (const p of this.pending.values()) p.reject(error);
     this.pending.clear();
-    for (const h of this.closeHandlers.splice(0)) h(error);
+    for (const h of this.closeHandlers.splice(0)) {
+      try {
+        h(error);
+      } catch {}
+    }
   }
 
   close() {

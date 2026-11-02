@@ -19,7 +19,21 @@ export type LaunchDeps = {
   isAlive?: (pid: number) => boolean;
   mkdir?: (path: string, options: { recursive: true; mode: number }) => void;
   closeTimeoutMs?: number;
+  platform?: NodeJS.Platform;
+  env?: Record<string, string | undefined>;
 };
+
+const ENV_KEEP = /^(HOME|PATH|USER|LANG|LC_.*|TMPDIR|TEMP|TMP|DISPLAY|WAYLAND_DISPLAY|XDG_.*|DBUS_SESSION_BUS_ADDRESS)$/;
+const ENV_KEEP_WIN = /^(SYSTEMROOT|LOCALAPPDATA|APPDATA|PROGRAMFILES.*|PROGRAMW6432|USERPROFILE)$/i;
+
+/** A minimal environment for the browser: no API keys or other secrets from the host process. */
+export function browserEnv(env: Record<string, string | undefined>, platform: NodeJS.Platform): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v !== undefined && (ENV_KEEP.test(k) || (platform === "win32" && ENV_KEEP_WIN.test(k)))) out[k] = v;
+  }
+  return out;
+}
 
 const pidAlive = (pid: number) => {
   try {
@@ -62,25 +76,42 @@ export async function launchBrowser(
     "--disable-blink-features=AutomationControlled",
     ...(options.extraArgs ?? []),
   ];
-  const child = (deps.spawn ?? nodeSpawn)(options.browserPath, args, { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const platform = deps.platform ?? process.platform;
+  const startedAt = Date.now();
+  const child = (deps.spawn ?? nodeSpawn)(options.browserPath, args, {
+    stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+    env: browserEnv(deps.env ?? process.env, platform),
+  });
   const transport = new PipeTransport(child.stdio[3] as Writable, child.stdio[4] as Readable);
   let exited = false;
   const exit = new Promise<void>((resolve) => {
     child.once("exit", (code, signal) => {
       exited = true;
-      transport.fail(new Error(`The browser exited unexpectedly (${signal ?? `code ${code}`})`));
+      // Windows (untested): Chrome hands off to a running instance that owns the profile and
+      // exits with code 0 almost at once, so an early clean exit means the profile is in use.
+      if (platform === "win32" && code === 0 && Date.now() - startedAt < 5000) transport.fail(new ProfileInUseError(options.profileDir));
+      else transport.fail(new Error(`The browser exited unexpectedly (${signal ?? `code ${code}`})`));
       resolve();
     });
   });
-  child.once("error", (e) => transport.fail(new Error(`Could not start the browser: ${e.message}`)));
+  let settle!: () => void;
+  const failed = new Promise<void>((resolve) => (settle = resolve));
+  child.once("error", (e) => {
+    exited = true;
+    transport.fail(new Error(`Could not start the browser: ${e.message}`));
+    settle();
+  });
 
   const close = async () => {
     if (!exited) {
       transport.send("Browser.close").catch(() => {});
       let timer: NodeJS.Timeout | undefined;
-      await Promise.race([exit, new Promise<void>((r) => (timer = setTimeout(r, deps.closeTimeoutMs ?? 5000)))]);
+      await Promise.race([exit, failed, new Promise<void>((r) => (timer = setTimeout(r, deps.closeTimeoutMs ?? 5000)))]);
       clearTimeout(timer);
-      if (!exited) child.kill("SIGKILL");
+      if (!exited) {
+        child.kill("SIGKILL");
+        await Promise.race([exit, failed, new Promise<void>((r) => setTimeout(r, 1000).unref())]);
+      }
     }
     transport.close();
   };

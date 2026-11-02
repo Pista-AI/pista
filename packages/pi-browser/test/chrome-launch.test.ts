@@ -106,3 +106,52 @@ test("find: per-platform discovery, order, prefer, override", () => {
 });
 
 test("pistaChromeProfileDir", () => assert.equal(pistaChromeProfileDir("/home/.pista"), "/home/.pista/chrome-profile"));
+
+test("pipe: a throwing write rejects; throwing listeners do not break the stream", async () => {
+  const out: any = new PassThrough();
+  out.write = () => { throw new Error("EPIPE"); };
+  const input = new PassThrough();
+  const t = new PipeTransport(out, input);
+  await assert.rejects(t.send("A"), /EPIPE/);
+  const out2 = new PassThrough();
+  const input2 = new PassThrough();
+  const t2 = new PipeTransport(out2, input2);
+  let later = 0;
+  t2.onEvent(() => { throw new Error("boom"); });
+  t2.onEvent(() => later++);
+  input2.write(JSON.stringify({ method: "E.x" }) + "\0");
+  await tick();
+  assert.equal(later, 1);
+  const p = t2.send("B");
+  input2.write(JSON.stringify({ id: 1, result: 1 }) + "\0");
+  assert.equal(await p, 1);
+});
+
+test("launch: minimal env, spawn error unblocks close(), win32 early exit 0 is ProfileInUse", async () => {
+  const { child } = fakeChild();
+  let env: any;
+  const b = await launchBrowser({ browserPath: "c", profileDir: "/p" }, {
+    spawn: (_c, _a, o) => ((env = o.env), child), readLink: () => { throw new Error("x"); }, mkdir: () => {}, platform: "linux",
+    env: { HOME: "/h", PATH: "/bin", LC_ALL: "C", XDG_RUNTIME_DIR: "/r", OPENAI_API_KEY: "secret", SystemRoot: "C:\\W" },
+  });
+  assert.deepEqual(env, { HOME: "/h", PATH: "/bin", LC_ALL: "C", XDG_RUNTIME_DIR: "/r" });
+  const closing = b.close();
+  child.emit("error", new Error("ENOENT"));
+  await closing;
+
+  const w = fakeChild();
+  const bw = await launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => w.child, readLink: () => { throw new Error("x"); }, mkdir: () => {}, platform: "win32", env: {} });
+  const p = bw.transport.send("X");
+  w.child.emit("exit", 0, null);
+  await assert.rejects(p, ProfileInUseError);
+});
+
+test("find: kind comes from the basename; snap, flatpak and PROGRAMW6432 paths", () => {
+  assert.equal(findBrowser({ overridePath: "/home/edge-tools/chrome" }, { platform: "linux", exists: () => true })?.kind, "chrome");
+  assert.equal(findBrowser({ overridePath: "C:\\x\\msedge.exe" }, { platform: "win32", exists: () => true })?.kind, "edge");
+  assert.equal(findBrowser({ overridePath: "/usr/bin/brave-browser" }, { platform: "linux", exists: () => true })?.kind, "brave");
+  const has = (p: string) => (q: string) => q === p;
+  assert.equal(findBrowser({}, { platform: "linux", env: { PATH: "" }, exists: has("/snap/bin/chromium") })?.kind, "chrome");
+  assert.equal(findBrowser({}, { platform: "linux", env: { PATH: "" }, exists: has("/var/lib/flatpak/exports/bin/com.brave.Browser") })?.kind, "brave");
+  assert.equal(findBrowser({}, { platform: "win32", env: { PROGRAMW6432: "C:\\PF" }, exists: has("C:\\PF\\Google\\Chrome\\Application\\chrome.exe") })?.kind, "chrome");
+});
