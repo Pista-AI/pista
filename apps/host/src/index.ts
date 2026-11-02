@@ -323,7 +323,7 @@ wss.on("connection", (ws) => {
       return;
     }
     const reply = (out: HostFrame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(out));
-    hub.touch(ws);
+    if (frame.method !== "host.ping") hub.touch(ws); // idle liveness pings must not make a background window look active
     if (frame.method === "host.hello") hub.describe(ws, (frame.params as Methods["host.hello"]["params"]).client);
     const handler = handlers[frame.method] as Handler<MethodName> | undefined;
     if (!handler) return reply({ kind: "res", id: frame.id, ok: false, error: `Unknown method ${frame.method}` });

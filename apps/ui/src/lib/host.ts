@@ -1,9 +1,8 @@
 import type { HostEvent, HostFrame, MethodName, Params, Result } from "@pista/protocol";
 import { DEFAULT_HOST_PORT } from "@pista/protocol";
-
 import { watchLiveness } from "./liveness.ts";
 
-type Listener =(event: HostEvent) => void;
+type Listener = (event: HostEvent) => void;
 type StatusListener = (connected: boolean) => void;
 
 /**
