@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
-import { resolveConfigValue, type CommandExec } from "./config-value.ts";
+import { clearConfigValueCache, resolveConfigValue, type CommandExec } from "./config-value.ts";
 
 export interface EncryptedCredentialStore extends CredentialStore {
   /** Merge entries whose provider id is not already stored (migration from auth.json). */
@@ -41,6 +41,29 @@ function validate(data: unknown, label: string): Record<string, Credential> {
   return data as Record<string, Credential>;
 }
 
+const AAD = Buffer.from(JSON.stringify({ version: 1, alg: "aes-256-gcm" }));
+
+/** Strict base64: rejects anything that does not re-encode to the same string. */
+function strictBase64(value: string): Buffer | undefined {
+  const buf = Buffer.from(value, "base64");
+  return buf.toString("base64") === value ? buf : undefined;
+}
+
+/** fsync a directory so a rename in it is durable. Windows cannot open or sync directories; only there is failure ignored. */
+export function fsyncDir(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(dir, "r");
+    fsyncSync(fd);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (process.platform === "win32" && (code === "EPERM" || code === "EISDIR" || code === "EACCES")) return;
+    throw e;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /** Mutual exclusion is in-process only (one host per PISTA_HOME); Pi's cross-process lockfile is not replicated. */
 export function createEncryptedCredentialStore({
   file,
@@ -55,7 +78,14 @@ export function createEncryptedCredentialStore({
   const key = Buffer.from(keyArg);
 
   const load = (): Record<string, Credential> => {
-    if (!existsSync(file)) return {};
+    let st;
+    try {
+      st = lstatSync(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw new Error(`auth store: cannot stat ${file}`);
+    }
+    if (st.isSymbolicLink() || !st.isFile()) throw new Error(`auth store: ${file} is not a regular file (symlinks and special files are refused)`);
     const fail = (why: string): never => {
       throw new Error(`auth store: cannot decrypt ${file}: ${why}`);
     };
@@ -65,14 +95,19 @@ export function createEncryptedCredentialStore({
     } catch {
       return fail("corrupt file");
     }
-    if (!env || env.version !== 1 || env.alg !== "aes-256-gcm" || typeof env.iv !== "string" || typeof env.tag !== "string" || typeof env.data !== "string" || Buffer.from(env.iv, "base64").length !== 12 || Buffer.from(env.tag, "base64").length !== 16) {
+    if (!env || env.version !== 1 || env.alg !== "aes-256-gcm" || typeof env.iv !== "string" || typeof env.tag !== "string" || typeof env.data !== "string") {
       return fail("corrupt file");
     }
+    const iv = strictBase64(env.iv);
+    const tag = strictBase64(env.tag);
+    const ct = strictBase64(env.data);
+    if (!iv || !tag || !ct || iv.length !== 12 || tag.length !== 16) return fail("corrupt file");
     let plain: string;
     try {
-      const d = createDecipheriv("aes-256-gcm", key, Buffer.from(env.iv, "base64"), { authTagLength: 16 });
-      d.setAuthTag(Buffer.from(env.tag, "base64"));
-      plain = Buffer.concat([d.update(Buffer.from(env.data, "base64")), d.final()]).toString("utf-8");
+      const d = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: 16 });
+      d.setAAD(AAD);
+      d.setAuthTag(tag);
+      plain = Buffer.concat([d.update(ct), d.final()]).toString("utf-8");
     } catch {
       return fail("wrong key or corrupt file");
     }
@@ -88,19 +123,33 @@ export function createEncryptedCredentialStore({
   const save = (map: Record<string, Credential>): void => {
     const iv = randomBytes(12);
     const c = createCipheriv("aes-256-gcm", key, iv);
+    c.setAAD(AAD);
     const data = Buffer.concat([c.update(JSON.stringify(map, null, 2), "utf-8"), c.final()]);
     const env: Envelope = { version: 1, alg: "aes-256-gcm", iv: iv.toString("base64"), tag: c.getAuthTag().toString("base64"), data: data.toString("base64") };
-    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const dir = dirname(file);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32" && (statSync(dir).mode & 0o077) !== 0) chmodSync(dir, 0o700);
+    const body = JSON.stringify(env);
     const tmp = `${file}.${randomUUID()}.tmp`;
-    try {
-      const fd = openSync(tmp, "w", 0o600);
+    const writeTmp = (): void => {
+      const fd = openSync(tmp, "wx", 0o600); // O_EXCL: never write through a pre-planted file or link
       try {
-        writeSync(fd, JSON.stringify(env));
+        writeSync(fd, body);
         fsyncSync(fd);
       } finally {
         closeSync(fd);
       }
+    };
+    try {
+      try {
+        writeTmp();
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        rmSync(tmp, { force: true });
+        writeTmp();
+      }
       renameSync(tmp, file);
+      fsyncDir(dir);
     } catch (e) {
       rmSync(tmp, { force: true });
       throw e;
@@ -137,6 +186,7 @@ export function createEncryptedCredentialStore({
         if (next === undefined) return current[providerId];
         options?.signal?.throwIfAborted();
         save({ ...current, [providerId]: next });
+        clearConfigValueCache();
         return next;
       }, options);
     },
@@ -146,6 +196,7 @@ export function createEncryptedCredentialStore({
         if (!(providerId in current)) return;
         delete current[providerId];
         save(current);
+        clearConfigValueCache();
       }, options);
     },
     importPlain(data) {

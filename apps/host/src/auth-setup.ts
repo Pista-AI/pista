@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
@@ -19,40 +19,66 @@ export async function setupCredentials(
     return { mode: "plain" };
   }
   const store = createEncryptedCredentialStore({ file: encFile, key: source.key });
+  source.key.fill(0); // the store holds its own copy; do not retain the caller's
   try {
     await store.list();
   } catch {
     throw new Error(`auth.enc.json cannot be decrypted with the current key (wrong key or corrupt file). Delete ${encFile} to start over; you will need to sign in to providers again.`);
   }
-  if (existsSync(plainFile)) {
-    let parsed: unknown;
+  if (!existsSync(plainFile)) return { credentials: store, mode: "encrypted" };
+
+  const keepPlain = (why: string): { credentials: CredentialStore; mode: "encrypted" } => {
     try {
-      parsed = JSON.parse(readFileSync(plainFile, "utf-8"));
+      chmodSync(plainFile, 0o600);
     } catch {
-      log("[pista-host] auth: auth.json could not be parsed; leaving it in place and not migrating");
-      return { credentials: store, mode: "encrypted" };
+      // Best effort; the warning below still names the path.
     }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      log("[pista-host] auth: auth.json is not a credential map; leaving it in place and not migrating");
-      return { credentials: store, mode: "encrypted" };
-    }
-    const entries = parsed as Record<string, Credential>;
-    if (Object.keys(entries).length > 0) {
-      let result: { imported: string[]; skipped: string[] };
-      try {
-        result = await store.importPlain(entries);
-      } catch {
-        log("[pista-host] auth: auth.json has unsupported entries; not migrated (file kept)");
-        return { credentials: store, mode: "encrypted" };
-      }
-      const { imported, skipped } = result;
-      log(`[pista-host] auth: migrated ${imported.length} provider credential(s) from auth.json into auth.enc.json${imported.length ? ` (${imported.join(", ")})` : ""}${skipped.length ? `; kept existing encrypted entries for ${skipped.join(", ")}` : ""}`);
-    }
+    log(`[pista-host] auth: WARNING plaintext credentials remain at ${plainFile} (${why}); the file was kept with mode 0600`);
+    return { credentials: store, mode: "encrypted" };
+  };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(plainFile, "utf-8"));
+  } catch {
+    return keepPlain("it could not be parsed");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return keepPlain("it is not a credential map");
+  const entries = parsed as Record<string, Credential>;
+  const imported: string[] = [];
+  const skipped: string[] = [];
+  const invalid: string[] = [];
+  for (const [id, entry] of Object.entries(entries)) {
     try {
-      await rm(plainFile, { force: true });
-    } catch (e) {
-      log(`[pista-host] auth: could not remove auth.json after migration: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
+      const r = await store.importPlain({ [id]: entry });
+      imported.push(...r.imported);
+      skipped.push(...r.skipped);
+    } catch {
+      invalid.push(id);
     }
+  }
+  if (imported.length || skipped.length) {
+    log(`[pista-host] auth: migrated ${imported.length} provider credential(s) from auth.json into auth.enc.json${imported.length ? ` (${imported.join(", ")})` : ""}${skipped.length ? `; kept existing encrypted entries for ${skipped.join(", ")}` : ""}`);
+  }
+  if (invalid.length) return keepPlain(`${invalid.length} entr${invalid.length === 1 ? "y was" : "ies were"} not migrated`);
+  // importPlain has fsynced the encrypted file and its directory by now. Overwrite the plaintext with zeros before
+  // unlinking; best effort only, since SSD wear levelling and copy-on-write filesystems may keep old blocks.
+  try {
+    const size = statSync(plainFile).size;
+    const fd = openSync(plainFile, "r+");
+    try {
+      writeSync(fd, Buffer.alloc(size));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Unlink below still runs.
+  }
+  try {
+    await rm(plainFile, { force: true });
+  } catch (e) {
+    log(`[pista-host] auth: could not remove auth.json after migration: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
   }
   return { credentials: store, mode: "encrypted" };
 }

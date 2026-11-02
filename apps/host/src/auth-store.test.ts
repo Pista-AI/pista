@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createCipheriv } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -186,4 +187,55 @@ test("read runs a !cmd key exactly once (cached); list never runs it", async () 
   assert.equal(calls, 0);
   assert.equal(((await store.read("p")) as { key: string }).key, "from-cmd");
   assert.equal(calls, 1);
+});
+
+test("a symlink or non-regular file at the store path is refused and never overwritten", async () => {
+  const { file, key, store } = setup();
+  mkdirSync(join(file, ".."), { recursive: true });
+  const target = join(file, "..", "elsewhere.txt");
+  writeFileSync(target, "untouched");
+  symlinkSync(target, file);
+  await assert.rejects(store.list(), /not a regular file/);
+  await assert.rejects(store.modify("a", async () => ({ type: "api_key", key: "1" })), /not a regular file/);
+  assert.equal(readFileSync(target, "utf-8"), "untouched");
+  const dirCase = setup();
+  mkdirSync(dirCase.file, { recursive: true });
+  await assert.rejects(dirCase.store.list(), /not a regular file/);
+  void key;
+});
+
+test("a stale tmp file does not break the write and leaves no tmp behind", async () => {
+  const { file, store } = setup();
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(`${file}.stale.tmp`, "junk");
+  await store.modify("a", async () => ({ type: "api_key", key: "1" }));
+  assert.ok(existsSync(file));
+  assert.deepEqual(readdirSync(join(file, "..")).filter((f) => f.endsWith(".tmp") && !f.includes("stale")), []);
+});
+
+test("a looser data directory is tightened to 0700", async () => {
+  if (process.platform === "win32") return;
+  const { file, store } = setup();
+  mkdirSync(join(file, ".."), { recursive: true, mode: 0o755 });
+  const { chmodSync } = await import("node:fs");
+  chmodSync(join(file, ".."), 0o755);
+  await store.modify("a", async () => ({ type: "api_key", key: "1" }));
+  assert.equal(statSync(join(file, "..")).mode & 0o777, 0o700);
+});
+
+test("a file encrypted without the version/alg AAD does not decrypt, and non-canonical base64 is rejected", async () => {
+  const { file, key, store } = setup();
+  await store.modify("a", async () => ({ type: "api_key", key: "1" }));
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([c.update('{"a":{"type":"api_key","key":"1"}}', "utf-8"), c.final()]);
+  const env = { version: 1, alg: "aes-256-gcm", iv: iv.toString("base64"), tag: c.getAuthTag().toString("base64"), data: data.toString("base64") };
+  writeFileSync(file, JSON.stringify(env));
+  await assert.rejects(store.list(), /cannot decrypt/);
+  const good = setup();
+  await good.store.modify("a", async () => ({ type: "api_key", key: "1" }));
+  const e = JSON.parse(readFileSync(good.file, "utf-8"));
+  e.data = `${e.data}\n`;
+  writeFileSync(good.file, JSON.stringify(e));
+  await assert.rejects(good.store.list(), /cannot decrypt/);
 });

@@ -46,3 +46,11 @@ test("default exec runs a real command and trims", () => {
   assert.equal(resolveConfigValue("!printf ' hello \\n'"), "hello");
   assert.equal(resolveConfigValue("!exit 3"), undefined);
 });
+
+test("!command runs with a minimal environment, not the host's", async () => {
+  const { clearConfigValueCache, resolveConfigValue } = await import("./config-value.ts");
+  process.env.PISTA_TEST_SECRET_ENV = "leak";
+  clearConfigValueCache();
+  assert.equal(resolveConfigValue('!echo "[$PISTA_TEST_SECRET_ENV]"'), "[]");
+  delete process.env.PISTA_TEST_SECRET_ENV;
+});

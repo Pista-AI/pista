@@ -51,6 +51,7 @@ export async function resolveAuthKeySource(
   options: { timeoutMs?: number } = {},
 ): Promise<AuthKeySource> {
   // Taken out of the environment on every path, so children never inherit it.
+  // The hex string cannot be zeroed (JS strings are immutable); deleting the variable only stops children inheriting it.
   const envKey = env.PISTA_AUTH_KEY;
   delete env.PISTA_AUTH_KEY;
   if (env.PISTA_AUTH_KEY_PORT === "1") {

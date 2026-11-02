@@ -9,7 +9,10 @@ export interface ResolveOptions {
 
 const defaultExec: CommandExec = (command) => {
   try {
-    const out = execSync(command, { encoding: "utf-8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+    // Minimal env: the host's full environment (provider keys, PISTA_*) is not handed to the command.
+    const env: NodeJS.ProcessEnv = {};
+    for (const k of ["PATH", "HOME", "USER", "LANG", "TMPDIR"]) if (process.env[k] !== undefined) env[k] = process.env[k];
+    const out = execSync(command, { encoding: "utf-8", timeout: 10_000, maxBuffer: 1024 * 1024, env, stdio: ["ignore", "pipe", "ignore"] });
     return out.trim() || undefined;
   } catch {
     return undefined;
