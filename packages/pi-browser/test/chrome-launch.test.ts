@@ -78,10 +78,51 @@ test("launch: close() kills after the timeout", async () => {
   assert.ok(killed);
 });
 
-test("launch: ProfileInUseError for a live lock, not for a stale one", async () => {
-  const base = { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {} };
+test("launch: ProfileInUseError for a live lock, not for a stale one (dead pid removes the lock)", async () => {
+  let removed = 0;
+  const base = { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, hostname: () => "host", lockGraceMs: 30, removeLock: () => removed++ };
   await assert.rejects(launchBrowser({ browserPath: "c", profileDir: "/p" }, { ...base, isAlive: () => true }), ProfileInUseError);
+  assert.equal(removed, 0);
   await launchBrowser({ browserPath: "c", profileDir: "/p" }, { ...base, isAlive: () => false });
+  assert.equal(removed, 1);
+  // a lock from another host cannot be verified: in use
+  await assert.rejects(launchBrowser({ browserPath: "c", profileDir: "/p" }, { ...base, hostname: () => "other", isAlive: () => false }), ProfileInUseError);
+});
+
+test("launch: a lock owner that is shutting down gets a grace period", async () => {
+  let alive = true;
+  setTimeout(() => (alive = false), 150);
+  await launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, hostname: () => "host", isAlive: () => alive, lockGraceMs: 2000, removeLock: () => {} });
+});
+
+test("close: waits for the exit, then for the lock owner when the spawned process handed off", async () => {
+  const { child, sent } = fakeChild();
+  child.pid = 100;
+  let launched = false;
+  let lockAlive = true;
+  const killed: number[] = [];
+  const b = await launchBrowser({ browserPath: "c", profileDir: "/p" }, {
+    spawn: () => ((launched = true), child), mkdir: () => {}, hostname: () => "host", closeTimeoutMs: 100,
+    // no lock at launch; afterwards the lock names another pid that outlives the spawned one
+    readLink: () => { if (!launched || !lockAlive) throw new Error("none"); return "host-200"; },
+    isAlive: (pid) => pid === 200 && lockAlive,
+    killPid: (pid) => (killed.push(pid), (lockAlive = false)),
+  });
+  const c = b.close();
+  await tick();
+  assert.equal(sent.at(-1).method, "Browser.close");
+  child.emit("exit", 0, null);
+  await c;
+  assert.deepEqual(killed, [200]);
+});
+
+test("close: does not resolve before the process exits (kills after timeout, awaits exit)", async () => {
+  const { child } = fakeChild();
+  let exitedAt = 0;
+  child.kill = () => setTimeout(() => ((exitedAt = Date.now()), child.emit("exit", null, "SIGKILL")), 60);
+  const b = await launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => child, readLink: () => { throw new Error("x"); }, mkdir: () => {}, closeTimeoutMs: 20 });
+  await b.close();
+  assert.ok(exitedAt > 0, "close() returned before the killed process exited");
 });
 
 test("launch: early exit rejects pending commands with a clear error", async () => {
