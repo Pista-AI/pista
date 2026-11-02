@@ -16,9 +16,9 @@ const listening = (port, host) =>
 const isUp = async (port) => (await listening(port, "127.0.0.1")) || (await listening(port, "::1"));
 
 const children = [];
-const start = (name, args) => {
+const start = (name, args, env = process.env) => {
   console.log(`[dev:desktop] starting ${name}`);
-  const child = spawn("pnpm", args, { stdio: "inherit", env: process.env });
+  const child = spawn("pnpm", args, { stdio: "inherit", env });
   children.push(child);
   child.on("exit", (code) => {
     if (name === "app") shutdown(code ?? 0);
@@ -34,7 +34,12 @@ process.on("SIGTERM", () => shutdown(0));
 
 if (await isUp(HOST_PORT)) console.log(`[dev:desktop] reusing agent host on :${HOST_PORT}`);
 // PISTA_HOST_WATCH=0 runs the host without file watching (see dev:stable in the root package.json).
-else start("host", ["--filter", "@pista/host", process.env.PISTA_HOST_WATCH === "0" ? "dev:stable" : "dev"]);
+else {
+  // The dev host runs outside Electron, so there is no key handoff; default to plain auth like `pnpm dev`.
+  const keyed = process.env.PISTA_AUTH_KEY || process.env.PISTA_AUTH_PLAIN || process.env.PISTA_AUTH_KEY_PORT;
+  const env = keyed ? process.env : { ...process.env, PISTA_AUTH_PLAIN: "1" };
+  start("host", ["--filter", "@pista/host", process.env.PISTA_HOST_WATCH === "0" ? "dev:stable" : "dev"], env);
+}
 
 if (await isUp(UI_PORT)) console.log(`[dev:desktop] reusing UI dev server on :${UI_PORT}`);
 else start("ui", ["--filter", "@pista/ui", "dev"]);
