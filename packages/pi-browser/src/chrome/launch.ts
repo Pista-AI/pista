@@ -1,5 +1,6 @@
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, readlinkSync } from "node:fs";
+import { execFile, spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { mkdirSync, readlinkSync, rmSync } from "node:fs";
+import { hostname as osHostname } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PipeTransport } from "./pipe.ts";
@@ -19,6 +20,13 @@ export type LaunchDeps = {
   isAlive?: (pid: number) => boolean;
   mkdir?: (path: string, options: { recursive: true; mode: number }) => void;
   closeTimeoutMs?: number;
+  /** How long launch waits for a live lock owner to go away before reporting the profile as in use. */
+  lockGraceMs?: number;
+  hostname?: () => string;
+  /** Command line of a process, or undefined when unknown. */
+  commandLine?: (pid: number) => Promise<string | undefined>;
+  killPid?: (pid: number, signal: NodeJS.Signals) => void;
+  removeLock?: (path: string) => void;
   platform?: NodeJS.Platform;
   env?: Record<string, string | undefined>;
 };
@@ -44,17 +52,37 @@ const pidAlive = (pid: number) => {
   }
 };
 
-/** Chrome's `SingletonLock` is a symlink to `<host>-<pid>`; in use when that pid is alive. */
-function profileInUse(profileDir: string, deps: LaunchDeps): boolean {
+type LockInfo = { pid: number; host: string };
+
+function readLock(profileDir: string, deps: LaunchDeps): LockInfo | undefined {
   let target: string;
   try {
     target = (deps.readLink ?? readlinkSync)(join(profileDir, "SingletonLock"));
   } catch {
-    return false;
+    return undefined;
   }
-  const pid = Number(target.slice(target.lastIndexOf("-") + 1));
-  return Number.isInteger(pid) && pid > 0 && (deps.isAlive ?? pidAlive)(pid);
+  const i = target.lastIndexOf("-");
+  const pid = Number(target.slice(i + 1));
+  return Number.isInteger(pid) && pid > 0 ? { pid, host: target.slice(0, i) } : undefined;
 }
+
+/**
+ * Chrome's `SingletonLock` is a symlink to `<host>-<pid>`. It is held only while that pid is alive on
+ * this host: a dead pid means a stale lock (Chrome crashed or was killed), which Chrome itself takes over.
+ * A lock from another host cannot be checked, so it counts as in use, as in Chrome.
+ */
+function lockHeld(lock: LockInfo | undefined, deps: LaunchDeps): boolean {
+  if (!lock) return false;
+  if (lock.host !== (deps.hostname ?? osHostname)()) return true;
+  return (deps.isAlive ?? pidAlive)(lock.pid);
+}
+
+const defaultCommandLine = (pid: number) =>
+  new Promise<string | undefined>((resolve) => {
+    execFile("ps", ["-o", "command=", "-p", String(pid)], { timeout: 2000 }, (err, out) => resolve(err ? undefined : out.trim() || undefined));
+  });
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export type LaunchedBrowser = { transport: PipeTransport; process: ChildProcess; close(): Promise<void> };
 
@@ -67,7 +95,17 @@ export async function launchBrowser(
   deps: LaunchDeps = {},
 ): Promise<LaunchedBrowser> {
   (deps.mkdir ?? mkdirSync)(options.profileDir, { recursive: true, mode: 0o700 });
-  if (profileInUse(options.profileDir, deps)) throw new ProfileInUseError(options.profileDir);
+  // A browser that is still shutting down (just closed by us or the user) gets a short grace period.
+  const graceEnd = Date.now() + (deps.lockGraceMs ?? 3000);
+  while (lockHeld(readLock(options.profileDir, deps), deps)) {
+    if (Date.now() >= graceEnd) throw new ProfileInUseError(options.profileDir);
+    await sleep(100);
+  }
+  if (readLock(options.profileDir, deps)) {
+    try {
+      (deps.removeLock ?? ((p: string) => rmSync(p, { force: true })))(join(options.profileDir, "SingletonLock"));
+    } catch {}
+  }
   const args = [
     `--user-data-dir=${options.profileDir}`,
     "--remote-debugging-pipe",
@@ -102,15 +140,36 @@ export async function launchBrowser(
     settle();
   });
 
+  const closeTimeout = deps.closeTimeoutMs ?? 5000;
+  const waitExit = async (ms: number) => {
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([exit, failed, new Promise<void>((r) => (timer = setTimeout(r, ms)))]);
+    clearTimeout(timer);
+  };
   const close = async () => {
     if (!exited) {
       transport.send("Browser.close").catch(() => {});
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([exit, failed, new Promise<void>((r) => (timer = setTimeout(r, deps.closeTimeoutMs ?? 5000)))]);
-      clearTimeout(timer);
+      await waitExit(closeTimeout);
       if (!exited) {
         child.kill("SIGKILL");
-        await Promise.race([exit, failed, new Promise<void>((r) => setTimeout(r, 1000).unref())]);
+        await waitExit(2000);
+      }
+    }
+    // The main process is gone; the process holding the profile lock (the real browser, if the one we
+    // spawned handed off) must be gone too, or a relaunch on this profile would be refused.
+    const lock = readLock(options.profileDir, deps);
+    if (lock && lock.host === (deps.hostname ?? osHostname)() && lock.pid !== child.pid) {
+      const alive = deps.isAlive ?? pidAlive;
+      const kill = deps.killPid ?? ((pid, sig) => process.kill(pid, sig));
+      const until = Date.now() + closeTimeout;
+      while (alive(lock.pid) && Date.now() < until) await sleep(50);
+      // Never signal a stranger: the pid may have been reused. Only kill a process that is demonstrably
+      // a browser on our profile (never on Windows, where there is no command line check).
+      const ours = platform !== "win32" && alive(lock.pid) && ((await (deps.commandLine ?? defaultCommandLine)(lock.pid)) ?? "").includes(`--user-data-dir=${options.profileDir}`);
+      if (ours && alive(lock.pid)) {
+        try { kill(lock.pid, "SIGKILL"); } catch {}
+        const end = Date.now() + 2000;
+        while (alive(lock.pid) && Date.now() < end) await sleep(50);
       }
     }
     transport.close();
