@@ -14,3 +14,8 @@ export function frameLabel(frame: Pick<BrowserFrame, "url" | "title">): string {
     return frame.url;
   }
 }
+
+/** Label of the single tab shown for the agent's Chrome: the frame's label, or a neutral name before the first frame. */
+export function chromeTabLabel(frame: Pick<BrowserFrame, "url" | "title"> | null | undefined): string {
+  return frame ? frameLabel(frame) : "Chrome";
+}
