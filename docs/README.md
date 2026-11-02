@@ -4,6 +4,7 @@
 - [ENTERPRISE.md](ENTERPRISE.md): managed policy, sign-in, allowlists and audit export.
 - [harness.md](harness.md): harnesses, the procedures the host enforces, and how to ship one as a Pi package.
 - [INTEGRATIONS.md](INTEGRATIONS.md): connecting MCP servers and other backends.
+- [security/saved-logins.md](security/saved-logins.md): threat model for saved website logins.
 - [release-signing.md](release-signing.md): signing, notarization and the CI release flow.
 - [desktop-llama-bundling.md](desktop-llama-bundling.md): how the desktop app bundles `llama-server`.
 

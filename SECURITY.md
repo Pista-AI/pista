@@ -34,6 +34,7 @@ Only the latest release receives security fixes.
 - Website logins are stored encrypted with Electron safeStorage (OS keychain, DPAPI or libsecret); a plain-text fallback is refused.
 - The desktop process fills them bound to the exact origin; the model never reads them and `browser_login` returns only ok and a note.
 - Each sign-in asks for approval, and Touch ID confirms presence before the first fill where available.
+- The detailed threat model is in [docs/security/saved-logins.md](docs/security/saved-logins.md).
 
 ### Provider credentials
 

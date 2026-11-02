@@ -1,6 +1,6 @@
 # Saved logins: threat model
 
-Pista can sign in to a website for you without the AI seeing the password. It describes what the code does and where the limits are. The design does not rely on secrecy of the source.
+Pista can sign in to a website for you without the AI seeing the password. This page describes what the code does and where the limits are; the short version of the whole security model is in [SECURITY.md](../../SECURITY.md). The design does not rely on secrecy of the source.
 
 ## What is stored, and where
 
@@ -16,9 +16,11 @@ Login URLs must be `https://`  (`http://` only for localhost). One login is kept
 
 The model gets one tool, `browser_login`, taking the saved login's name. It returns `ok` and a fixed sentence such as "Signed in." or "The page is not the saved site." Success means only that the password field went away. If the name is unknown, the reply also lists the saved labels; if the page is the wrong site, it names the expected origin. Credentials are never returned.
 
-The call goes through the approval gate, which shows "signs in with a login the owner saved". The ask is skipped in full-access mode or after "Always allow", and the call is blocked in read-only mode. The audit event records the tool name and the `site` argument as the model passed it, plus all arguments if argument logging is on.
+The call goes through the approval gate, which shows "signs in with a login the owner saved". Unlike other tools, the ask is not skipped in full-access mode, after "Always allow" or by a role exemption; every sign-in asks. The owner can switch this off with the `confirmSignIns` setting (Settings, Saved logins). The call is blocked in read-only mode. The audit event records the tool name and the `site` argument as the model passed it, plus all arguments if argument logging is on.
 
-Only the app's own interface can reach the vault.
+Only the app's own interface can reach the vault: the desktop's vault channels reject any sender other than the UI window's main frame, so pages loaded in the browser pane cannot call them. The host never receives the vault contents or the password; the fill runs in the desktop process over the debugger connection to the pane.
+
+On macOS, Touch ID confirms the owner is present before a fill. One confirmation lasts 8 hours and is dropped when the machine wakes from sleep. Where the OS cannot prompt (Windows, Linux, Macs without Touch ID) the check is skipped, and the approval ask is the only gate.
 
 ## How a fill is bound to the saved origin
 
@@ -31,7 +33,7 @@ Once the password is submitted, the guard is released. Sites may redirect throug
 - **Tampered vault file.** Origin and username are sealed inside the encrypted record and compared to the plain entry on every use. Re-pointing an entry or swapping blobs between entries gives "damaged" and nothing is filled. The label and login URL are not sealed, and an older valid entry can be swapped back in. A file writer can also delete entries.
 - **Fake login form elsewhere.** The origin check fails; nothing is typed.
 - **Open redirect mid-fill.** Each step re-checks the origin and a navigation away is remembered. A redirect before the password is typed ends the fill.
-- **Prompt-injected sign-ins.** A hostile page can ask the model to call `browser_login`. Normally the user is asked, and it works only on the saved site's own page, so the worst outcome is being signed in to a site you chose to save. The loop guard blocks a third identical call; there is no other rate limit.
+- **Prompt-injected sign-ins.** A hostile page can ask the model to call `browser_login`. The user is asked each time (unless they turned that off), Touch ID applies on macOS, and it works only on the saved site's own page, so the worst outcome is being signed in to a site you chose to save. The loop guard blocks a third identical call; there is no other rate limit.
 - **Lookalike domains.** Origins are compared exactly, with no suffix or wildcard matching. Lookalike hostnames parse to a different origin.
 - **Iframe forms.** The locator reads the top document only, subframe navigations are ignored, and the field must be focused in the top document. A form in an embedded frame is never filled.
 - **A page reading the filled value.** Not prevented. Once typed, the value is in the saved site's own page, which is the site you trust with it. Other sites never receive it.
@@ -43,7 +45,7 @@ Once the password is submitted, the guard is released. Sites may redirect throug
 - **A compromised user account.** Malware running as you can use the keychain or DPAPI, or log keystrokes.
 - **Ordinary threads.** Outside the invoice job the model can run commands as you. It can read `logins.json` (usernames and origins, not passwords). On Windows, DPAPI also lets any process you run decrypt the blob. Approval is the only control.
 - **`browser_eval`.** The model has a general script tool in the pane. A script could read a password left on the page after a failed sign-in.
-- **Pi's `auth.json`.** Model-provider credentials are still stored as plain JSON until they move behind `safeStorage`.
+- **Pista's other secrets share the same limits.** Model-provider credentials (`auth.enc.json`) and MCP OAuth tokens (`mcp-auth.enc.json`) are AES-256-GCM files whose key the desktop wraps with `safeStorage` and hands to the host over the utility-process message channel. They are protected at rest and from other users, not from a process running as you, and a headless host needs an explicit key or `PISTA_AUTH_PLAIN=1`. See [SECURITY.md](../../SECURITY.md).
 
 ## Reporting a problem
 
