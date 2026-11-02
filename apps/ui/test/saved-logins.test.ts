@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hostOf, validateLoginInput } from "../src/focused/saved-logins.ts";
+import { hostOf, importButtonState, validateLoginInput } from "../src/focused/saved-logins.ts";
 
 const ok = { label: "Slack", loginUrl: "https://app.slack.com/signin", username: "ann", password: "pw" };
 
@@ -45,4 +45,12 @@ test("formats the import result with counts only", async () => {
   assert.equal(formatImportResult({ imported: 0, replaced: 0, skipped: 0, failed: 0, canceled: true }), "");
   assert.ok(formatImportResult({ imported: 1, replaced: 0, skipped: 0, failed: 0, trashed: false }, true).endsWith("Delete it yourself."));
   assert.ok(!formatImportResult({ imported: 1, replaced: 0, skipped: 0, failed: 0, trashed: true }, true).includes("Trash"));
+});
+
+test("import buttons are busy while loading, never silently dead", () => {
+  assert.deepEqual(importButtonState(null, false, "Go"), { disabled: true, label: "Checking…" });
+  assert.deepEqual(importButtonState(true, true, "Go"), { disabled: true, label: "Working…" });
+  assert.deepEqual(importButtonState(true, false, "Go"), { disabled: false, label: "Go" });
+  // Unavailable vault: clickable so the click can show an error.
+  assert.deepEqual(importButtonState(false, false, "Go"), { disabled: false, label: "Go" });
 });

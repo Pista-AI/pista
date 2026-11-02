@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SavedLoginMeta } from "@pista/protocol";
 import { useConfigField } from "../lib/useConfigField.ts";
-import { formatImportResult, hostOf, skipReasonLabel, validateLoginInput } from "../focused/saved-logins.ts";
+import { formatImportResult, hostOf, importButtonState, skipReasonLabel, validateLoginInput, VAULT_UNAVAILABLE } from "../focused/saved-logins.ts";
 import type { LoginImportPreview } from "../browser/bridge.ts";
 
 const EMPTY = { label: "", loginUrl: "", username: "", password: "" };
@@ -104,6 +104,7 @@ export function SavedLogins() {
   };
 
   const startImport = async () => {
+    if (!ready) return setError(VAULT_UNAVAILABLE);
     setImporting(true);
     setError(null);
     setImportNote("");
@@ -119,6 +120,8 @@ export function SavedLogins() {
       if (alive.current) setImporting(false);
     }
   };
+  const fileBtn = importButtonState(available, importing, "Choose file");
+  const chromeBtn = importButtonState(available, importing, "Import from Chrome");
   const mac = window.pistaDesktop?.platform === "darwin";
   const chromePreview = async (profileDir: string) => {
     setChromeProfiles(null);
@@ -138,6 +141,7 @@ export function SavedLogins() {
     }
   };
   const startChromeImport = async () => {
+    if (!ready) return setError(VAULT_UNAVAILABLE);
     setImporting(true);
     setError(null);
     setImportNote("");
@@ -288,11 +292,11 @@ export function SavedLogins() {
         ) : (
           <>
             <div>
-              <button type="button" className="pill-btn" disabled={!ready || importing} onClick={startImport}>Choose file</button>
+              <button type="button" className="pill-btn" disabled={fileBtn.disabled} onClick={startImport}>{fileBtn.label}</button>
               {mac && (
                 <>
                   {" "}
-                  <button type="button" className="pill-btn" disabled={!ready || importing} onClick={startChromeImport}>Import from Chrome</button>
+                  <button type="button" className="pill-btn" disabled={chromeBtn.disabled} onClick={startChromeImport}>{chromeBtn.label}</button>
                 </>
               )}
             </div>
