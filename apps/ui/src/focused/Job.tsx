@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ThreadSummary } from "@pista/protocol";
-import { toast, useApp, type ThreadView } from "../lib/store.ts";
+import { actions, toast, useApp, type ThreadView } from "../lib/store.ts";
 import { host } from "../lib/host.ts";
 import { describeTurnError } from "../lib/errors.ts";
+import { ModelMenuItems } from "../components/ModelMenu.tsx";
+import { Popover } from "../components/Popover.tsx";
 import { ManifestTable } from "./ManifestTable.tsx";
 import { parseManifest, type ManifestRow } from "./manifest.ts";
 
@@ -75,12 +77,34 @@ export function JobFooter({ thread, view }: { thread: ThreadSummary; view: Threa
   if (thread.status === "error" || (last?.role === "assistant" && last.stopReason === "error")) {
     const failed = last?.role === "assistant" ? last : undefined;
     const label = failed ? (providers.find((p) => p.id === failed.provider)?.name ?? failed.provider) : "The model";
+    const switched = !!failed && !!view.model && (view.model.provider !== failed.provider || view.model.id !== failed.model);
     return (
       <div className="job-error">
         <p>{describeTurnError(failed?.errorMessage, label).text}</p>
+        {switched && <p>Model switched. Send a message to try again.</p>}
+        <div className="job-actions">
         <button className="pill-btn primary" onClick={() => useApp.setState({ settingsOpen: "providers" })}>
           Open settings
         </button>
+        {failed?.provider && (
+          <Popover
+            placement="top-start"
+            trigger={({ toggle }) => (
+              <button
+                className="pill-btn"
+                onClick={() => {
+                  toggle();
+                  void actions.refreshModels();
+                }}
+              >
+                Switch model
+              </button>
+            )}
+          >
+            {(close) => <ModelMenuItems close={close} />}
+          </Popover>
+        )}
+        </div>
       </div>
     );
   }
