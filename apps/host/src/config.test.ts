@@ -148,3 +148,21 @@ test("sources() reports locked, policy default, user and built-in values", () =>
   store.patchConfig({ homeUrl: "https://example.net/" }, { userSet: true });
   assert.equal(store.sources().homeUrl, "user");
 });
+
+test("browser engine setting defaults to auto and persists across stores", () => {
+  const store = new ConfigStore();
+  assert.equal(store.config.browserEngine, "auto");
+  store.patchConfig({ browserEngine: "embedded" }, { userSet: true });
+  assert.equal(new ConfigStore().config.browserEngine, "embedded");
+});
+
+test("an unknown stored browser engine falls back to auto", () => {
+  writeFileSync(join(home, "config.json"), JSON.stringify({ config: { browserEngine: "firefox" } }));
+  assert.equal(new ConfigStore().config.browserEngine, "auto");
+});
+
+test("a managed policy can lock the browser engine", () => {
+  const store = new ConfigStore(managed({ browserEngine: "chrome" }, {}));
+  assert.equal(store.config.browserEngine, "chrome");
+  assert.throws(() => store.assertUnlocked({ browserEngine: "embedded" }), /browserEngine/);
+});

@@ -110,6 +110,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
   harnessConfig: "object",
   instructions: "string",
   linkTarget: "enum",
+  browserEngine: "enum",
   memoryEnabled: "boolean",
   webSearchEnabled: "boolean",
   browserEnabled: "boolean",
@@ -127,6 +128,7 @@ const KEYS: Record<keyof HostConfig, Kind> = {
 const ENUMS: Partial<Record<keyof HostConfig, readonly string[]>> = {
   approvalMode: ["full-access", "ask-writes", "read-only"],
   linkTarget: ["builtin", "home", "external"],
+  browserEngine: ["auto", "chrome", "embedded"],
   orchestratorMode: ["off", "delegate", "delegate-read", "lead", "sliced"],
   defaultThinkingMode: ["auto", "off", "minimal", "low", "medium", "high", "xhigh"],
 };

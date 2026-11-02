@@ -13,7 +13,7 @@
     "policy:check": "tsx src/index.ts policy check",
     "eval:presets": "tsx src/eval/cli.ts",
     "typecheck": "tsc -p .",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "tsx --import ./test-env.ts --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^1.4.0",
