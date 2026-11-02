@@ -14,7 +14,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
-import { createAuthKeyVault, sendKeyToHost } from "./auth-key.js";
+import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
 import { buildUiCsp } from "./csp.js";
 import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
@@ -103,8 +103,7 @@ async function startHost(): Promise<string> {
   // utilityProcess (not ELECTRON_RUN_AS_NODE) so the RunAsNode fuse can stay off in packaged builds.
   hostProcess = utilityProcess.fork(entry, [], {
     serviceName: "pista-host",
-    env: {
-      ...process.env,
+    env: hostChildEnv(process.env, {
       PATH: loginShellPath() ?? process.env.PATH,
       PISTA_HOST_PORT: String(port),
       PISTA_UI_DIR: path.join(resources, "ui"),
@@ -112,7 +111,7 @@ async function startHost(): Promise<string> {
       PISTA_APP_VERSION: app.getVersion(),
       PISTA_AUTH_KEY_PORT: "1",
       ...llamaEnv,
-    },
+    }),
     stdio: "pipe",
   });
   // Sent as a Uint8Array copy right after fork; the local buffer is zeroed at once. Never logged.

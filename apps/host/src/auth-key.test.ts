@@ -23,12 +23,26 @@ test("port: reads the key message and zeroes the received bytes", async () => {
 });
 
 test("port: malformed messages throw without echoing content", async () => {
-  for (const data of [{ type: "auth-key", key: new Uint8Array(31).fill(7) }, { type: "auth-key", key: HEX }, { type: "other", key: keyBytes() }, null, "zzzz"]) {
+  for (const data of [{ type: "auth-key", key: new Uint8Array(31).fill(7) }, { type: "auth-key", key: HEX }, { type: "auth-key" }, { type: "auth-key", key: "zzzz" }]) {
     const port = fakePort();
     const p = resolveAuthKeySource({ PISTA_AUTH_KEY_PORT: "1" }, port);
     port.send(data);
     await assert.rejects(p, (e: Error) => /malformed/.test(e.message) && !e.message.includes(HEX) && !e.message.includes("zzzz"));
   }
+});
+
+test("port: unrelated messages are ignored until the key arrives; env var consumed", async () => {
+  const port = fakePort();
+  const env: NodeJS.ProcessEnv = { PISTA_AUTH_KEY_PORT: "1" };
+  const p = resolveAuthKeySource(env, port);
+  port.send({ type: "other", key: keyBytes() });
+  port.send(null);
+  port.send("noise");
+  port.send({ type: "auth-key", key: keyBytes() });
+  const src = await p;
+  assert.equal(src.kind === "key" && formatAuthKeyHex(src.key), HEX);
+  assert.equal(env.PISTA_AUTH_KEY_PORT, undefined);
+  assert.equal(port.listenerCount("message"), 0);
 });
 
 test("port: timeout, and missing parent port, give clear errors", async () => {

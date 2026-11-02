@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createAuthKeyVault, NO_AUTH_KEYCHAIN_MESSAGE, sendKeyToHost } from "../src/auth-key.ts";
+import { createAuthKeyVault, hostChildEnv, NO_AUTH_KEYCHAIN_MESSAGE, sendKeyToHost } from "../src/auth-key.ts";
 import type { VaultCrypto } from "../src/logins.ts";
 
 const MARK = "FAKE:";
@@ -115,4 +115,9 @@ test("decrypted content of the wrong length or uppercase hex is corrupt", async 
     await assert.rejects(createAuthKeyVault({ file, crypto: fakeCrypto() }).load(), /corrupt/);
     assert.equal(await readFile(file, "utf8"), content);
   }
+});
+
+test("hostChildEnv drops auth variables from the user's shell and keeps ours", () => {
+  const env = hostChildEnv({ PISTA_AUTH_KEY: "ab".repeat(32), PISTA_AUTH_KEY_PORT: "0", PISTA_AUTH_PLAIN: "1", FOO: "bar" }, { PISTA_AUTH_KEY_PORT: "1" });
+  assert.deepEqual(env, { FOO: "bar", PISTA_AUTH_KEY_PORT: "1" });
 });

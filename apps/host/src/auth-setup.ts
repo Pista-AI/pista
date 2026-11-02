@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
 import type { AuthKeySource } from "./auth-key.ts";
-import { createEncryptedCredentialStore } from "./auth-store.ts";
+import { createEncryptedCredentialStore, fsyncDir } from "./auth-store.ts";
 
 /** Chooses the credential store for ModelRuntime. Plain mode returns no store, so Pi uses its own auth.json. */
 export async function setupCredentials(
@@ -77,6 +77,7 @@ export async function setupCredentials(
   }
   try {
     await rm(plainFile, { force: true });
+    fsyncDir(agentDir);
   } catch (e) {
     log(`[pista-host] auth: could not remove auth.json after migration: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
   }

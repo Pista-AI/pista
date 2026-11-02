@@ -15,8 +15,8 @@ export function formatAuthKeyHex(key: Buffer): string {
 
 /** The slice of Electron's process.parentPort the host uses (a utilityProcess child). Absent in plain Node. */
 export interface ParentPortLike {
-  once(event: "message", listener: (event: { data: unknown }) => void): unknown;
-  removeListener?(event: "message", listener: (event: { data: unknown }) => void): unknown;
+  on(event: "message", listener: (event: { data: unknown }) => void): unknown;
+  removeListener(event: "message", listener: (event: { data: unknown }) => void): unknown;
 }
 
 export function currentParentPort(): ParentPortLike | undefined {
@@ -26,10 +26,12 @@ export function currentParentPort(): ParentPortLike | undefined {
 function readKeyMessage(port: ParentPortLike, timeoutMs: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const onMessage = (event: { data: unknown }) => {
-      clearTimeout(timer);
       const data = event.data as { type?: unknown; key?: unknown } | null;
-      const key = data && typeof data === "object" ? data.key : undefined;
-      if (data?.type !== "auth-key" || !(key instanceof Uint8Array) || key.byteLength !== 32) {
+      if (!data || typeof data !== "object" || data.type !== "auth-key") return; // unrelated message: keep waiting
+      clearTimeout(timer);
+      port.removeListener("message", onMessage);
+      const key = data.key;
+      if (!(key instanceof Uint8Array) || key.byteLength !== 32) {
         if (key instanceof Uint8Array) key.fill(0);
         return reject(new Error("auth key message from the desktop app is malformed (expected 32 bytes)"));
       }
@@ -38,10 +40,10 @@ function readKeyMessage(port: ParentPortLike, timeoutMs: number): Promise<Buffer
       resolve(out);
     };
     const timer = setTimeout(() => {
-      port.removeListener?.("message", onMessage);
+      port.removeListener("message", onMessage);
       reject(new Error("timed out waiting for the auth key from the desktop app"));
     }, timeoutMs);
-    port.once("message", onMessage);
+    port.on("message", onMessage);
   });
 }
 
@@ -54,9 +56,11 @@ export async function resolveAuthKeySource(
   // The hex string cannot be zeroed (JS strings are immutable); deleting the variable only stops children inheriting it.
   const envKey = env.PISTA_AUTH_KEY;
   delete env.PISTA_AUTH_KEY;
-  if (env.PISTA_AUTH_KEY_PORT === "1") {
+  const usePort = env.PISTA_AUTH_KEY_PORT === "1";
+  delete env.PISTA_AUTH_KEY_PORT; // children must not inherit it
+  if (usePort) {
     if (!parentPort) throw new Error("PISTA_AUTH_KEY_PORT=1 needs the Pista desktop app (no parent message channel in this process)");
-    return { kind: "key", key: await readKeyMessage(parentPort, options.timeoutMs ?? 10_000) };
+    return { kind: "key", key: await readKeyMessage(parentPort, options.timeoutMs ?? 30_000) };
   }
   if (envKey !== undefined) {
     const value = envKey;
