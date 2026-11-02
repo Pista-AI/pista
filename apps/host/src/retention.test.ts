@@ -32,11 +32,12 @@ test("deleteFile only removes .jsonl files inside its root", () => {
   const sessions = join(h, "pi", "sessions");
   mkdirSync(sessions, { recursive: true });
   writeFileSync(join(sessions, "s.jsonl"), "{}");
-  for (const name of ["config.json", "auth.json"]) writeFileSync(join(h, name), "{}");
+  for (const name of ["config.json", "auth.json", "auth.enc.json"]) writeFileSync(join(h, name), "{}");
   writeFileSync(join(h, "pi", "stray.jsonl"), "{}");
   assert.equal(deleteFile(join(h, "config.json"), h), false);
   assert.equal(deleteFile(join(h, "pi", "auth.json"), sessions), false);
   assert.equal(deleteFile(join(h, "auth.json"), sessions), false);
+  assert.equal(deleteFile(join(h, "pi", "auth.enc.json"), sessions), false);
   assert.equal(deleteFile(join(h, "pi", "stray.jsonl"), sessions), false); // a .jsonl, but not under the sessions dir
   assert.ok(existsSync(join(h, "config.json")) && existsSync(join(h, "pi", "stray.jsonl")));
   assert.equal(deleteFile(join(sessions, "s.jsonl"), sessions), true);

@@ -7,22 +7,41 @@
  * - Implements the UI's DesktopBrowserBridge with a WebContentsView (real Chromium),
  *   so the agent can read, script and screenshot any page.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell, WebContentsView } from "electron";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, shell, systemPreferences, type UtilityProcess, utilityProcess, WebContentsView } from "electron";
+import { execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
+import { buildUiCsp } from "./csp.js";
+import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
+import { runLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
+import { createPresenceGate } from "./presence.js";
+import { findDebugFlag } from "./debug-flags.js";
 import { neutralizePaneDragRegions } from "./pane-drag.js";
+import { decidePanePermission, isWebUrl, sameOrigin } from "./web-policy.js";
 import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike } from "./updater-core.js";
 
-const DEV_URL = process.env.PISTA_DEV_URL;
+// A packaged build never honours PISTA_DEV_URL: it always loads its own host and gets the packaged CSP.
+const DEV_URL = app.isPackaged ? undefined : process.env.PISTA_DEV_URL;
 const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
 
 let mainWindow: BrowserWindow | null = null;
-let hostProcess: ChildProcess | null = null;
+let hostProcess: UtilityProcess | null = null;
+
+// A packaged build refuses to start with a debugger or inspector switch, so nothing outside can attach to the main
+// process or the renderers. Checked before any window exists.
+if (app.isPackaged) {
+  const flag = findDebugFlag(process.argv);
+  if (flag) {
+    process.stderr.write(`Pista: ${flag} is not supported in this build.\n`);
+    app.exit(1);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Agent host
@@ -73,25 +92,30 @@ async function startHost(): Promise<string> {
   const resources = app.isPackaged ? process.resourcesPath : path.resolve(__dirname, "../build");
   const entry = path.join(resources, "host", "dist", "host.mjs");
   mkdirSync(CLIENT_HOME, { recursive: true });
+  // The host's data key is wrapped by the OS keychain and reaches the host only over the utilityProcess message channel (never argv, env or logs).
+  const key = await createAuthKeyVault({ file: path.join(app.getPath("userData"), "auth-key.json"), crypto: safeStorageCrypto(safeStorage) }).load();
   const log = createWriteStream(path.join(CLIENT_HOME, "host.log"), { flags: "a" });
 
   // A packaged build may ship llama-server (see scripts/fetch-llama.mjs); the host only learns of it through this variable.
   const bundledLlama = path.join(resources, "llama");
   const llamaEnv = app.isPackaged && existsSync(bundledLlama) ? { PISTA_LLAMA_BUNDLE_DIR: bundledLlama } : {};
 
-  hostProcess = spawn(process.execPath, [entry], {
-    env: {
-      ...process.env,
+  // utilityProcess (not ELECTRON_RUN_AS_NODE) so the RunAsNode fuse can stay off in packaged builds.
+  hostProcess = utilityProcess.fork(entry, [], {
+    serviceName: "pista-host",
+    env: hostChildEnv(process.env, {
       PATH: loginShellPath() ?? process.env.PATH,
-      ELECTRON_RUN_AS_NODE: "1",
       PISTA_HOST_PORT: String(port),
       PISTA_UI_DIR: path.join(resources, "ui"),
       PISTA_PARENT_PID: String(process.pid),
       PISTA_APP_VERSION: app.getVersion(),
+      PISTA_AUTH_KEY_PORT: "1",
       ...llamaEnv,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
+    }),
+    stdio: "pipe",
   });
+  // Sent as a Uint8Array copy right after fork; the local buffer is zeroed at once. Never logged.
+  sendKeyToHost(hostProcess, key);
   hostProcess.stdout?.pipe(log);
   hostProcess.stderr?.pipe(log);
   // The host's last stderr line is its fatal reason (for example a broken managed policy); show it in the error box.
@@ -177,8 +201,13 @@ interface DownloadResult {
   urlChain: string[];
 }
 
+function downloadPolicyContext() {
+  return { home: homedir(), protectedDirs: protectedDirsFor({ userData: app.getPath("userData"), clientHome: CLIENT_HOME }), sealedDirs: sealedDirsFor({ home: homedir(), clientHome: CLIENT_HOME, env: process.env }) };
+}
+
 interface DownloadRequest {
   path: string;
+  root: string;
   taken: boolean;
   started: Promise<void>;
   markStarted: () => void;
@@ -187,6 +216,25 @@ interface DownloadRequest {
   result: Promise<DownloadResult>;
   finish: (r: DownloadResult) => void;
   fail: (e: Error) => void;
+}
+
+/** Pages the agent visits get no device access: only clipboard writes and fullscreen are granted. */
+function restrictPaneSession(ses: Electron.Session) {
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(decidePanePermission(permission)));
+  ses.setPermissionCheckHandler((_wc, permission) => decidePanePermission(permission));
+  ses.setDevicePermissionHandler(() => false);
+  ses.on("select-hid-device", (event, _details, callback) => {
+    event.preventDefault();
+    callback("");
+  });
+  ses.on("select-usb-device", (event, _details, callback) => {
+    event.preventDefault();
+    callback("");
+  });
+  ses.on("select-serial-port", (event, _portList, _wc, callback) => {
+    event.preventDefault();
+    callback("");
+  });
 }
 
 class BrowserPane {
@@ -206,9 +254,14 @@ class BrowserPane {
     neutralizePaneDragRegions(this.view.webContents);
     const wc = this.view.webContents;
     this.hookDownloads();
+    restrictPaneSession(wc.session);
+    // Pages cannot steer the pane to file:, custom schemes or other non-web addresses.
+    wc.on("will-navigate", (event, url) => {
+      if (!isWebUrl(url)) event.preventDefault();
+    });
     // Popups and target=_blank stay in the pane instead of spawning windows.
     wc.setWindowOpenHandler(({ url }) => {
-      void wc.loadURL(url);
+      if (isWebUrl(url)) void wc.loadURL(url);
       return { action: "deny" };
     });
     for (const event of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-stop-loading"] as const) {
@@ -252,7 +305,8 @@ class BrowserPane {
     this.view.setVisible(true);
   }
 
-  async navigate(url: string) {
+  async navigate(url: string): Promise<{ error: string } | undefined> {
+    if (!isWebUrl(url)) return { error: "Only http and https addresses can be opened." };
     try {
       await this.view.webContents.loadURL(url);
     } catch {
@@ -287,18 +341,27 @@ class BrowserPane {
       armed.taken = true;
       armed.item = item;
       armed.markStarted();
-      item.setSavePath(armed.path);
+      // The folder may have changed since arming (a directory swapped for a link): check again right before the file is written.
+      const savePath = confineDownload(armed.path, armed.root, downloadPolicyContext());
+      if (!savePath) {
+        item.cancel();
+        return armed.fail(new Error(DOWNLOAD_REFUSED));
+      }
+      item.setSavePath(savePath);
       item.once("done", (_e, state) =>
         state === "completed" ? armed.finish({ bytes: item.getReceivedBytes(), contentType: item.getMimeType() || undefined, url: item.getURL(), urlChain: item.getURLChain() }) : armed.fail(new Error(`download failed: ${state}`)),
       );
     });
   }
 
-  armDownload(savePath: string, url?: string) {
-    if (!path.isAbsolute(savePath)) throw new Error("download failed: the path must be absolute");
-    if (this.armed) throw new Error("another download is in progress");
+  /** `root` is the thread's project folder; the file must land strictly inside it (see download-policy.ts). Refusals return a fixed message. */
+  armDownload(requested: string, root: string, url?: string): { error: string } | undefined {
+    const savePath = confineDownload(requested, root, downloadPolicyContext());
+    if (!savePath) return { error: DOWNLOAD_REFUSED };
+    if (this.armed) return { error: "another download is in progress" };
     const request = {} as DownloadRequest;
     request.path = savePath;
+    request.root = root;
     request.taken = false;
     request.started = new Promise<void>((resolve) => (request.markStarted = resolve));
     request.result = new Promise((resolve, reject) => ((request.finish = resolve), (request.fail = reject)));
@@ -309,6 +372,7 @@ class BrowserPane {
       if (this.armed === request) this.armed = undefined;
     }, 90_000);
     if (url) this.view.webContents.downloadURL(url);
+    return undefined;
   }
 
   /** Resolves when the armed download completed; the request is disarmed either way. */
@@ -384,14 +448,17 @@ function registerBrowserIpc(pane: BrowserPane) {
   ipcMain.handle("browser:readText", (_e, maxChars: number) => pane.readText(maxChars));
   ipcMain.handle("browser:screenshot", () => pane.screenshot());
   ipcMain.handle("browser:evaluate", (_e, script: string) => pane.evaluate(script));
-  ipcMain.handle("browser:armDownload", (_e, p: string, url?: string) => pane.armDownload(p, url));
+  ipcMain.handle("browser:armDownload", (_e, p: string, root: string, url?: string) => pane.armDownload(p, root, url));
   // Failures travel as a value so Electron does not log an unhandled handler error; the preload rethrows them.
   ipcMain.handle("browser:waitDownload", () => pane.waitDownload().catch((e: Error) => ({ error: e.message })));
   ipcMain.handle("browser:input", (_e, event: NativeInput) => pane.input(event));
-  ipcMain.on("browser:openDevTools", () => pane.view.webContents.openDevTools({ mode: "detach" }));
+  ipcMain.handle("browser:openDevTools", () => {
+    if (app.isPackaged) return { error: "DevTools are not available in this build." };
+    pane.view.webContents.openDevTools({ mode: "detach" });
+  });
 }
 
-const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill"];
+const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import"];
 
 function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   const vault = createLoginVault({ file: path.join(app.getPath("userData"), "logins.json"), crypto: safeStorageCrypto(safeStorage) });
@@ -434,11 +501,38 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
         .then(() => run(...args))
         .catch((e: Error) => ({ error: e.message }));
     });
-  guarded("logins:status", () => vault.status());
+  // Touch ID once per app run (re-asked after 8 hours or a resume from sleep). Where it is unavailable the fill is not gated.
+  const canPrompt = () => process.platform === "darwin" && systemPreferences.canPromptTouchID();
+  const presence = createPresenceGate({ canPrompt, prompt: () => systemPreferences.promptTouchID("use a saved login"), now: Date.now, ttlMs: 8 * 60 * 60_000 });
+  powerMonitor.on("resume", () => presence.lock());
+  guarded("logins:status", async () => ({ ...(await vault.status()), presence: canPrompt() ? "touchid" : "unavailable" }));
   guarded("logins:list", () => vault.list());
   guarded("logins:save", (input) => vault.save(input));
   guarded("logins:remove", (id: string) => vault.remove(String(id)));
-  guarded("logins:fill", (site: string) => fill.fill(String(site)));
+  guarded("logins:fill", async (site: string) => {
+    const confirmed = await presence.ensure();
+    return confirmed.ok ? fill.fill(String(site)) : { error: confirmed.error };
+  });
+  // The export file is read and parsed here only. The renderer gets counts back, never rows.
+  guarded("logins:import", (opts?: { trash?: boolean }) =>
+    runLoginImport(
+      {
+        vault,
+        pick: async () => {
+          // Dev-only test hook that skips the native dialog. Needs PISTA_DEV_URL and an unpackaged app, so a packaged build can never use it.
+          if (DEV_URL && !app.isPackaged && process.env.PISTA_LOGIN_IMPORT_FILE) return process.env.PISTA_LOGIN_IMPORT_FILE;
+          const win = BrowserWindow.fromWebContents(owner);
+          const options: Electron.OpenDialogOptions = { properties: ["openFile"], filters: [{ name: "CSV", extensions: ["csv"] }] };
+          const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+          return picked.canceled ? null : (picked.filePaths[0] ?? null);
+        },
+        size: async (f) => (await stat(f)).size,
+        read: (f) => readFile(f),
+        trash: (f) => shell.trashItem(f),
+      },
+      { trash: opts?.trash === true },
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -468,22 +562,35 @@ async function createWindow() {
   });
   mainWindow = win;
 
+  // The UI page reaches the preload bridge, so script injection there must not run: set the policy on the UI's own document responses only
+  // (the pane lives in the persist:pista-browser session and is untouched).
+  const uiOrigin = new URL(uiUrl).origin;
+  const csp = buildUiCsp(uiUrl, { dev: Boolean(DEV_URL) && !app.isPackaged });
+  win.webContents.session.webRequest.onHeadersReceived({ urls: [`${uiOrigin}/*`] }, (details, callback) => {
+    if (details.resourceType !== "mainFrame" || details.webContentsId !== win.webContents.id) return callback({});
+    const headers = Object.fromEntries(Object.entries(details.responseHeaders ?? {}).filter(([k]) => k.toLowerCase() !== "content-security-policy"));
+    callback({ responseHeaders: { ...headers, "Content-Security-Policy": [csp] } });
+  });
+
   const pane = new BrowserPane(win);
   registerBrowserIpc(pane);
   registerLoginIpc(pane, win.webContents);
 
   // Links opened from the app UI (docs, OAuth sign-in) go to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (isWebUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  // The UI window never leaves its own origin.
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!sameOrigin(url, uiUrl)) event.preventDefault();
   });
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     mainWindow = null;
-    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload", ...LOGIN_CHANNELS])
+    for (const channel of ["browser:navigate", "browser:back", "browser:forward", "browser:reload", "browser:state", "browser:readText", "browser:screenshot", "browser:evaluate", "browser:input", "browser:armDownload", "browser:waitDownload", "browser:openDevTools", ...LOGIN_CHANNELS])
       ipcMain.removeHandler(channel);
     ipcMain.removeAllListeners("browser:setBounds");
-    ipcMain.removeAllListeners("browser:openDevTools");
   });
   await win.loadURL(uiUrl);
 }
@@ -502,6 +609,9 @@ app.on("before-quit", () => {
   hostProcess?.kill();
 });
 
+// Every renderer runs in the OS sandbox, not only the two views that ask for it.
+app.enableSandbox();
+
 app.whenReady().then(async () => {
   app.setName("Pista");
   Menu.setApplicationMenu(
@@ -512,7 +622,7 @@ app.whenReady().then(async () => {
         label: "View",
         submenu: [
           { role: "reload" },
-          { role: "toggleDevTools" },
+          ...(app.isPackaged ? [] : [{ role: "toggleDevTools" as const }]),
           { type: "separator" },
           { role: "resetZoom" },
           { role: "zoomIn" },

@@ -1,4 +1,4 @@
-import { isInvoicesPath } from "./project-files.ts";
+import { isInvoicesPath, isPasswordExportName, PASSWORD_EXPORT_MESSAGE } from "./project-files.ts";
 import {
   createCodemodeExtension,
   createMcpExtension,
@@ -10,8 +10,10 @@ import type { AgentRoleName, HostConfig, ModelRef, ThinkingMode, ThreadSummary }
 import type { ConfigStore } from "./config.ts";
 import { contextPruneExtension } from "./context-prune.ts";
 import { browsingTurnsExtension } from "./browsing-turns.ts";
+import { manifestMergeExtension } from "./manifest.ts";
 import { approvalExtension, browserExtension, loopGuardExtension, policyGateExtension, type ThreadRef } from "./extensions.ts";
 import type { Hub } from "./hub.ts";
+import type { McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 import type { RecordDecision } from "./decisions.ts";
 import { planTool } from "./plan.ts";
 import { abortLabelExtension } from "./abort-label.ts";
@@ -68,6 +70,8 @@ export interface ExtensionDeps {
   harness?: HarnessContext;
   /** The thread's project folder. */
   cwd?: string;
+  /** Encrypted MCP token store; absent in plain mode, where Pi keeps mcp-auth.json. */
+  mcpCredentials?: McpOAuthCredentialStoreLike;
 }
 
 function wantsBrowser(role: string | undefined, deps: ExtensionDeps): boolean {
@@ -83,11 +87,12 @@ export function invoiceWriteGate(kind: ThreadKind, cwd: string | undefined): ((t
 /** The standalone invoice-fetch thread reads only inside its project folder (no `bash`, so `read` and `ls` are its only way to see files). Refused outright, not asked. */
 export function invoiceReadGate(kind: ThreadKind, cwd: string | undefined): ((toolName: string, input: Record<string, unknown>) => string | undefined) | undefined {
   if (kind.role !== "invoice-fetch" || kind.hasParent || !cwd) return undefined;
-  return (toolName, input) =>
+  return (toolName, input) => {
+    if ((toolName !== "read" && toolName !== "ls") || typeof input.path !== "string") return undefined;
+    if (isPasswordExportName(input.path)) return PASSWORD_EXPORT_MESSAGE;
     // Pi expands "~" and strips a leading "@" before resolving, which a textual check would miss, so those are refused outright.
-    (toolName === "read" || toolName === "ls") && typeof input.path === "string" && (/^[~@]/.test(input.path) || !isInvoicesPath(cwd, input.path, "."))
-      ? "The invoice job only reads inside its project folder."
-      : undefined;
+    return /^[~@]/.test(input.path) || !isInvoicesPath(cwd, input.path, ".") ? "The invoice job only reads inside its project folder." : undefined;
+  };
 }
 
 /** The extensions a thread gets, in load order. One rule per entry; see `ThreadKind`. */
@@ -106,7 +111,8 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
       : [
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),
-          createMcpExtension(),
+          // Pi's option is typed as its own McpOAuthCredentialStore class, which the package does not export; the store comes from that class (pi-mcp-oauth.ts), so the cast is safe.
+          createMcpExtension(deps.mcpCredentials ? { credentials: deps.mcpCredentials as unknown as NonNullable<Parameters<typeof createMcpExtension>[0]>["credentials"] } : undefined),
           ...(store.config.browserEnabled === false ? [] : [browserExtension(hub, ref, store.managedPolicy?.browser)]),
           browsingTurnsExtension({ config: store.config, thinkingMode: deps.thinkingMode ?? (() => undefined) }),
         ]),
@@ -122,6 +128,8 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     contextPruneExtension(store),
     // Children share the parent's cwd, so only role-less threads may write the plan file.
     ...(role ? [] : [planTool({ ...deps.plan, record: deps.record })]),
+    // Before approvals, so the owner sees the merged content.
+    ...(kind.role === "invoice-fetch" && !kind.hasParent && deps.cwd ? [manifestMergeExtension(deps.cwd)] : []),
     watch(approvalExtension(hub, store, ref, deps.alwaysAllowed, invoiceWriteGate(kind, deps.cwd), invoiceReadGate(kind, deps.cwd)), "approval"),
     // Last, so it sees the input as every other extension left it and nothing runs after its block.
     ...(store.toolRules ? [policyGateExtension(store.toolRules, tools ? (name, input, denial, id) => tools.decision(id, name, input, "deny", { source: "policy", rule: denial.rule }) : undefined)] : []),

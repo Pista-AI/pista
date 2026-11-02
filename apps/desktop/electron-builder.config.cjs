@@ -63,6 +63,16 @@ function buildConfig(env = process.env) {
       ...(existsSync(path.join(__dirname, "build", "llama")) ? [{ from: "build/llama", to: "llama" }] : []),
     ],
     asar: true,
+    // A packaged Pista must not double as a Node interpreter or be debuggable from outside. The host runs as an Electron
+    // utilityProcess (not ELECTRON_RUN_AS_NODE), so RunAsNode can be off. Flipped by electron-builder before signing.
+    electronFuses: {
+      runAsNode: false,
+      enableNodeOptionsEnvironmentVariable: false,
+      enableNodeCliInspectArguments: false,
+      enableCookieEncryption: true,
+      enableEmbeddedAsarIntegrityValidation: true,
+      onlyLoadAppFromAsar: true,
+    },
     npmRebuild: false,
     mac: {
       category: "public.app-category.developer-tools",

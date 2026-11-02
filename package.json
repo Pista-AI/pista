@@ -16,7 +16,7 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n host,ui -c blue,magenta \"pnpm --filter @pista/host dev\" \"pnpm --filter @pista/ui dev\"",
+    "dev": "concurrently -k -n host,ui -c blue,magenta \"PISTA_AUTH_PLAIN=${PISTA_AUTH_PLAIN:-1} pnpm --filter @pista/host dev\" \"pnpm --filter @pista/ui dev\"",
     "build": "pnpm --filter @pista/ui build && pnpm --filter @pista/host build",
     "start": "pnpm --filter @pista/host start",
     "typecheck": "pnpm -r typecheck",
@@ -31,5 +31,14 @@
     "concurrently": "^10.0.6",
     "typescript": "^7.0.2"
   },
-  "packageManager": "pnpm@9.12.0"
+  "packageManager": "pnpm@9.12.0",
+  "pnpm": {
+    "overrides": {
+      "undici@>=8.0.0 <8.12.2": "8.12.2",
+      "undici@>=7.0.0 <7.30.1": "7.30.1",
+      "undici@>=4.2.1 <6.29.1": "6.29.1",
+      "zod@<4.6.6": "4.6.6",
+      "body-parser@>=2.0.0 <2.4.0": "2.4.0"
+    }
+  }
 }

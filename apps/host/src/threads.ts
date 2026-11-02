@@ -41,6 +41,7 @@ import { isLocalProvider } from "./local.ts";
 import { deleteFile } from "./retention.ts";
 import { autoLevel, fallbackNeedsThinking, judgeNeedsThinking, recentHistory } from "./thinking.ts";
 
+import type { McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 import type { Hub } from "./hub.ts";
 import { harnessConfigOf, harnessIdOf, selectedByPolicy, threadTools } from "./harness/select.ts";
 import { loadPackageHarness, resetHarnessPackageCache } from "./harness/packages.ts";
@@ -131,6 +132,8 @@ export class ThreadManager {
     goalJudge?: GoalJudge,
     /** Audit export; the no-op sink when the policy has no `audit` block. */
     readonly audit: AuditSink = noopAudit,
+    /** Encrypted MCP token store; absent in plain mode, where Pi keeps mcp-auth.json. */
+    private mcpCredentials?: McpOAuthCredentialStoreLike,
   ) {
     this.goals = new GoalRunner(
       {
@@ -340,6 +343,7 @@ export class ThreadManager {
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
         cwd: sessionManager.getCwd(),
+        ...(this.mcpCredentials ? { mcpCredentials: this.mcpCredentials } : {}),
         harness: harnessHost,
         roles,
         thinkingMode: () => thread?.thinkingMode,

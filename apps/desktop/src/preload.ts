@@ -32,20 +32,24 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
     readText: (maxChars: number) => ipcRenderer.invoke("browser:readText", maxChars),
     screenshot: () => ipcRenderer.invoke("browser:screenshot"),
     evaluate: (script: string) => ipcRenderer.invoke("browser:evaluate", script),
-    armDownload: (path: string, url?: string) => ipcRenderer.invoke("browser:armDownload", path, url),
+    armDownload: async (path: string, root: string, url?: string) => {
+      const r = await ipcRenderer.invoke("browser:armDownload", path, root, url);
+      if (r && typeof r === "object" && "error" in r) throw new Error(String((r as { error: unknown }).error));
+    },
     waitDownload: async () => {
       const r = await ipcRenderer.invoke("browser:waitDownload");
       if (r && typeof r === "object" && "error" in r) throw new Error(String((r as { error: unknown }).error));
       return r;
     },
     input: (event: unknown) => ipcRenderer.invoke("browser:input", event),
-    openDevTools: () => ipcRenderer.send("browser:openDevTools"),
+    openDevTools: () => ipcRenderer.invoke("browser:openDevTools"),
     logins: {
       status: () => loginCall("logins:status"),
       list: () => loginCall("logins:list"),
       save: (input: { label: string; loginUrl: string; username: string; password: string }) => loginCall("logins:save", input),
       remove: (id: string) => loginCall("logins:remove", id),
       fill: (site: string) => loginCall("logins:fill", site),
+      import: (opts: { trash: boolean }) => loginCall("logins:import", { trash: opts?.trash === true }),
     },
   },
 });

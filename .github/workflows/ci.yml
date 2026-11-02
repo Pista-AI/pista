@@ -28,6 +28,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level=high --prod
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
@@ -36,6 +37,7 @@ jobs:
       - name: Smoke test headless host
         env:
           PISTA_HOST_PORT: "4399"
+          PISTA_AUTH_PLAIN: "1"
         run: |
           export PISTA_HOME="$RUNNER_TEMP/pista-home"
           node apps/host/dist/host.mjs > "$RUNNER_TEMP/host.log" 2>&1 &
