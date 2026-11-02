@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SavedLoginMeta } from "@pista/protocol";
 import { useConfigField } from "../lib/useConfigField.ts";
-import { formatImportResult, hostOf, skipReasonLabel, validateLoginInput } from "../focused/saved-logins.ts";
+import { formatImportResult, hostOf, importButtonState, skipReasonLabel, validateLoginInput, VAULT_UNAVAILABLE } from "../focused/saved-logins.ts";
 import type { LoginImportPreview } from "../browser/bridge.ts";
 
 const EMPTY = { label: "", loginUrl: "", username: "", password: "" };
@@ -24,6 +24,7 @@ export function SavedLogins() {
   const [importing, setImporting] = useState(false);
   const [importNote, setImportNote] = useState("");
   const [preview, setPreview] = useState<LoginImportPreview | null>(null);
+  const [chromeProfiles, setChromeProfiles] = useState<{ dir: string; name: string }[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [presence, setPresence] = useState<"touchid" | "unavailable" | null>(null);
   const previewToken = useRef<string | null>(null);
@@ -103,6 +104,7 @@ export function SavedLogins() {
   };
 
   const startImport = async () => {
+    if (!ready) return setError(VAULT_UNAVAILABLE);
     setImporting(true);
     setError(null);
     setImportNote("");
@@ -118,20 +120,58 @@ export function SavedLogins() {
       if (alive.current) setImporting(false);
     }
   };
+  const fileBtn = importButtonState(available, importing, "Choose file");
+  const chromeBtn = importButtonState(available, importing, "Import from Chrome");
+  const mac = window.pistaDesktop?.platform === "darwin";
+  const chromePreview = async (profileDir: string) => {
+    setChromeProfiles(null);
+    setImporting(true);
+    setError(null);
+    setImportNote("");
+    try {
+      const r = await logins.importChromePreview(profileDir);
+      if (!alive.current) return;
+      previewToken.current = r.token;
+      setPreview(r);
+      setPicked(new Set(r.rows.map((row) => row.id)));
+    } catch (err) {
+      if (alive.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (alive.current) setImporting(false);
+    }
+  };
+  const startChromeImport = async () => {
+    if (!ready) return setError(VAULT_UNAVAILABLE);
+    setImporting(true);
+    setError(null);
+    setImportNote("");
+    try {
+      const profiles = await logins.importChromeProfiles();
+      if (!alive.current) return;
+      if (profiles.length === 1) return void (await chromePreview(profiles[0].dir));
+      if (profiles.length === 0) return setError("Pista did not find any Chrome profile with saved passwords.");
+      setChromeProfiles(profiles);
+    } catch (err) {
+      if (alive.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (alive.current) setImporting(false);
+    }
+  };
   const cancelImport = () => {
     if (preview) logins.importCancel(preview.token).catch(() => undefined);
     previewToken.current = null;
     setPreview(null);
   };
+  const csvSource = preview?.source.kind === "csv";
   const allPicked = !!preview && picked.size === preview.rows.length;
   const commitImport = async () => {
     if (!preview) return;
     setImporting(true);
     setError(null);
     try {
-      const r = await logins.importCommit({ token: preview.token, ids: [...picked], trashFile: trash });
+      const r = await logins.importCommit({ token: preview.token, ids: [...picked], trashFile: csvSource && trash });
       previewToken.current = null;
-      if (alive.current) setImportNote(formatImportResult(r, trash && allPicked));
+      if (alive.current) setImportNote(formatImportResult(r, csvSource && trash && allPicked));
     } catch (err) {
       previewToken.current = null;
       if (alive.current) setError(err instanceof Error ? err.message : String(err));
@@ -236,10 +276,12 @@ export function SavedLogins() {
                 ))}
               </details>
             )}
-            <label className="login-trash">
-              <input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} disabled={importing} /> Move the file to the Trash after importing
-            </label>
-            {trash && !allPicked && <span className="help">The file stays where it is, because some rows are unticked.</span>}
+            {preview.source.kind === "csv" && (
+              <label className="login-trash">
+                <input type="checkbox" checked={trash} onChange={(e) => setTrash(e.target.checked)} disabled={importing} /> Move the file to the Trash after importing
+              </label>
+            )}
+            {csvSource && trash && !allPicked && <span className="help">The file stays where it is, because some rows are unticked.</span>}
             <div>
               <button type="button" className="pill-btn primary" disabled={importing || picked.size === 0} onClick={commitImport}>
                 Import {picked.size}
@@ -248,9 +290,30 @@ export function SavedLogins() {
             </div>
           </>
         ) : (
-          <div>
-            <button type="button" className="pill-btn" disabled={!ready || importing} onClick={startImport}>Choose file</button>
-          </div>
+          <>
+            <div>
+              <button type="button" className="pill-btn" disabled={fileBtn.disabled} onClick={startImport}>{fileBtn.label}</button>
+              {mac && (
+                <>
+                  {" "}
+                  <button type="button" className="pill-btn" disabled={chromeBtn.disabled} onClick={startChromeImport}>{chromeBtn.label}</button>
+                </>
+              )}
+            </div>
+            {mac ? (
+              <span className="help">macOS will ask you to allow access to "Chrome Safe Storage" in your Keychain. Your passwords stay on this computer.</span>
+            ) : (
+              <span className="help">On Windows and Linux, export passwords from Chrome as a CSV file and import it above.</span>
+            )}
+            {chromeProfiles && (
+              <div role="group" aria-label="Chrome profiles">
+                <span className="help">Which Chrome profile?</span>{" "}
+                {chromeProfiles.map((p) => (
+                  <button key={p.dir} type="button" className="pill-btn" disabled={importing} onClick={() => chromePreview(p.dir)}>{p.name}</button>
+                ))}
+              </div>
+            )}
+          </>
         )}
         {importNote && <span className="help" role="status">{importNote}</span>}
       </div>

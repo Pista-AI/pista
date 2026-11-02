@@ -53,3 +53,15 @@ const SKIP_LABELS: Record<string, string> = {
   duplicate: "another login for the same site is used instead",
 };
 export const skipReasonLabel = (reason: string) => SKIP_LABELS[reason] ?? "skipped";
+
+export const VAULT_UNAVAILABLE = "Pista can't store passwords safely on this computer, so importing logins is turned off.";
+
+/**
+ * Import buttons never sit silently disabled: while the vault status is still loading or an import is running they
+ * show a busy label, and when the vault is unavailable a click leads to a visible error instead of nothing.
+ */
+export function importButtonState(available: boolean | null, importing: boolean, idle: string): { disabled: boolean; label: string } {
+  if (importing) return { disabled: true, label: "Working…" };
+  if (available === null) return { disabled: true, label: "Checking…" };
+  return { disabled: false, label: idle };
+}
