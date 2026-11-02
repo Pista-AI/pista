@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld("pistaDesktop", {
       importCommit: (input: { token: string; ids: string[]; trashFile: boolean }) =>
         loginCall("logins:import:commit", { token: input?.token, ids: input?.ids, trashFile: input?.trashFile === true }),
       importCancel: (token: string) => loginCall("logins:import:cancel", token),
+      importChromeProfiles: () => loginCall("logins:import:chrome:profiles"),
+      importChromePreview: (profileDir: string) => loginCall("logins:import:chrome:preview", { profileDir: String(profileDir) }),
     },
   },
 });

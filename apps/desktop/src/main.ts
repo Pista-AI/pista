@@ -18,6 +18,7 @@ import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
 import { buildUiCsp } from "./csp.js";
 import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
+import { listChromeProfiles, previewChromeImport, sweepStaleChromeTemps } from "./chrome-import.js";
 import { createImportStore, previewLoginImport } from "./login-import.js";
 import { createLoginVault, safeStorageCrypto } from "./logins.js";
 import { createPresenceGate } from "./presence.js";
@@ -496,7 +497,7 @@ function registerBrowserIpc(pane: BrowserPane) {
   });
 }
 
-const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import:preview", "logins:import:commit", "logins:import:cancel"];
+const LOGIN_CHANNELS = ["logins:status", "logins:list", "logins:save", "logins:remove", "logins:fill", "logins:import:preview", "logins:import:commit", "logins:import:cancel", "logins:import:chrome:profiles", "logins:import:chrome:preview"];
 
 function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
   const vault = createLoginVault({ file: path.join(app.getPath("userData"), "logins.json"), crypto: safeStorageCrypto(safeStorage) });
@@ -585,6 +586,9 @@ function registerLoginIpc(pane: BrowserPane, owner: Electron.WebContents) {
     }),
   );
   guarded("logins:import:cancel", async (token: string) => imports.cancel(token));
+  // Chrome's saved logins are decrypted here with the Keychain key; only the password-free preview leaves the main process.
+  guarded("logins:import:chrome:profiles", () => listChromeProfiles());
+  guarded("logins:import:chrome:preview", (input: { profileDir: string }) => previewChromeImport({ vault }, imports, String(input?.profileDir)));
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +670,7 @@ app.on("before-quit", () => {
 app.enableSandbox();
 
 app.whenReady().then(async () => {
+  void sweepStaleChromeTemps();
   app.setName("Pista");
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
