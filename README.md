@@ -59,6 +59,8 @@ pnpm dev
 
 Open http://localhost:5317. The host listens on `127.0.0.1:4317`, and Vite proxies `/ws` to it.
 
+`pnpm dev` restarts the host whenever a file in its import graph changes, including workspace packages such as `packages/protocol`, and each restart drops the UI's WebSocket. Use `pnpm dev:stable` when coding agents are editing Pista's own code while it runs: the host starts once with no file watching, so the session stays up, and you restart the host by hand to pick up changes. Use it for long sessions, not for normal hot-reload work.
+
 For a single process that serves the built UI:
 
 ```bash
@@ -88,6 +90,8 @@ Or start host, UI and window together:
 ```bash
 pnpm dev:desktop
 ```
+
+To keep the host from restarting on source edits, run `PISTA_HOST_WATCH=0 pnpm dev:desktop` instead.
 
 Build a runnable `Pista.app` into `apps/desktop/release/mac-arm64/`. It is ad-hoc signed for local use by default; Developer ID signing and notarization are opt-in through environment variables (`CSC_LINK`/`CSC_NAME`, `APPLE_*`), see [docs/release-signing.md](docs/release-signing.md):
 
