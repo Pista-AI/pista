@@ -1,7 +1,9 @@
 import type { HostEvent, HostFrame, MethodName, Params, Result } from "@pista/protocol";
 import { DEFAULT_HOST_PORT } from "@pista/protocol";
 
-type Listener = (event: HostEvent) => void;
+import { watchLiveness } from "./liveness.ts";
+
+type Listener =(event: HostEvent) => void;
 type StatusListener = (connected: boolean) => void;
 
 /**
@@ -36,12 +38,33 @@ class HostClient {
   connect(): void {
     const ws = new WebSocket(hostSocketUrl());
     this.ws = ws;
+    // Dies with this socket (cleared in drop), so an old socket's timer can never close a newer one.
+    let watch: ReturnType<typeof watchLiveness> | undefined;
+    const drop = () => {
+      watch?.stop();
+      if (this.ws !== ws) return;
+      this.ws = undefined; // a late onclose from the same socket must not schedule a second reconnect
+      this.setConnected(false);
+      for (const p of this.pending.values()) p.reject(new Error("Disconnected from agent host"));
+      this.pending.clear();
+      const delay = Math.min(5000, 300 * 2 ** this.retry++);
+      setTimeout(() => this.connect(), delay);
+    };
     ws.onopen = () => {
       this.retry = 0;
       this.setConnected(true);
       for (const frame of this.queue.splice(0)) ws.send(frame);
+      watch = watchLiveness({
+        ping: () => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ kind: "req", id: "ping", method: "host.ping", params: {} })),
+        // A dead socket may never emit close, so run the disconnect path ourselves as well as closing it.
+        onStale: () => {
+          ws.close();
+          drop();
+        },
+      });
     };
     ws.onmessage = (msg) => {
+      watch?.touch();
       const frame = JSON.parse(msg.data) as HostFrame;
       if (frame.kind === "evt") {
         for (const l of this.listeners) l(frame.event);
@@ -56,14 +79,7 @@ class HostClient {
         p.reject(new Error(frame.error));
       }
     };
-    ws.onclose = () => {
-      if (this.ws !== ws) return;
-      this.setConnected(false);
-      for (const p of this.pending.values()) p.reject(new Error("Disconnected from agent host"));
-      this.pending.clear();
-      const delay = Math.min(5000, 300 * 2 ** this.retry++);
-      setTimeout(() => this.connect(), delay);
-    };
+    ws.onclose = drop;
   }
 
   call<M extends MethodName>(method: M, params: Params<M>): Promise<Result<M>> {
