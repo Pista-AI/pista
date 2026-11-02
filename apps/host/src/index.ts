@@ -11,6 +11,7 @@ import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, platform } from "node:os";
 import { WebSocketServer } from "ws";
+import { startHeartbeat } from "./ws-heartbeat.ts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   type ClientFrame,
@@ -136,6 +137,7 @@ function projectPath(projectId: string): string {
 
 type Handler<M extends MethodName> = (params: Methods[M]["params"]) => Promise<Methods[M]["result"]> | Methods[M]["result"];
 const handlers: { [M in MethodName]: Handler<M> } = {
+  "host.ping": () => null,
   "host.hello": () => ({
     version: VERSION,
     piVersion: piVersion(),
@@ -300,6 +302,7 @@ const server = createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
+const stopHeartbeat = startHeartbeat(wss);
 server.on("upgrade", (req, socket, head) => {
   const origin = req.headers.origin;
   if (new URL(req.url ?? "/", "http://localhost").pathname !== "/ws" || (origin && !ALLOWED_ORIGINS.has(origin))) {
@@ -320,7 +323,7 @@ wss.on("connection", (ws) => {
       return;
     }
     const reply = (out: HostFrame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(out));
-    hub.touch(ws);
+    if (frame.method !== "host.ping") hub.touch(ws); // idle liveness pings must not make a background window look active
     if (frame.method === "host.hello") hub.describe(ws, (frame.params as Methods["host.hello"]["params"]).client);
     const handler = handlers[frame.method] as Handler<MethodName> | undefined;
     if (!handler) return reply({ kind: "res", id: frame.id, ok: false, error: `Unknown method ${frame.method}` });
@@ -346,6 +349,7 @@ const shutdown = () => {
   shuttingDown = true;
   threads.dispose();
   llama.stop();
+  stopHeartbeat();
   server.close();
   // Give the final audit flush a moment; the exporter has its own timeout.
   void audit.dispose().finally(() => process.exit(0));

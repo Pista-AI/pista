@@ -768,6 +768,8 @@ export type AuthPrompt =
 // ---------------------------------------------------------------------------
 
 export interface Methods {
+  /** Liveness probe: the UI sends it while idle and treats any reply as proof the socket is alive. */
+  "host.ping": { params: Record<string, never>; result: null };
   "host.hello": { params: { client?: { nativeBrowser: boolean } }; result: HostInfo };
   "config.set": { params: { patch: ConfigPatch }; result: HostConfig };
 
