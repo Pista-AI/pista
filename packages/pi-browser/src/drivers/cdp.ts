@@ -1,32 +1,74 @@
+import type { CdpEvent, CdpTransport } from "../chrome/pipe.ts";
 import type { BrowserDriver, NativeInput, PageState } from "../driver.ts";
 
-type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
+/** The existing DevTools-over-WebSocket connection to one page target, as a transport. */
+class WebSocketTransport implements CdpTransport {
+  private seq = 0;
+  private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  private eventHandlers: ((event: CdpEvent) => void)[] = [];
+  private closeHandlers: ((error: Error) => void)[] = [];
+
+  constructor(private ws: WebSocket) {
+    ws.onmessage = (message) => {
+      const msg = JSON.parse(String(message.data));
+      if (msg.id !== undefined) {
+        const p = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error) p?.reject(new Error(msg.error.message));
+        else p?.resolve(msg.result);
+      } else if (msg.method) for (const h of this.eventHandlers) h({ method: msg.method, params: msg.params });
+    };
+    ws.onclose = () => {
+      const error = new Error("Browser connection closed");
+      for (const p of this.pending.values()) p.reject(error);
+      this.pending.clear();
+      for (const h of this.closeHandlers.splice(0)) h(error);
+    };
+  }
+
+  send(method: string, params: object = {}): Promise<any> {
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.ws.send(JSON.stringify({ id, method, params }));
+    });
+  }
+  onEvent(handler: (event: CdpEvent) => void) {
+    this.eventHandlers.push(handler);
+  }
+  onClose(handler: (error: Error) => void) {
+    this.closeHandlers.push(handler);
+  }
+  close() {
+    this.ws.close();
+  }
+}
 
 /**
  * Drives one page of a Chromium-based browser over the DevTools Protocol, e.g. Chrome started
  * with `--remote-debugging-port=9222`. Attaches to the first open page (or opens one) and
  * injects trusted input through `Input.*`, so it behaves like the desktop app's pane.
+ * The protocol logic runs on any `CdpTransport`: subclasses override `openTransport`.
  */
 export class CdpDriver implements BrowserDriver {
-  private ws: WebSocket | undefined;
+  protected conn: { transport: CdpTransport; sessionId?: string } | undefined;
   private connecting: Promise<void> | undefined;
-  private seq = 0;
   private roundTrips = 0;
-  private pending = new Map<number, Pending>();
-  private mainFrameId = "";
+  protected mainFrameId = "";
   private loading = false;
   private loadError: string | undefined;
   private loadWaiters: (() => void)[] = [];
 
   constructor(private endpoint = "http://127.0.0.1:9222") {}
 
-  private connect(): Promise<void> {
-    if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve();
+  protected connect(): Promise<void> {
+    if (this.conn) return Promise.resolve();
     this.connecting ??= this.open().finally(() => (this.connecting = undefined));
     return this.connecting;
   }
 
-  private async open() {
+  /** Connects to the browser and returns the transport plus the session of the page to drive (none for a per-page WebSocket). */
+  protected async openTransport(): Promise<{ transport: CdpTransport; sessionId?: string }> {
     type Target = { type: string; url: string; webSocketDebuggerUrl: string };
     let targets: Target[];
     try {
@@ -43,26 +85,39 @@ export class CdpDriver implements BrowserDriver {
       ws.onopen = () => resolve();
       ws.onerror = () => reject(new Error(`Could not connect to ${target!.webSocketDebuggerUrl}`));
     });
-    ws.onmessage = (message) => this.onMessage(JSON.parse(String(message.data)));
-    ws.onclose = () => {
-      for (const p of this.pending.values()) p.reject(new Error("Browser connection closed"));
-      this.pending.clear();
-      this.ws = undefined;
-    };
-    this.ws = ws;
-    await this.send("Page.enable");
-    const { frameTree } = await this.send("Page.getFrameTree");
-    this.mainFrameId = frameTree.frame.id;
+    return { transport: new WebSocketTransport(ws) };
   }
 
-  private onMessage(msg: { id?: number; result?: any; error?: { message: string }; method?: string; params?: any }) {
-    if (msg.id !== undefined) {
-      const p = this.pending.get(msg.id);
-      this.pending.delete(msg.id);
-      if (msg.error) p?.reject(new Error(msg.error.message));
-      else p?.resolve(msg.result);
-      return;
+  /** Runs after the page is enabled and its frame is known; subclasses add their per-page setup here. */
+  protected async onAttached(): Promise<void> {}
+
+  private async open() {
+    const { transport, sessionId } = await this.openTransport();
+    const conn = { transport, sessionId };
+    transport.onClose(() => {
+      if (this.conn === conn) this.conn = undefined;
+    });
+    transport.onEvent((event) => {
+      if (event.sessionId === sessionId) this.onEvent(event);
+    });
+    this.conn = conn;
+    await this.sendRaw("Page.enable");
+    const { frameTree } = await this.sendRaw("Page.getFrameTree");
+    this.mainFrameId = frameTree.frame.id;
+    try {
+      await this.onAttached();
+    } catch (error) {
+      // Fail closed: a page whose setup failed is never used; the next call retries from scratch.
+      this.conn = undefined;
+      await this.onAttachFailed(conn).catch(() => undefined);
+      throw error;
     }
+  }
+
+  /** Called when `onAttached` threw, after the connection was dropped; subclasses close what they opened. */
+  protected async onAttachFailed(_conn: { transport: CdpTransport; sessionId?: string }): Promise<void> {}
+
+  private onEvent(msg: { method: string; params?: any }) {
     if (msg.params?.frameId !== this.mainFrameId) return;
     if (msg.method === "Page.frameStartedLoading") this.loading = true;
     if (msg.method === "Page.frameStoppedLoading") {
@@ -71,14 +126,17 @@ export class CdpDriver implements BrowserDriver {
     }
   }
 
-  private async send(method: string, params: object = {}): Promise<any> {
-    if (method !== "Page.enable" && method !== "Page.getFrameTree") await this.connect();
-    const id = ++this.seq;
+  /** Sends on the current page session without connecting first. */
+  protected sendRaw(method: string, params: object = {}): Promise<any> {
+    const conn = this.conn;
+    if (!conn) return Promise.reject(new Error("Browser connection closed"));
     this.roundTrips++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws!.send(JSON.stringify({ id, method, params }));
-    });
+    return conn.transport.send(method, params, conn.sessionId);
+  }
+
+  private async send(method: string, params: object = {}): Promise<any> {
+    await this.connect();
+    return this.sendRaw(method, params);
   }
 
   private waitForLoad(timeoutMs: number) {
@@ -161,7 +219,8 @@ export class CdpDriver implements BrowserDriver {
   }
 
   close() {
-    this.ws?.close();
+    this.conn?.transport.close();
+    this.conn = undefined;
   }
 }
 
