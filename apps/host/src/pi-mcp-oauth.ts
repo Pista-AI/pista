@@ -30,14 +30,14 @@ export async function loadMcpOAuthCredentialStore(): Promise<McpOAuthCredentialS
   } catch {
     // The version only makes the error message better.
   }
-  const fail = (): never => {
-    throw new Error(`Pi ${version} no longer exposes McpOAuthCredentialStore at ${target.pathname}; MCP tokens cannot be encrypted`);
+  const fail = (cause?: unknown): never => {
+    throw new Error(`Pi ${version} no longer exposes McpOAuthCredentialStore at ${target.pathname}; MCP tokens cannot be encrypted`, cause === undefined ? undefined : { cause });
   };
   let mod: Record<string, unknown>;
   try {
     mod = (await import(target.href)) as Record<string, unknown>;
-  } catch {
-    return fail();
+  } catch (e) {
+    return fail(e);
   }
   const ctor = mod.McpOAuthCredentialStore;
   if (typeof ctor !== "function" || ctor.name !== "McpOAuthCredentialStore") return fail();

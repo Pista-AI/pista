@@ -1,66 +1,105 @@
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmdirSync, statSync, writeSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { AuthKeySource } from "./auth-key.ts";
 import { fsyncDir, readEncryptedFile, writeEncryptedFile } from "./auth-store.ts";
 import { type AuthStorageBackend, loadMcpOAuthCredentialStore, type LockResult, type McpOAuthCredentialStoreCtor, type McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 
-const STALE_MS = 30_000;
+/** Pi holds the lock for milliseconds, so a lock older than this belongs to a crashed process. */
+export const LOCK_STALE_MS = 5_000;
+const LOCK_WAIT_MS = 10_000;
+const OWNER = "owner";
+
+/**
+ * Takes an exclusive lock directory and returns the owner token, or undefined when someone else holds it. The owner
+ * file inside holds a random token and the pid. A stale lock is renamed away first (so only one stealer wins), then
+ * its mtime is checked again before it is deleted.
+ */
+export function tryAcquireLock(lock: string, staleMs = LOCK_STALE_MS): string | undefined {
+  mkdirSync(join(lock, ".."), { recursive: true, mode: 0o700 });
+  try {
+    mkdirSync(lock);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // Windows reports a lock that is being removed as EPERM/EBUSY/EACCES; elsewhere only EEXIST means "held".
+    if (code !== "EEXIST" && code !== "EBUSY" && !(process.platform === "win32" && (code === "EPERM" || code === "EACCES"))) throw e;
+    try {
+      if (Date.now() - statSync(lock).mtimeMs > staleMs) {
+        const aside = `${lock}.stale.${randomUUID()}`;
+        renameSync(lock, aside);
+        if (Date.now() - statSync(aside).mtimeMs > staleMs) rmSync(aside, { recursive: true, force: true });
+        else renameSync(aside, lock); // it was fresh after all: put it back
+      }
+    } catch {
+      // Released or stolen in the meantime.
+    }
+    return undefined;
+  }
+  const token = randomUUID();
+  try {
+    writeFileSync(join(lock, OWNER), JSON.stringify({ token, pid: process.pid }), { mode: 0o600 });
+  } catch (e) {
+    rmSync(lock, { recursive: true, force: true });
+    throw e;
+  }
+  return token;
+}
+
+/** Removes the lock only if `token` still owns it. Returns false when it did not (nothing is touched). */
+export function releaseLock(lock: string, token: string, log: (line: string) => void = console.warn): boolean {
+  try {
+    const owner = JSON.parse(readFileSync(join(lock, OWNER), "utf-8")) as { token?: unknown };
+    if (owner.token !== token) return false;
+  } catch {
+    return false; // gone, or stolen and replaced
+  }
+  try {
+    rmSync(lock, { recursive: true, force: true });
+    return true;
+  } catch (e) {
+    log(`[pista-host] mcp auth: could not remove lock ${lock}: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
+    return false;
+  }
+}
+
+const sleepSync = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const backoff = (retry: number): number => Math.round(Math.min(10 * 2 ** retry, 500) * (1 + Math.random() / 2));
 
 /**
  * Pi's MCP token store reads and writes through an AuthStorageBackend. This one keeps the content in an AES-256-GCM
- * file instead of plain JSON. It takes the same kind of lock as Pi's file backend (an exclusive lock directory next
- * to the file, stale after 30 s), so two processes on one PISTA_HOME do not overwrite each other's tokens.
+ * file instead of plain JSON, under an exclusive lock directory next to it (see `tryAcquireLock`), so two processes
+ * on one PISTA_HOME do not overwrite each other's tokens.
  */
 export function createEncryptedAuthStorageBackend({ file, key: keyArg }: { file: string; key: Buffer }): AuthStorageBackend {
   if (!Buffer.isBuffer(keyArg) || keyArg.length !== 32) throw new Error("mcp auth store: key must be 32 bytes");
   const key = Buffer.from(keyArg);
   const lock = `${file}.lock`;
-  const tryLock = (): boolean => {
-    mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 });
-    try {
-      mkdirSync(lock);
-      return true;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > STALE_MS) rmdirSync(lock); // a crashed holder; the next attempt takes over
-      } catch {
-        // Released in the meantime.
-      }
-      return false;
-    }
-  };
-  const release = (): void => {
-    try {
-      rmdirSync(lock);
-    } catch {
-      // Already gone.
-    }
-  };
-  const sleepSync = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const busy = (): Error => new Error(`mcp auth store: ${file} is locked by another process`);
   const current = (): string | undefined => readEncryptedFile(file, key);
 
   return {
     withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
-      let n = 0;
-      while (!tryLock()) if (++n >= 50) throw new Error(`mcp auth store: ${file} is locked by another process`);
-      else sleepSync(20);
+      const deadline = Date.now() + LOCK_WAIT_MS;
+      let token: string | undefined;
+      for (let retry = 0; !(token = tryAcquireLock(lock)); retry++) {
+        if (Date.now() > deadline) throw busy();
+        sleepSync(backoff(retry));
+      }
       try {
         const { result, next } = fn(current());
         if (next !== undefined) writeEncryptedFile(file, key, next);
         return result;
       } finally {
-        release();
+        releaseLock(lock, token);
       }
     },
     async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>, options?: { signal?: AbortSignal }): Promise<T> {
-      const deadline = Date.now() + STALE_MS;
-      for (let retry = 0; ; retry++) {
+      const deadline = Date.now() + LOCK_WAIT_MS;
+      let token: string | undefined;
+      for (let retry = 0; !(token = tryAcquireLock(lock)); retry++) {
         options?.signal?.throwIfAborted();
-        if (tryLock()) break;
-        if (Date.now() > deadline) throw new Error(`mcp auth store: ${file} is locked by another process`);
-        await new Promise((r) => setTimeout(r, Math.min(10 * 2 ** retry, 1000) * (1 + Math.random())));
+        if (Date.now() > deadline) throw busy();
+        await new Promise((r) => setTimeout(r, backoff(retry)));
       }
       try {
         const { result, next } = await fn(current());
@@ -68,11 +107,13 @@ export function createEncryptedAuthStorageBackend({ file, key: keyArg }: { file:
         if (next !== undefined) writeEncryptedFile(file, key, next);
         return result;
       } finally {
-        release();
+        releaseLock(lock, token);
       }
     },
   };
 }
+
+type Outcome = "migrated" | "kept-skipped" | "gone";
 
 /**
  * Chooses the MCP token store. Plain mode returns none (Pi keeps `mcp-auth.json`). Encrypted mode migrates a plain
@@ -95,66 +136,93 @@ export async function setupMcpAuth(
   const backend = createEncryptedAuthStorageBackend({ file: encFile, key });
   try {
     readEncryptedFile(encFile, key); // read-only check, no lock, so a read-only directory still starts
-  } catch {
+  } catch (e) {
     key.fill(0);
-    throw new Error(`mcp-auth.enc.json cannot be decrypted with the current key (wrong key or corrupt file). Delete ${encFile} to start over; you will need to sign in to MCP servers again.`);
-  }
-  key.fill(0); // the backend holds its own copy
-  const result = { credentials: new Store(backend, agentDir) };
-  if (!existsSync(plainFile)) return result;
-
-  const keepPlain = (why: string): typeof result => {
-    try {
-      chmodSync(plainFile, 0o600);
-    } catch {
-      // Best effort; the warning below still names the path.
+    if (e instanceof Error && /cannot decrypt/.test(e.message)) {
+      throw new Error(`mcp-auth.enc.json cannot be decrypted with the current key (wrong key or corrupt file). Delete ${encFile} to start over; you will need to sign in to MCP servers again.`, { cause: e });
     }
-    log(`[pista-host] mcp auth: WARNING plaintext MCP tokens remain at ${plainFile} (${why}); the file was kept with mode 0600`);
-    return result;
-  };
-  let incoming: unknown;
-  try {
-    incoming = JSON.parse(readFileSync(plainFile, "utf-8"));
-  } catch {
-    return keepPlain("it could not be parsed");
+    throw new Error(`mcp-auth.enc.json cannot be read: ${e instanceof Error ? e.message : "unknown error"}`, { cause: e });
   }
-  if (typeof incoming !== "object" || incoming === null || Array.isArray(incoming)) return keepPlain("it is not a server map");
-  const imported: string[] = [];
-  const skipped: string[] = [];
+  const result = { credentials: new Store(backend, agentDir) };
+
   try {
-    backend.withLock((cur) => {
-      const existing = cur === undefined ? {} : (JSON.parse(cur) as Record<string, unknown>);
-      for (const [name, entry] of Object.entries(incoming as Record<string, unknown>)) {
-        if (name in existing) skipped.push(name);
-        else {
-          existing[name] = entry;
-          imported.push(name);
+    const keepPlain = (why: string, chmod = true): typeof result => {
+      if (chmod) {
+        try {
+          chmodSync(plainFile, 0o600);
+        } catch {
+          // Best effort; the warning below still names the path.
         }
       }
-      return imported.length ? { result: undefined, next: JSON.stringify(existing, null, 2) } : { result: undefined };
-    });
-  } catch {
-    return keepPlain("it could not be merged into the encrypted file");
-  }
-  log(`[pista-host] mcp auth: migrated ${imported.length} MCP server sign-in(s) from mcp-auth.json into mcp-auth.enc.json${skipped.length ? `; kept existing encrypted entries for ${skipped.length}` : ""}`);
-  // The encrypted copy is fsynced by now. Zero the plaintext before unlinking; best effort on SSDs and copy-on-write filesystems.
-  try {
-    const size = statSync(plainFile).size;
-    const fd = openSync(plainFile, "r+");
+      log(`[pista-host] mcp auth: WARNING plaintext MCP tokens remain at ${plainFile} (${why})${chmod ? "; the file was kept with mode 0600" : ""}`);
+      return result;
+    };
+    let st;
     try {
-      writeSync(fd, Buffer.alloc(size));
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+      st = lstatSync(plainFile);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return result;
+      return keepPlain("it could not be inspected", false);
     }
-  } catch {
-    // Unlink below still runs.
+    if (st.isSymbolicLink() || !st.isFile()) return keepPlain("it is not a regular file", false);
+
+    const imported: string[] = [];
+    const skipped: string[] = [];
+    let outcome: Outcome | { keep: string };
+    try {
+      // One lock around read, merge, write and unlink, so another process cannot write between them.
+      outcome = backend.withLock((cur): LockResult<Outcome | { keep: string }> => {
+        let text: string;
+        try {
+          text = readFileSync(plainFile, "utf-8");
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") return { result: "gone" }; // another process migrated it
+          return { result: { keep: "it could not be read" } };
+        }
+        let incoming: unknown;
+        try {
+          incoming = JSON.parse(text);
+        } catch {
+          return { result: { keep: "it could not be parsed" } };
+        }
+        if (typeof incoming !== "object" || incoming === null || Array.isArray(incoming)) return { result: { keep: "it is not a server map" } };
+        const existing: Record<string, unknown> = cur === undefined ? {} : (JSON.parse(cur) as Record<string, unknown>);
+        const merged: Record<string, unknown> = Object.create(null);
+        for (const [name, entry] of Object.entries(existing)) merged[name] = entry;
+        for (const [name, entry] of Object.entries(incoming as Record<string, unknown>)) {
+          if (Object.hasOwn(merged, name)) skipped.push(name);
+          else {
+            merged[name] = entry;
+            imported.push(name);
+          }
+        }
+        if (imported.length) writeEncryptedFile(encFile, key, JSON.stringify(merged, null, 2));
+        if (skipped.length) return { result: "kept-skipped" };
+        // The encrypted copy is fsynced by now. Zero the plaintext before unlinking; best effort on SSDs and copy-on-write filesystems.
+        try {
+          const fd = openSync(plainFile, "r+");
+          try {
+            writeSync(fd, Buffer.alloc(statSync(plainFile).size));
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+        } catch {
+          // Unlink below still runs.
+        }
+        unlinkSync(plainFile);
+        fsyncDir(agentDir);
+        return { result: "migrated" };
+      });
+    } catch (e) {
+      return keepPlain(`migration failed: ${(e as NodeJS.ErrnoException).code ?? "could not be merged into the encrypted file"}`);
+    }
+    if (outcome === "gone") return result;
+    if (typeof outcome === "object") return keepPlain(outcome.keep);
+    if (imported.length) log(`[pista-host] mcp auth: migrated ${imported.length} MCP server sign-in(s) from mcp-auth.json into mcp-auth.enc.json`);
+    if (outcome === "kept-skipped") return keepPlain(`${skipped.length} server(s) already have encrypted sign-ins and were not overwritten`);
+    return result;
+  } finally {
+    key.fill(0); // the backend and the store hold their own copies
   }
-  try {
-    await rm(plainFile, { force: true });
-    fsyncDir(agentDir);
-  } catch (e) {
-    log(`[pista-host] mcp auth: could not remove mcp-auth.json after migration: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
-  }
-  return result;
 }

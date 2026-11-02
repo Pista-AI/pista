@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, utimesSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readEncryptedFile } from "./auth-store.ts";
-import { createEncryptedAuthStorageBackend, setupMcpAuth } from "./mcp-auth-store.ts";
+import { createEncryptedAuthStorageBackend, releaseLock, setupMcpAuth, tryAcquireLock } from "./mcp-auth-store.ts";
 import type { McpOAuthCredentialStoreCtor } from "./pi-mcp-oauth.ts";
 
 const key = Buffer.alloc(32, 9);
@@ -104,4 +104,59 @@ test("encrypted mode fails closed when the loader throws, and on a wrong key wit
   createEncryptedAuthStorageBackend({ file: join(d, "mcp-auth.enc.json"), key }).withLock(() => ({ result: 0, next: "{}" }));
   const wrong = Buffer.alloc(32, 2);
   await assert.rejects(setupMcpAuth({ kind: "key", key: wrong }, d, () => {}, fakeLoad), (e: Error) => /cannot be decrypted/.test(e.message) && !e.message.includes(Buffer.alloc(32, 2).toString("hex")));
+});
+
+test("release with the wrong owner token is a no-op; the right one removes the lock", () => {
+  const d = dir();
+  const lock = join(d, "l.lock");
+  const token = tryAcquireLock(lock)!;
+  assert.ok(token);
+  assert.equal(tryAcquireLock(lock), undefined);
+  assert.equal(releaseLock(lock, "not-the-owner"), false);
+  assert.ok(existsSync(lock));
+  assert.equal(releaseLock(lock, token), true);
+  assert.ok(!existsSync(lock));
+});
+
+test("a stale lock left by a dead process is recovered", () => {
+  const d = dir();
+  const file = join(d, "x.enc.json");
+  const lock = `${file}.lock`;
+  mkdirSync(lock);
+  writeFileSync(join(lock, "owner"), JSON.stringify({ token: "dead", pid: 999999 }));
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  const b = createEncryptedAuthStorageBackend({ file, key });
+  b.withLock(() => ({ result: 0, next: "{}" }));
+  assert.ok(!existsSync(lock));
+});
+
+test("prototype-like server names survive the merge", async () => {
+  const d = dir();
+  writeFileSync(join(d, "mcp-auth.json"), '{"__proto__":{"tokens":{"access_token":"p"}},"constructor":{"a":1}}');
+  await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, () => {}, fakeLoad);
+  const got = JSON.parse(readEncryptedFile(join(d, "mcp-auth.enc.json"), key)!);
+  assert.deepEqual(Object.keys(got).sort(), ["__proto__", "constructor"]);
+  assert.ok(!existsSync(join(d, "mcp-auth.json")));
+});
+
+test("skipped entries keep the plain file at 0600 with a warning", async () => {
+  const d = dir();
+  createEncryptedAuthStorageBackend({ file: join(d, "mcp-auth.enc.json"), key }).withLock(() => ({ result: 0, next: '{"s":{"enc":1}}' }));
+  writeFileSync(join(d, "mcp-auth.json"), '{"s":{"plain":1},"t":{"plain":2}}');
+  const { out, log } = lines();
+  await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, log, fakeLoad);
+  assert.ok(existsSync(join(d, "mcp-auth.json")));
+  assert.deepEqual(JSON.parse(readEncryptedFile(join(d, "mcp-auth.enc.json"), key)!), { s: { enc: 1 }, t: { plain: 2 } });
+  assert.equal(out.filter((l) => l.includes("WARNING")).length, 1);
+});
+
+test("a symlinked plain file is kept untouched", async () => {
+  const d = dir();
+  writeFileSync(join(d, "real"), '{"s":{"a":1}}');
+  symlinkSync(join(d, "real"), join(d, "mcp-auth.json"));
+  const { out, log } = lines();
+  await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, log, fakeLoad);
+  assert.equal(readFileSync(join(d, "real"), "utf-8"), '{"s":{"a":1}}');
+  assert.equal(out.filter((l) => l.includes("WARNING")).length, 1);
 });
