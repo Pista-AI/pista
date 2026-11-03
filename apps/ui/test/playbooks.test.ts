@@ -13,7 +13,23 @@ test("describes steps as plain text lines", () => {
   assert.deepEqual(lines, ["Open /billing?x=1", "Sign in with saved login", "Click link 'Download invoice'", "Wait for 'Invoices'", "Download (PDF)"]);
 });
 
-test("renders optional row/period selectors and keeps markup as text", () => {
-  const step = { kind: "click", target: { name: "<b>x</b>" }, row: { text: "a" }, period: "month" } as never;
-  assert.deepEqual(describeSteps([step]), ["Pick the invoice's month", "Pick the row matching the invoice date", "Click '<b>x</b>'"]);
+test("shows the row selector of a click step from its target", () => {
+  const lines = describeSteps([
+    { kind: "click", target: { role: "link", name: "<b>x</b>", row: { match: ["date"] } } },
+  ]);
+  assert.deepEqual(lines, ["Pick the row matching the invoice date", "Click link '<b>x</b>'"]);
+});
+
+test("shows the month selector of a click step from its target", () => {
+  const lines = describeSteps([
+    { kind: "click", target: { role: "tab", name: "March", period: true } },
+  ]);
+  assert.deepEqual(lines, ["Pick the invoice's month", "Click 'March'"]);
+});
+
+test("shows the row selector of a download step from its target", () => {
+  const lines = describeSteps([
+    { kind: "download", target: { role: "link", row: { match: ["date", "amount"] } }, fileType: "pdf" },
+  ]);
+  assert.deepEqual(lines, ["Pick the row matching the invoice date", "Download (PDF)"]);
 });

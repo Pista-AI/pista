@@ -35,10 +35,10 @@ export function describeStep(step: PlaybookStep): string {
 
 /** Lines for the optional row/period selectors that may accompany a step; they come before the step itself. */
 function describeExtras(step: PlaybookStep): string[] {
-  const s = step as { row?: unknown; period?: unknown };
+  const t = "target" in step ? step.target : undefined;
   const out: string[] = [];
-  if (s.period) out.push("Pick the invoice's month");
-  if (s.row) out.push("Pick the row matching the invoice date");
+  if (t?.period) out.push("Pick the invoice's month");
+  if (t?.row) out.push("Pick the row matching the invoice date");
   return out;
 }
 
