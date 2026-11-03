@@ -11,7 +11,7 @@ import type { ConfigStore } from "./config.ts";
 import { contextPruneExtension } from "./context-prune.ts";
 import { browsingTurnsExtension } from "./browsing-turns.ts";
 import { manifestMergeExtension } from "./manifest.ts";
-import { approvalExtension, browserExtension, loopGuardExtension, policyGateExtension, type ThreadRef } from "./extensions.ts";
+import { approvalExtension, browserExtension, loopGuardExtension, policyGateExtension, toolLimitExtension, type ThreadRef, type ToolLimitGate } from "./extensions.ts";
 import type { Hub } from "./hub.ts";
 import type { McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 import type { RecordDecision } from "./decisions.ts";
@@ -70,6 +70,8 @@ export interface ExtensionDeps {
   harness?: HarnessContext;
   /** The thread's project folder. */
   cwd?: string;
+  /** Lets a top-level thread ask before stopping at its tool-call limit; absent for sub-agents. */
+  toolLimit?: ToolLimitGate;
   /** Encrypted MCP token store; absent in plain mode, where Pi keeps mcp-auth.json. */
   mcpCredentials?: McpOAuthCredentialStoreLike;
 }
@@ -133,6 +135,8 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
     watch(approvalExtension(hub, store, ref, deps.alwaysAllowed, invoiceWriteGate(kind, deps.cwd), invoiceReadGate(kind, deps.cwd)), "approval"),
     // Last, so it sees the input as every other extension left it and nothing runs after its block.
     ...(store.toolRules ? [policyGateExtension(store.toolRules, tools ? (name, input, denial, id) => tools.decision(id, name, input, "deny", { source: "policy", rule: denial.rule }) : undefined)] : []),
+    // After the approval and policy gates, so a call they refuse never shows a continue card first.
+    ...(deps.toolLimit && !kind.hasParent ? [toolLimitExtension(hub, ref, deps.toolLimit)] : []),
     // After every gate, so it only sees calls that were allowed.
     ...(tools ? [auditToolsExtension(tools)] : []),
   ];

@@ -62,6 +62,8 @@ export interface Approval {
   reason: string;
   /** Set when the host asks about one exact action (a held consequential browser action): shown as the card title, answered once, never "Always allow". */
   action?: string;
+  /** Set when the run reached its tool-call limit: the card asks whether to allow `more` further calls. */
+  toolLimit?: { used: number; more: number };
 }
 
 export interface Toast {

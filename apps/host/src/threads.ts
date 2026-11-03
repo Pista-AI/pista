@@ -26,7 +26,7 @@ import { AgentRoles } from "./role-files.ts";
 import { CLIENT_DIR, type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import { DecisionLog } from "./decisions.ts";
 import { Children, extensionsFor } from "./children.ts";
-import { systemPrompt, type ThreadRef } from "./extensions.ts";
+import { systemPrompt, type ThreadRef, type ToolLimitGate } from "./extensions.ts";
 import "./memory.ts";
 import { type CheckOutcome, GoalRunner, type GoalJudge, leadingText, runUsage, transcriptTail } from "./goal-runner.ts";
 import { CHECK_TIMEOUT_MS, judgeGoal, resolveJudgeModel, type SettleKind } from "./goal.ts";
@@ -56,6 +56,8 @@ interface RunGuard {
   lastError: string;
   streak: number;
   toolCalls: number;
+  /** Calls the user allowed past `maxToolCalls` in this run (each "Continue" adds one budget). */
+  extra: number;
   stopped: boolean;
 }
 
@@ -67,6 +69,8 @@ export interface LiveThread {
   /** Tool audit; absent when the policy has no `audit` block. */
   toolAudit?: ToolAudit;
   guard: RunGuard;
+  /** Asks before the tool-call limit stops a top-level thread; absent for sub-agents, which always stop. */
+  toolLimit?: ToolLimitGate;
   /** Tool calls one run may make before the guard stops it: the role's `maxToolCalls` for a sub-agent, `HostConfig.maxToolCalls` for a top-level thread, else 60. */
   maxToolCalls: number;
   /** "auto" decides per user message; otherwise the pinned level. */
@@ -318,6 +322,7 @@ export class ThreadManager {
     };
     const harnessPrompt = kind.harness?.prompt?.(harnessHost);
     const topTools = threadTools(kind, harnessHost);
+    const toolLimit = kind.hasParent ? undefined : this.toolLimitGate(() => thread);
     const session = await buildSession({
       cwd,
       projectTrusted: trust.trusted,
@@ -343,6 +348,7 @@ export class ThreadManager {
         record: (entry) => void decisions.record(entry),
         alwaysAllowed,
         cwd: sessionManager.getCwd(),
+        ...(toolLimit ? { toolLimit } : {}),
         ...(this.mcpCredentials ? { mcpCredentials: this.mcpCredentials } : {}),
         harness: harnessHost,
         roles,
@@ -375,7 +381,8 @@ export class ThreadManager {
     const now = Date.now();
     const firstUser = session.messages.find((m) => m.role === "user") as Extract<ChatMessage, { role: "user" }> | undefined;
     thread = {
-      guard: { lastError: "", streak: 0, toolCalls: 0, stopped: false },
+      ...(toolLimit ? { toolLimit } : {}),
+      guard: { lastError: "", streak: 0, toolCalls: 0, extra: 0, stopped: false },
       maxToolCalls: (role ? roleOf(role, roles).maxToolCalls : validToolCallLimit(defaults.maxToolCalls)) ?? DEFAULT_MAX_TOOL_CALLS,
       thinkingMode: readCustomEntry<{ mode?: ThinkingMode }>(sessionManager, ENTRY.thinkingMode)?.mode ?? (role ? roleOf(role, roles).thinking : undefined) ?? defaults.defaultThinkingMode ?? "auto",
       lastTurnThought: false,
@@ -563,17 +570,47 @@ export class ThreadManager {
     const reason =
       guard.streak >= MAX_SAME_ERROR_STREAK
         ? `the agent called ${event.toolName} ${guard.streak} times in a row with the same error`
-        : guard.toolCalls >= thread.maxToolCalls
-          ? `the run reached ${thread.maxToolCalls} tool calls`
+        : guard.toolCalls >= thread.maxToolCalls + guard.extra
+          ? `the run reached ${thread.maxToolCalls + guard.extra} tool calls`
           : undefined;
     if (!reason) return;
-    guard.stopped = true;
+    // At the call limit with a window attached, the tool-limit extension holds the next call on a card instead of stopping here.
+    if (guard.streak < MAX_SAME_ERROR_STREAK && thread.toolLimit?.reached()) return;
+    this.stopRun(thread, reason);
+  }
+
+  private stopRun(thread: LiveThread, reason: string): void {
+    if (thread.guard.stopped) return;
+    thread.guard.stopped = true;
     void thread.session.abort();
     this.hub.emit({
       type: "toast",
       level: "warn",
       message: `Stopped "${thread.summary.title}": ${reason}. Smaller models get stuck like this; try a larger model or rephrase.`,
     });
+  }
+
+  /** The tool-limit pause for one top-level thread. Only with a window attached: headless runs (evals) keep stopping at the limit. */
+  toolLimitGate(get: () => LiveThread | undefined): ToolLimitGate {
+    const gone = new AbortController();
+    return {
+      signal: gone.signal,
+      close: () => gone.abort(),
+      reached: () => {
+        const t = get();
+        return Boolean(t && this.hub.hasClients && !t.guard.stopped && t.guard.toolCalls >= t.maxToolCalls + t.guard.extra);
+      },
+      used: () => get()?.guard.toolCalls ?? 0,
+      more: () => get()?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
+      extend: () => {
+        const t = get();
+        if (t) t.guard.extra += t.maxToolCalls;
+      },
+      stop: () => {
+        const t = get();
+        if (t) this.stopRun(t, `the run reached ${t.maxToolCalls + t.guard.extra} tool calls`);
+      },
+    };
   }
 
   private touch(thread: LiveThread, patch: Partial<ThreadSummary>): void {
@@ -645,7 +682,7 @@ export class ThreadManager {
     if (!model) throw new Error("No model is available. Sign in to a provider in Settings → Providers.");
     if (!session.isStreaming) {
       // A new user message starts a fresh run; steering messages keep the current counters.
-      thread.guard = { lastError: "", streak: 0, toolCalls: 0, stopped: false };
+      thread.guard = { lastError: "", streak: 0, toolCalls: 0, extra: 0, stopped: false };
       this.touch(thread, { status: "running" });
       await this.prepareModel(model.provider, model.id).catch((error: Error) => {
         this.touch(thread, { status: "idle" });
@@ -775,6 +812,7 @@ export class ThreadManager {
   /** Disposes a live session and records its end in the audit stream. */
   private endLive(thread: LiveThread, reason: string) {
     thread.unsubscribe();
+    thread.toolLimit?.close();
     thread.session.dispose();
     thread.toolAudit?.clear();
     this.audit.emit("pista.session.end", { "session.id": thread.summary.id, "project.id": thread.summary.projectId, "session.end.reason": reason, "session.message_count": thread.summary.messageCount });

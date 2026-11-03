@@ -603,6 +603,29 @@ function ToolStep({ call, result, run }: { call: ToolCallBlock; result?: ToolRes
 }
 
 function ApprovalCard({ approval, from }: { approval: Approval; from?: string }) {
+  return approval.toolLimit ? <ToolLimitCard approval={approval} /> : <ToolApprovalCard approval={approval} from={from} />;
+}
+
+function ToolLimitCard({ approval }: { approval: Approval }) {
+  const { used, more } = approval.toolLimit ?? { used: 0, more: 0 };
+  return (
+    <div className="approval">
+      <div className="a-title">
+        <ShieldQuestion size={16} /> This run has used {used} tool calls. Continue for {more} more?
+      </div>
+      <div className="a-actions">
+        <button className="pill-btn" onClick={() => actions.respondApproval(approval.approvalId, false)}>
+          Stop
+        </button>
+        <button className="pill-btn primary" onClick={() => actions.respondApproval(approval.approvalId, true)}>
+          <Check size={14} /> Continue
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ToolApprovalCard({ approval, from }: { approval: Approval; from?: string }) {
   const { verb, target } = describeTool(approval.toolName, (approval.args ?? {}) as Record<string, unknown>);
   /** Optional guidance sent with a decline; the agent then continues with it instead of stopping. */
   const [note, setNote] = useState("");
