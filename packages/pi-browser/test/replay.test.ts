@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserDriver } from "../src/driver.ts";
-import { expectationMet, pollUntil, resolveLocator, runReplay } from "../src/replay.ts";
+import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay } from "../src/replay.ts";
 
 const els = [
   { ref: "e1", role: "link", name: "Billing" },
@@ -189,4 +189,59 @@ test("playbook values reach page script only as escaped argument literals", asyn
   const fakeDocument = { querySelectorAll: (s: string) => ((seen = s), []) };
   new Function("document", "window", `return ${script}`)(fakeDocument, {});
   assert.equal(seen, selector);
+});
+
+test("row selection: one match is chosen, none and several are handoffs that name the invoice but not the rows", () => {
+  const links = [1, 2, 3, 4].map((n) => ({ ref: `e${n}`, role: "link", name: "Download invoice", href: `https://x.test/${n}.pdf` }));
+  const refs = resolveAll(links, { role: "link", name: "Download invoice", row: { match: ["date"] } });
+  assert.deepEqual(refs, ["e1", "e2", "e3", "e4"]);
+  const texts = ["3 Sep 2026 49,00 EUR", "2026-10-03 49,00 EUR", "3 nov. 2026 12,00 EUR", "3 nov. 2026 99,00 EUR"];
+  assert.deepEqual(pickRow(refs, texts, { date: "2026-10-04" }, ["date"]), { target: "e2" });
+  assert.deepEqual(pickRow(refs, texts, { date: "2026-11-03", amount: 99, currency: "EUR" }, ["date", "amount"]), { target: "e4" });
+  const many = pickRow(refs, texts, { date: "2026-11-03", amount: 99 }, ["date"]) as { reason: string; detail: string };
+  assert.equal(many.reason, "row-ambiguous");
+  assert.ok(many.detail.startsWith("2 rows") && many.detail.includes("2026-11-03") && !many.detail.includes("nov."));
+  const none = pickRow(refs, texts, { date: "2026-12-20", amount: 5.5, currency: "SEK" }, ["date", "amount"]) as { reason: string; detail: string };
+  assert.equal(none.reason, "row-not-found");
+  assert.ok(none.detail.includes("2026-12-20") && none.detail.includes("5.5 SEK"));
+});
+
+test("a row step without an invoice hands off as needs-invoice", async () => {
+  const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate: async () => { throw new Error("no page"); } } as unknown as BrowserDriver;
+  const dir = mkdtempSync(join(tmpdir(), "row-"));
+  const r = await runReplay({ startUrl: "https://x.test/list", steps: [{ kind: "download", target: { role: "link", name: "Download", row: { match: ["date"] } } }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf" });
+  assert.equal(!r.ok && r.reason, "needs-invoice");
+});
+
+test("pickRow hands off when a row is unreadable, identical to another, or holds many dates", () => {
+  const refs = ["e1", "e2"];
+  const inv = { date: "2026-10-04" };
+  assert.equal((pickRow(refs, ["2026-10-03", null], inv, ["date"]) as { reason: string }).reason, "row-ambiguous");
+  assert.equal((pickRow(refs, ["2026-10-03", "2026-10-03"], inv, ["date"]) as { reason: string }).reason, "row-ambiguous");
+  assert.equal((pickRow(refs, ["1 Jan 2026 1 Feb 2026 1 Mar 2026 2026-10-03", "x"], inv, ["date"]) as { reason: string }).reason, "row-ambiguous");
+  assert.deepEqual(pickRow(refs, ["2026-10-03", "2026-09-01"], inv, ["date"]), { target: "e1" });
+});
+
+test("a truncated snapshot hands off as row-ambiguous instead of choosing among a partial list", async () => {
+  const snap = { lines: [], count: 1, omitted: 40, scroll: { y: 0, height: 0, viewport: 0 }, elements: [{ ref: "e1", role: "link", name: "Download" }] };
+  const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate: async () => snap } as unknown as BrowserDriver;
+  const dir = mkdtempSync(join(tmpdir(), "row-"));
+  const r = await runReplay({ startUrl: "https://x.test/list", steps: [{ kind: "download", target: { role: "link", name: "Download", row: { match: ["date"] } } }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf", invoice: { date: "2026-10-04" } });
+  assert.equal(!r.ok && r.reason, "row-ambiguous");
+  assert.ok(!r.ok && r.detail.includes("2026-10-04"));
+});
+
+test("a period step needs the invoice and hands off when no month, or several, cover its date", async () => {
+  const tab = (ref: string, name: string) => ({ ref, role: "tab", name });
+  const run = async (names: string[], invoice?: { date: string }) => {
+    const snap = { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: [...names.map((n, i) => tab(`e${i + 1}`, n)), { ref: "e9", role: "tab", name: "Settings" }] };
+    const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate: async () => snap } as unknown as BrowserDriver;
+    const dir = mkdtempSync(join(tmpdir(), "period-"));
+    const step = { kind: "click" as const, target: { role: "tab", period: true } };
+    const r = await runReplay({ startUrl: "https://x.test/list", steps: [step, { kind: "download", url: "https://x.test/a.pdf" }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf", ...(invoice ? { invoice } : {}) });
+    return r.ok ? "ok" : r.reason;
+  };
+  assert.equal(await run(["September 2026", "October 2026"]), "needs-invoice");
+  assert.equal(await run(["September 2026", "October 2026"], { date: "2026-12-04" }), "row-not-found");
+  assert.equal(await run(["October 2026", "Oct 2026"], { date: "2026-10-04" }), "row-ambiguous");
 });

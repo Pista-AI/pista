@@ -10,9 +10,10 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
+import { isPeriodLabel, matchPeriod, matchRows, parseDates } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
-export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string }
+export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string; row?: { match: ("date" | "amount")[] }; period?: boolean }
 export interface ReplayExpect { urlIncludes?: string; text?: string; element?: ReplayLocator }
 export type ReplayStep =
   | { kind: "navigate"; url: string; expect?: ReplayExpect }
@@ -21,7 +22,7 @@ export type ReplayStep =
   | { kind: "wait"; expect: ReplayExpect }
   | { kind: "download"; target?: ReplayLocator; url?: string; fileType?: string };
 
-export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "error";
+export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "row-not-found" | "row-ambiguous" | "needs-invoice" | "error";
 
 /**
  * Either the saved file, or a handoff at the first step that failed. `failedIndex` numbers steps from 1 like the stored playbook;
@@ -45,6 +46,8 @@ export interface ReplayOptions {
   downloadRoot: string;
   downloadPath: string;
   overwrite?: boolean;
+  /** The invoice the job wants (date as yyyy-mm-dd, amount and currency from the bank transaction): picks the row for a locator with `row`. */
+  invoice?: { date: string; amount?: number; currency?: string };
   /** Asked before each click, sign-in and download; false stops with "declined". */
   approve?: (step: ReplayStep, index: number) => Promise<boolean>;
   /** Asked about a held consequential click (see safety.ts), naming it exactly; without it the stop stands and replay hands off. */
@@ -72,8 +75,43 @@ class Handoff extends Error {
 
 const norm = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
-export type Resolution = { target: string } | { reason: "not-found" | "ambiguous"; detail: string };
+export type Resolution = { target: string } | { reason: "not-found" | "ambiguous" | "row-not-found" | "row-ambiguous"; detail: string };
 type Candidate = { ref: string; role: string; name: string; href?: string };
+
+const tiersOf = (l: ReplayLocator): ((e: Candidate) => boolean)[] => {
+  const tiers: ((e: Candidate) => boolean)[] = [];
+  if (l.role && l.name) tiers.push((e) => e.role === l.role && norm(e.name) === norm(l.name));
+  if (l.name) tiers.push((e) => norm(e.name) === norm(l.name));
+  if (l.text && norm(l.text)) tiers.push((e) => (!l.role || e.role === l.role) && norm(e.name).includes(norm(l.text)));
+  return tiers;
+};
+
+/** Every element of the first tier that has any hit, for the target and then each fallback: the repeated elements a row is chosen from. */
+export function resolveAll(elements: readonly Candidate[], target: ReplayLocator, fallbacks: readonly ReplayLocator[] = []): string[] {
+  for (const l of [target, ...fallbacks]) {
+    for (const tier of tiersOf(l)) {
+      const hits = elements.filter(tier);
+      if (hits.length) return hits.map((h) => h.ref);
+    }
+  }
+  return [];
+}
+
+const describeInvoice = (i: { date: string; amount?: number; currency?: string }) =>
+  `the invoice dated ${i.date.slice(0, 10)}${i.amount !== undefined ? `, amount ${i.amount}${i.currency ? ` ${i.currency.slice(0, 3)}` : ""}` : ""}`;
+
+/** Chooses one of `refs` by the text of its row. Exactly one match gives its ref; none or several is a handoff, never a guess. */
+export function pickRow(refs: readonly string[], rowTexts: readonly (string | null)[], invoice: NonNullable<ReplayOptions["invoice"]>, by: readonly ("date" | "amount")[]): Resolution {
+  const looking = describeInvoice(invoice);
+  const ambiguous = (why: string): Resolution => ({ reason: "row-ambiguous", detail: `${why}; looking for ${looking}.` });
+  if (rowTexts.length < refs.length || rowTexts.slice(0, refs.length).some((t) => t === null || t === undefined)) return ambiguous("A candidate's row could not be read");
+  if (new Set(rowTexts).size < refs.length) return ambiguous("Several candidates have identical rows");
+  if (rowTexts.some((t) => new Set(parseDates(t!).filter((d) => d.d).map((d) => d.raw)).size > 3)) return ambiguous("A row holds too many dates to be one invoice");
+  const m = matchRows(refs.map((_, i) => ({ index: i, text: rowTexts[i] ?? "" })), { date: invoice.date, ...(by.includes("amount") && invoice.amount !== undefined ? { amount: invoice.amount, currency: invoice.currency } : {}) });
+  if (m.kind === "one") return { target: refs[m.index]! };
+  if (m.kind === "none") return { reason: "row-not-found", detail: `No row of ${refs.length} matches ${looking}.` };
+  return { reason: "row-ambiguous", detail: `${m.candidates.length} rows match ${looking}.` };
+}
 
 /**
  * Finds the element for `target`, then each fallback in order. Per locator: exact role + name, then exact name, then name containing
@@ -83,11 +121,7 @@ type Candidate = { ref: string; role: string; name: string; href?: string };
  */
 export function resolveLocator(elements: readonly Candidate[], target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], selectors: ReadonlyMap<string, number> = new Map()): Resolution {
   for (const l of [target, ...fallbacks]) {
-    const tiers: ((e: Candidate) => boolean)[] = [];
-    if (l.role && l.name) tiers.push((e) => e.role === l.role && norm(e.name) === norm(l.name));
-    if (l.name) tiers.push((e) => norm(e.name) === norm(l.name));
-    if (l.text && norm(l.text)) tiers.push((e) => (!l.role || e.role === l.role) && norm(e.name).includes(norm(l.text)));
-    for (const tier of tiers) {
+    for (const tier of tiersOf(l)) {
       const hits = elements.filter(tier);
       if (!hits.length) continue;
       const first = hits[0]!;
@@ -159,7 +193,25 @@ const countMatches = (selector: string): number => {
 };
 
 /** Snapshots the page and resolves the locator to a ref (or a selector the page has). */
-async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = []): Promise<Resolution> {
+async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], invoice?: ReplayOptions["invoice"]): Promise<Resolution> {
+  if (target.period && target.role) {
+    if (!invoice) throw new Handoff("needs-invoice", "This step picks a period (month) by the invoice, and the job gave no invoice date.");
+    const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
+    if (snap.omitted > 0) return { reason: "row-ambiguous", detail: `The page lists more controls than replay reads, so the period cannot be chosen; looking for ${describeInvoice(invoice)}.` };
+    const labels = snap.elements.filter((e) => e.role === target.role && isPeriodLabel(e.name));
+    const m = matchPeriod(labels.map((e, index) => ({ index, text: e.name })), invoice);
+    if (m.kind === "one") return { target: labels[m.index]!.ref };
+    return m.kind === "none" ? { reason: "row-not-found", detail: `No ${target.role} of ${labels.length} period labels covers ${describeInvoice(invoice)}.` } : { reason: "row-ambiguous", detail: `${m.candidates.length} period labels cover ${describeInvoice(invoice)}.` };
+  }
+  if (target.row) {
+    if (!invoice) throw new Handoff("needs-invoice", "This step picks a row by the invoice, and the job gave no invoice date.");
+    const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
+    if (snap.omitted > 0) return { reason: "row-ambiguous", detail: `The page lists more controls than replay reads, so the rows cannot be told apart; looking for ${describeInvoice(invoice)}.` };
+    const refs = resolveAll(snap.elements, target, fallbacks);
+    if (!refs.length) return { reason: "not-found", detail: `nothing on the page matches ${describeLocator(target)}` };
+    const texts = (await d.evaluate(scripts.rowTexts(refs))) as (string | null)[];
+    return pickRow(refs, texts, invoice, target.row.match);
+  }
   const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
   // Link addresses by ref, from the refs this snapshot just set, so identical links can be told apart.
   const hrefs = (await d.evaluate("Object.fromEntries([...(window.__pistaRefs ?? new Map())].map(([r, w]) => [r, w.deref()?.closest('a[href]')?.href ?? '']))").catch(() => ({}))) as Record<string, string>;
@@ -228,7 +280,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         break;
       }
       case "click": {
-        const r = await locate(d, step.target, step.fallbacks);
+        const r = await locate(d, step.target, step.fallbacks, o.invoice);
         if (!("target" in r)) throw new Handoff(r.reason, r.detail);
         await click(r.target, "click");
         await stillOnSite();
@@ -256,7 +308,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         if (step.url) {
           source = { url: new URL(step.url, (await d.state()).url || undefined).href };
         } else if (step.target) {
-          const r = await locate(d, step.target);
+          const r = await locate(d, step.target, [], o.invoice);
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");

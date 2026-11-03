@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ReplayStep } from "@pista/pi-browser";
-import type { Playbook } from "@pista/protocol";
+import type { Playbook, PlaybookStep } from "@pista/protocol";
 import { FAIL_THRESHOLD, deletePlaybook, getPlaybook, listPlaybooks, recordFailure, recordSuccess, sanitizeUrl, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 // Stored steps must stay replayable: the runner in pi-browser types them structurally (checked by pnpm typecheck).
@@ -121,4 +121,21 @@ describe("store", () => {
     assert.equal(ok?.successCount, 1);
     assert.ok(ok?.lastSucceeded);
   });
+});
+
+describe("locator row", () => {
+  const withRow = (row: unknown) => validatePlaybook(base({ steps: [{ kind: "click", target: { role: "link", name: "Download", row } }] }), "example.com").steps[0] as Extract<PlaybookStep, { kind: "click" }>;
+  it("keeps date and amount once, drops unknown values, and needs date", () => {
+    assert.deepEqual(withRow({ match: ["date", "amount", "date", "text", 3] }).target.row, { match: ["amount", "date"] });
+    assert.deepEqual(withRow({ match: ["date"] }).target.row, { match: ["date"] });
+    assert.equal(withRow({ match: ["amount"] }).target.row, undefined);
+    assert.equal(withRow({ match: "date" }).target.row, undefined);
+    assert.equal(withRow("date").target.row, undefined);
+  });
+});
+
+it("expect.element locators lose row and period", async () => {
+  const { validatePlaybook } = await import("./playbooks.ts");
+  const pb = validatePlaybook({ startUrl: "https://x.test/", steps: [{ kind: "click", target: { role: "link", name: "A" }, expect: { element: { role: "link", name: "B", row: { match: ["date"] }, period: true } } }, { kind: "download", url: "https://x.test/a.pdf" }] }, "x.test");
+  assert.deepEqual((pb.steps[0] as { expect: { element: object } }).expect.element, { role: "link", name: "B" });
 });
