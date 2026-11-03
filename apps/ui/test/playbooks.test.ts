@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeSteps } from "../src/focused/playbooks.ts";
+import { describeSteps } from "../src/lib/playbooks.ts";
 
 test("describes steps as plain text lines", () => {
   const lines = describeSteps([

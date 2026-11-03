@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Playbook, PlaybookMeta } from "@pista/protocol";
 import { host } from "../lib/host.ts";
-import { describeSteps } from "../focused/playbooks.ts";
+import { describeSteps } from "../lib/playbooks.ts";
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
