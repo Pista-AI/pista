@@ -97,11 +97,15 @@ test("a password field in a document no script ran in is not reloaded", async ()
   assert.equal(f.log.reloads, 0);
 });
 
-test("handing the browser to the user reloads a document a script ran in", async () => {
+test("handing the browser over reloads a script-touched document only when it has a sign-in", async () => {
   const f = fake({ url: "https://spa.test/", documentId: "d1", secret: false });
   await f.run("browser_eval", { script: "1" });
+  await f.run("browser_show_user"); // no password field, no saved login: form state is kept
+  assert.equal(f.log.reloads, 0);
+  f.doc.secret = true;
   assert.match(JSON.parse((await f.run("browser_show_user")).content[0]!.text!).note, /reloaded first/);
   assert.equal(f.log.reloads, 1);
+  f.doc.secret = false;
   f.doc.documentId = "d2"; // the reloaded document is clean
   await f.run("browser_show_user");
   assert.equal(f.log.reloads, 1);
@@ -162,4 +166,16 @@ test("the chrome driver refuses to navigate to browser-internal pages", async ()
   const { driver, calls } = chromeWith(() => ({ frame: { id: "F1", loaderId: "L", url: "about:blank" } }));
   await assert.rejects(driver.navigate("chrome://settings"), /off limits/);
   assert.ok(!calls.some((c) => c.method === "Page.navigate"));
+});
+
+test("browser_fill runs under the gate: a sign-in form appearing in a script-touched document reloads it", async () => {
+  const f = fake({ url: "https://spa.test/", documentId: "d1", secret: false });
+  assert.ok(f.tools.has("browser_fill"));
+  await f.run("browser_eval", { script: "1" });
+  f.doc.secret = true;
+  const out = await f.run("browser_fill", { fields: [] }).catch((e) => e);
+  assert.equal(f.log.reloads, 1);
+  assert.match(JSON.stringify(out), /reloaded because a sign-in form appeared/);
+  f.doc.url = "chrome://settings/";
+  await assert.rejects(f.run("browser_fill", { fields: [] }), /off limits/);
 });

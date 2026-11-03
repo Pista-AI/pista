@@ -48,7 +48,7 @@ const originOf = (url: string) => {
  * model reads. One gate per driver, kept for the life of the driver:
  * - sites with a saved login (the browser's password manager, the vault) never get a script;
  * - an origin where a password field was seen never gets one again;
- * - a document a script ran in is reloaded, planted code gone, when a password field appears in it later, and before the user is handed the browser.
+ * - a document a script ran in is reloaded, planted code gone, when a password field appears in it later, and before the user is handed the browser if it has a password field or is a saved-login site.
  */
 export class EvalGate {
   private blocked = new Set<string>();
@@ -123,8 +123,18 @@ export class EvalGate {
     const p = await this.probe(d);
     if (p.secret) this.blocked.add(originOf(p.url));
     if (!this.tainted.has(p.documentId)) return undefined;
+    // A script-free-looking page keeps its form state: only a page that has, or is on a site with, a sign-in is reloaded.
+    let login = p.secret;
+    if (!login) {
+      try {
+        login = (await this.savedSites(d)).has(siteOf(p.url));
+      } catch {
+        login = true; // unknown counts as saved
+      }
+    }
+    if (!login) return undefined;
     await d.reload();
-    return "The page was reloaded first, because a script had run in it.";
+    return "The page was reloaded first, because a script had run in it and it has a sign-in.";
   }
 }
 

@@ -79,9 +79,18 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     const target = await gateTarget();
     if (!opts.leaving) await gate.beforeAction(target);
     await opts.before?.(gate, target);
-    const out = await run(await driver());
-    const note = await gate.afterAction(target);
-    return note ? respond(await (await driver()).state(), { note }) : out;
+    // A tool that threw may have read the page too; its error text is dropped the same way as a result.
+    let out: R | undefined;
+    let failure: unknown;
+    try {
+      out = await run(await driver());
+    } catch (error) {
+      failure = error;
+    }
+    const note = await gate.afterAction(target).catch((error) => (failure ??= error, undefined));
+    if (note) return respond(await (await driver()).state(), { note });
+    if (failure) throw failure;
+    return out as R;
   };
   const page = (req: PageAction, signal?: AbortSignal) => gated(() => pageRun(req, signal));
   const pageRun = async (req: PageAction, signal?: AbortSignal) => {
@@ -97,9 +106,12 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     return respond(await d.state(), result);
   };
 
-  if (fillEnabled()) registerFillTool(pi, { driver, askApproval }, respond);
+  // browser_fill and browser_choose act on and read the page like the tools below, so they run under the gate too.
+  const gatedPi = Object.create(pi) as typeof pi;
+  gatedPi.registerTool = ((tool: any) => pi.registerTool({ ...tool, execute: (...args: unknown[]) => gated(() => tool.execute(...args)) })) as typeof pi.registerTool;
+  if (fillEnabled()) registerFillTool(gatedPi, { driver, askApproval }, respond);
   if (options.keepPageViews !== 0) registerContextPruning(pi, options.keepPageViews ?? 1, { staleDocumentTurns: options.staleDocumentTurns });
-  registerChooseTool(pi, driver, respond, askApproval); // only when PI_BROWSER_CHOOSE=1
+  registerChooseTool(gatedPi, driver, respond, askApproval); // only when PI_BROWSER_CHOOSE=1
 
   // One tool per action with obvious required arguments: small models handle
   // these far better than a single multi-action tool.
