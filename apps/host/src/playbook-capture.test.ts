@@ -231,4 +231,11 @@ describe("playbook_save with repeated rows and month selectors", () => {
     assert.match(savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t").message, /pass the invoice for the month you clicked/);
     assert.match(savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t", { date: "2026-12-01" }).message, /pass the invoice for the month/);
   });
+
+  it("asks for the invoice when a row-only path has none", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}list-months.html` });
+    t.add({ kind: "download", source: "ref", locator: link, contentType: "application/pdf", path: "a.pdf", rowContext: { texts, clickedIndex: 2 } });
+    assert.match(savePlaybookFromTrace(t.list(), [1, 2], undefined, "t").message, /pass the invoice it was for/);
+  });
 });

@@ -115,7 +115,7 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
         const period = !row && !!r.periodContext;
         if (row || period) byInvoice = true;
         // A path that depends on the row or month is not stable across invoices.
-        if (!row && !period) {
+        if (!row && !period && !byInvoice) {
           try {
             const path = new URL(r.urlAfter).pathname;
             if (before && path !== new URL(before).pathname && path !== "/") expect.urlIncludes = path;
@@ -129,7 +129,7 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
         const row = r.rowContext ? rowRule(r.rowContext, invoice) : undefined;
         if (row) byInvoice = true;
         if (byInvoice && !r.locator) throw new Error(`entry ${r.n}: this download address is specific to one invoice; download it by clicking`);
-        const asClick = row || (byInvoice && r.source === "ref");
+        const asClick = row || byInvoice;
         return { kind: "download", ...(!asClick && r.url ? { url: r.url } : { target: { ...r.locator, ...(row ? { row } : {}) } }), ...(fileType ? { fileType } : {}) };
       }
     }
