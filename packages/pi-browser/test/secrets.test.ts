@@ -158,7 +158,8 @@ test("a long result is cut", async () => {
 });
 
 test("browser_eval returns the scrubbed text", async () => {
-  const { page } = withPw("hunter2-secret");
+  // A card number field: scrubbed like a password, but not a sign-in form, so the gate lets the script run.
+  const page = fakePage([input("text", "hunter2-secret", { autocomplete: "cc-number" })]);
   const tools = new Map<string, { execute: (id: string, p: Record<string, unknown>) => Promise<{ content: { text?: string }[] }> }>();
   registerBrowserTools({ registerTool: (t: { name: string }) => tools.set(t.name, t as never), on: () => {} } as never, () => driver(page), { keepPageViews: 0 });
   const res = await tools.get("browser_eval")!.execute("t", { script: `"hunter2-secret"` });
