@@ -32,7 +32,7 @@ export function playbookCardText(e: PlaybookEvent): CardText {
         lines: [[e.step !== undefined ? `Step ${e.step}` : "", e.reason ?? ""].filter(Boolean).join(" · "), e.invoice ? `Looking for invoice ${e.invoice.date}` : ""].filter(Boolean),
       };
     case "updated":
-      return { tone: "ok", title: `Updated playbook for ${e.site}${e.step !== undefined ? ` (step ${e.step} changed)` : ""}`, lines: [] };
+      return { tone: "ok", title: `Updated playbook for ${e.site}${e.step !== undefined ? ` (step ${e.step} changed)` : ""}`, lines: e.before && e.after ? [`${e.before} → ${e.after}`] : [] };
     case "learned":
       return { tone: "learn", title: `Learned a playbook for ${e.site}`, lines: [`${e.stepCount !== undefined ? plural(e.stepCount, "step") + " saved" : "Saved"} · used next time`] };
     case "needs-attention":
