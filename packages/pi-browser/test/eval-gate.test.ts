@@ -151,7 +151,7 @@ test("the password check runs in an isolated world per frame document, so main-w
   let loaderId = "L1";
   const { driver, calls } = chromeWith(() => ({ frame: { id: "F1", loaderId, url: "https://a.test/", urlFragment: "#x" }, childFrames: [{ frame: { id: "F2", loaderId: "C1", url: "https://a.test/f" } }] }));
   const first = await driver.probe();
-  assert.deepEqual(first, { url: "https://a.test/#x", documentId: "F1:L1", secret: true, pin: undefined });
+  assert.deepEqual(first, { url: "https://a.test/#x", documentId: "F1:L1", secret: true });
   const created = () => calls.filter((c) => c.method === "Page.createIsolatedWorld");
   assert.deepEqual(created().map((c) => c.params.frameId), ["F1", "F2"]);
   const evals = calls.filter((c) => c.method === "Runtime.evaluate");
@@ -182,21 +182,35 @@ test("browser_fill runs under the gate: a sign-in form appearing in a script-tou
   await assert.rejects(f.run("browser_fill", { fields: [] }), /off limits/);
 });
 
-test("a redirect while the script starts: the script is pinned to the checked document and nothing is returned", async () => {
-  const f = fake({ url: "https://a.test/", documentId: "d1", secret: false, pin: 5 } as never, {
+test("a redirect while the script starts: the token is missing in the new document, nothing runs, the result is dropped", async () => {
+  const probes: { token?: string; clearToken?: boolean }[] = [];
+  const scripts: string[] = [];
+  const f = fake({ url: "https://a.test/", documentId: "d1", secret: false }, {
     savedLoginOrigins: async () => ["https://saved.test"],
-    evaluateIn: (async (_s: string, pin: number) => {
-      // the page redirected to a saved-login site right before the script started: its context is gone
-      Object.assign(f.doc, { url: "https://saved.test/", documentId: "d2", pin: 6 });
-      assert.equal(pin, 5);
-      throw new Error("The page navigated before the script could start, so nothing ran. Try again.");
+    probe: (async (opts: any = {}) => (probes.push(opts), { ...f.doc }) ) as never,
+    evaluate: (async (script: string) => {
+      scripts.push(script);
+      // the page redirected to a saved-login site before the script started: the token is not on that document
+      Object.assign(f.doc, { url: "https://saved.test/", documentId: "d2" });
+      return { ok: false, text: "", navigated: true };
     }) as never,
   });
   const out = await f.run("browser_eval", { script: "1" });
   assert.match(JSON.stringify(out), /navigated while the script was starting/);
-  assert.equal(f.log.evals, 0); // never ran unpinned
+  const token = probes.find((o) => o.token)!.token!;
+  assert.ok(token && scripts.length === 1 && scripts[0]!.includes(token) && scripts[0]!.includes("data-pista-eval")); // the main-world script checks for the token first
+  assert.ok(probes.some((o) => o.clearToken)); // and the token is removed again
   assert.equal(f.log.reloads, 1); // the new page is a saved-login site
   await assert.rejects(f.run("browser_eval", { script: "1" }), /saved logins/);
+});
+
+test("the isolated-world probe writes and clears the token; no Runtime.enable is ever sent", async () => {
+  const { driver, calls } = chromeWith(() => ({ frame: { id: "F1", loaderId: "L1", url: "https://a.test/" } }));
+  await driver.probe({ token: "tok-123" });
+  await driver.probe({ clearToken: true });
+  const exprs = calls.filter((c) => c.method === "Runtime.evaluate").map((c) => String(c.params.expression));
+  assert.ok(exprs[0]!.includes("tok-123"));
+  assert.ok(!calls.some((c) => c.method === "Runtime.enable"));
 });
 
 test("scripts only run on http(s) origins; blob: URLs belong to their creator's site", async () => {

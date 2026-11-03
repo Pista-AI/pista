@@ -1,5 +1,5 @@
 import type { CdpEvent, CdpTransport } from "../chrome/pipe.ts";
-import type { BrowserDriver, DocumentProbe, NativeInput, PageState } from "../driver.ts";
+import type { BrowserDriver, DocumentProbe, NativeInput, PageState, ProbeOptions } from "../driver.ts";
 import { scripts } from "../page-scripts.ts";
 
 /** The existing DevTools-over-WebSocket connection to one page target, as a transport. */
@@ -60,8 +60,6 @@ export class CdpDriver implements BrowserDriver {
   private loadError: string | undefined;
   private loadWaiters: (() => void)[] = [];
   /** One isolated world per frame, valid for one document (loaderId) of it. */
-  /** The page's own (main-world) script context per frame, from Runtime events; what `evaluateIn` pins a script to. */
-  private mainContexts = new Map<string, number>();
   private guardWorlds = new Map<string, { loaderId: string; contextId: number }>();
 
   constructor(private endpoint = "http://127.0.0.1:9222") {}
@@ -107,9 +105,7 @@ export class CdpDriver implements BrowserDriver {
     });
     this.conn = conn;
     this.guardWorlds.clear();
-    this.mainContexts.clear();
     await this.sendRaw("Page.enable");
-    await this.sendRaw("Runtime.enable"); // reports the existing contexts first, then every new one
     const { frameTree } = await this.sendRaw("Page.getFrameTree");
     this.mainFrameId = frameTree.frame.id;
     try {
@@ -126,12 +122,6 @@ export class CdpDriver implements BrowserDriver {
   protected async onAttachFailed(_conn: { transport: CdpTransport; sessionId?: string }): Promise<void> {}
 
   private onEvent(msg: { method: string; params?: any }) {
-    if (msg.method === "Runtime.executionContextCreated") {
-      const c = msg.params?.context;
-      if (c?.auxData?.isDefault && c.auxData.frameId) this.mainContexts.set(c.auxData.frameId, c.id);
-    } else if (msg.method === "Runtime.executionContextDestroyed") {
-      for (const [frame, id] of this.mainContexts) if (id === msg.params?.executionContextId) this.mainContexts.delete(frame);
-    } else if (msg.method === "Runtime.executionContextsCleared") this.mainContexts.clear();
     if (msg.params?.frameId !== this.mainFrameId) return;
     if (msg.method === "Page.frameStartedLoading") this.loading = true;
     if (msg.method === "Page.frameStoppedLoading") {
@@ -198,23 +188,11 @@ export class CdpDriver implements BrowserDriver {
     return result.value;
   }
 
-  async evaluateIn(script: string, pin: number): Promise<unknown> {
-    let reply: any;
-    try {
-      reply = await this.send("Runtime.evaluate", { expression: script, contextId: pin, awaitPromise: true, returnByValue: true });
-    } catch (error) {
-      if (/context/i.test((error as Error).message)) throw new Error("The page navigated before the script could start, so nothing ran. Try again.");
-      throw error;
-    }
-    if (reply.exceptionDetails) throw new Error(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text);
-    return reply.result.value;
-  }
-
   /**
    * Looks for password fields in every frame the page session can reach, in an isolated world: it has its own builtins, so
    * code the page planted or patched cannot change the answer. Fails closed: the top frame not answering throws.
    */
-  async probe(): Promise<DocumentProbe> {
+  async probe(opts: ProbeOptions = {}): Promise<DocumentProbe> {
     const { frameTree } = await this.send("Page.getFrameTree");
     const frames: { id: string; loaderId: string; url: string; urlFragment?: string }[] = [];
     const collect = (t: { frame: (typeof frames)[number]; childFrames?: any[] }) => (frames.push(t.frame), t.childFrames?.forEach(collect));
@@ -223,16 +201,16 @@ export class CdpDriver implements BrowserDriver {
     let secret = false;
     for (const frame of frames) {
       try {
-        if (await this.frameHasPassword(frame)) secret = true;
+        if (await this.frameHasPassword(frame, opts)) secret = true;
       } catch (error) {
         if (frame.id === frameTree.frame.id) throw error; // frames in other processes cannot be reached by page script either
       }
     }
     const top = frameTree.frame;
-    return { url: top.url + (top.urlFragment ?? ""), documentId: `${top.id}:${top.loaderId}`, secret, pin: this.mainContexts.get(top.id) };
+    return { url: top.url + (top.urlFragment ?? ""), documentId: `${top.id}:${top.loaderId}`, secret };
   }
 
-  private async frameHasPassword(frame: { id: string; loaderId: string }): Promise<boolean> {
+  private async frameHasPassword(frame: { id: string; loaderId: string }, opts: ProbeOptions): Promise<boolean> {
     for (let attempt = 0; ; attempt++) {
       try {
         let world = this.guardWorlds.get(frame.id);
@@ -240,7 +218,7 @@ export class CdpDriver implements BrowserDriver {
           const { executionContextId } = await this.send("Page.createIsolatedWorld", { frameId: frame.id, worldName: "pista-guard" });
           this.guardWorlds.set(frame.id, (world = { loaderId: frame.loaderId, contextId: executionContextId }));
         }
-        const { result, exceptionDetails } = await this.send("Runtime.evaluate", { expression: scripts.hasPassword(), contextId: world.contextId, returnByValue: true });
+        const { result, exceptionDetails } = await this.send("Runtime.evaluate", { expression: scripts.hasPassword(opts.token, opts.clearToken), contextId: world.contextId, returnByValue: true });
         if (exceptionDetails || typeof result?.value !== "boolean") throw new Error("The page could not be checked for password fields.");
         return result.value;
       } catch (error) {

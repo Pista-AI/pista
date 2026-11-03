@@ -1,4 +1,5 @@
-import type { BrowserDriver, DocumentProbe } from "./driver.ts";
+import { randomUUID } from "node:crypto";
+import type { BrowserDriver, DocumentProbe, ProbeOptions } from "./driver.ts";
 import { scripts } from "./page-scripts.ts";
 
 /** Pages of the browser itself. `chrome-error:` (a failed load) and `about:blank` are not among them. */
@@ -58,8 +59,8 @@ export class EvalGate {
 
   constructor(private now: () => number = Date.now) {}
 
-  private async probe(d: BrowserDriver): Promise<DocumentProbe> {
-    if (d.probe) return d.probe();
+  private async probe(d: BrowserDriver, opts?: ProbeOptions): Promise<DocumentProbe> {
+    if (d.probe) return d.probe(opts);
     // Main-world fallback for drivers that cannot make an isolated world (the embedded pane); page code could in principle tamper with it.
     const r = (await d.evaluate(scripts.hasPassword())) as unknown;
     const state = await d.state();
@@ -76,21 +77,27 @@ export class EvalGate {
   }
 
   /**
-   * Throws when a script may not run on the current page; otherwise marks the document as one a script runs in and returns it, with
-   * the handle the script must be pinned to (so a navigation after this check cannot make it run in another document).
+   * Throws when a script may not run on the current page; otherwise marks the document as one a script runs in and returns it, with a
+   * token written onto that document: the script only starts if it finds the token, so a navigation after this check cannot make it run
+   * in another document. Drivers without an isolated world get no token.
    */
-  async beforeEval(d: BrowserDriver): Promise<{ documentId: string; pin?: number }> {
-    const p = await this.probe(d);
-    const internal = internalPageReason(p.url);
-    if (internal) throw new Error(`${EVAL_REFUSED}: ${internal}`);
-    const origin = originOf(p.url);
-    if (!/^https?:\/\//.test(origin)) throw new Error(`${EVAL_REFUSED}: scripts only run on http(s) pages. ${OTHER_TOOLS}`);
-    if (p.secret) this.blocked.add(origin);
-    if (this.blocked.has(origin)) throw new Error(`${EVAL_REFUSED}: a sign-in form was seen on ${origin}, so scripts stay off there for the rest of this chat. ${OTHER_TOOLS}`);
-    if (await this.isSavedSite(d, p.url)) throw new Error(`browser_eval is disabled on sites with saved logins (${siteOf(p.url)}). ${OTHER_TOOLS}`);
-    if (d.evaluateIn && p.pin === undefined) throw new Error("The page is still loading, so nothing ran. Try again.");
-    this.tainted.add(p.documentId);
-    return { documentId: p.documentId, pin: p.pin };
+  async beforeEval(d: BrowserDriver): Promise<{ documentId: string; token?: string }> {
+    const token = d.probe ? randomUUID() : undefined;
+    try {
+      const p = await this.probe(d, { token });
+      const internal = internalPageReason(p.url);
+      if (internal) throw new Error(`${EVAL_REFUSED}: ${internal}`);
+      const origin = originOf(p.url);
+      if (!/^https?:\/\//.test(origin)) throw new Error(`${EVAL_REFUSED}: scripts only run on http(s) pages. ${OTHER_TOOLS}`);
+      if (p.secret) this.blocked.add(origin);
+      if (this.blocked.has(origin)) throw new Error(`${EVAL_REFUSED}: a sign-in form was seen on ${origin}, so scripts stay off there for the rest of this chat. ${OTHER_TOOLS}`);
+      if (await this.isSavedSite(d, p.url)) throw new Error(`browser_eval is disabled on sites with saved logins (${siteOf(p.url)}). ${OTHER_TOOLS}`);
+      this.tainted.add(p.documentId);
+      return { documentId: p.documentId, token };
+    } catch (error) {
+      if (token) await d.probe!({ clearToken: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   /** Whether `url` is on a site with a saved login; a list that cannot be read counts as yes. */
@@ -115,7 +122,7 @@ export class EvalGate {
    */
   async afterAction(d: BrowserDriver, evalDocument?: string): Promise<string | undefined> {
     if (!d.probe) return undefined;
-    const p = await this.probe(d);
+    const p = await this.probe(d, evalDocument ? { clearToken: true } : undefined);
     // The page changed while a script was starting (a redirect): the script was pinned to the old document and ran nowhere else,
     // but the new one is treated as one a script ran in. Whatever came back is dropped.
     if (evalDocument && p.documentId !== evalDocument) {

@@ -386,14 +386,12 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       description: "Run a JavaScript expression in the current page and return its value. Prefer browser_snapshot and browser_read; not for entering passwords or completing purchases.",
       parameters: Type.Object({ script: Type.String({ description: "JavaScript expression" }) }),
       execute: (_id, { script }) => {
-        let checked: { documentId: string; pin?: number } | undefined;
+        let checked: { documentId: string; token?: string } | undefined;
         return gated(
           async (d) => {
             d.setActivity?.("Running script");
-            // The script is pinned to the document that was checked, so a redirect after the check cannot run it elsewhere.
-            const raw = await rawDriver();
-            const pinned = raw.evaluateIn && checked?.pin !== undefined ? Object.assign(Object.create(d), { evaluate: async (s: string) => (await d.state(), raw.evaluateIn!(s, checked!.pin!)) }) : d;
-            const text = await evaluateScrubbed(pinned, script);
+            // The script starts only in the document that was checked (it looks for the gate's token first).
+            const text = await evaluateScrubbed(d, script, checked?.token);
             return respond(await d.state(), { text });
           },
           { before: async (gate, target) => void (checked = await gate.beforeEval(target)), evalDocument: () => checked?.documentId },

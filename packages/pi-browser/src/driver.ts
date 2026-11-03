@@ -26,6 +26,12 @@ export interface SavedLoginMeta {
   username?: string;
 }
 
+/** `token` is written onto the checked document (see pageHasPassword); `clearToken` removes it again. */
+export interface ProbeOptions {
+  token?: string;
+  clearToken?: boolean;
+}
+
 /** What the eval gate needs to know about the current document. */
 export interface DocumentProbe {
   /** Address of the top frame. */
@@ -34,8 +40,6 @@ export interface DocumentProbe {
   documentId: string;
   /** A password field is present in a frame the probe could reach. */
   secret: boolean;
-  /** Handle of this document's script context, for `evaluateIn`. Drivers that cannot pin leave it out. */
-  pin?: number;
 }
 
 export interface BrowserDriver {
@@ -62,9 +66,7 @@ export interface BrowserDriver {
   /** Resolves false when no browser is running (it is never launched just to show it). */
   bringToFront?(): Promise<boolean | void>;
   /** Optional: checks the current document for password fields where page code cannot tamper with the check (a CDP isolated world). Drivers without it get a main-world check. */
-  probe?(): Promise<DocumentProbe>;
-  /** Optional: like `evaluate`, but only in the document `pin` (from `probe`); rejects with a plain message when the page has navigated since. */
-  evaluateIn?(script: string, pin: number): Promise<unknown>;
+  probe?(opts?: ProbeOptions): Promise<DocumentProbe>;
   /** Optional: origins the owner has saved logins for outside the vault (the browser's own password manager). Reads origins only, never secrets. */
   savedLoginOrigins?(): Promise<string[]>;
   /** Optional: what the agent is doing, for drivers that show it to the user. */
