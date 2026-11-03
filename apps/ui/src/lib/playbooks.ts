@@ -1,8 +1,5 @@
 import { describeStep, type PlaybookStep } from "@pista/protocol";
 
-export { describeStep };
-
-
 /** Lines for the optional row/period selectors that may accompany a step; they come before the step itself. */
 function describeExtras(step: PlaybookStep): string[] {
   const t = "target" in step ? step.target : undefined;

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type ReplayReason, type ReplayResult, type RiskApprover } from "@pista/pi-browser";
 import { Type } from "typebox";
-import { describeStep, type HostEvent, type Playbook } from "@pista/protocol";
+import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
 import { getPlaybook, LABEL_MAX, recordFailure, recordSuccess, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
@@ -79,6 +79,17 @@ export function recordRun(site: string, r: ReplayResult, threadId: string, invoi
   }
   return events;
 }
+
+/**
+ * The step as the model sees it in a handoff. Unlike the shared `describeStep` (plain wording for people), this names exactly which
+ * element was meant: full addresses, origins, role + quoted name, and the markers for choices made from the invoice.
+ */
+const describeStep = (s: PlaybookStep | { kind: string; url?: string }): string => {
+  if ("target" in s && s.target) return `${s.kind} ${[s.target.role, s.target.name ? JSON.stringify(s.target.name) : s.target.text ? JSON.stringify(s.target.text) : "", s.target.row ? "(row chosen by the invoice)" : "", s.target.period ? "(month chosen by the invoice)" : ""].filter(Boolean).join(" ")}`;
+  if ("url" in s && s.url) return `${s.kind} ${s.url}`;
+  if ("origin" in s) return `${s.kind} ${s.origin}`;
+  return s.kind;
+};
 
 const OPEN = "<<<website-data";
 const CLOSE = "website-data>>>";
