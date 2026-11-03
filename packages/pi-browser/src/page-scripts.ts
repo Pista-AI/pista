@@ -765,7 +765,7 @@ function pageSecrets(op: string): string {
  * String, JSON, DOM prototypes or the marker cannot switch the scrub off. Values are read again at the end (the script may have set
  * one). They never leave the page. Fields the script creates itself are not covered.
  */
-async function pageEvalScrubbed(run: () => unknown, nonce: string): Promise<{ ok: boolean; text: string; nonce: string }> {
+async function pageEvalScrubbed(run: () => unknown): Promise<{ ok: boolean; text: string }> {
   const apply = Reflect.apply;
   const getter = (proto: object, key: string) => Object.getOwnPropertyDescriptor(proto, key)!.get!;
   const stringify = JSON.stringify;
@@ -859,7 +859,7 @@ async function pageEvalScrubbed(run: () => unknown, nonce: string): Promise<{ ok
     }
     text = out + (apply(slice, text, [from]) as string);
   }
-  return { ok, text, nonce };
+  return { ok, text };
 }
 
 function pageSyntheticKey(key: string): string {
@@ -1024,14 +1024,13 @@ export const scripts = {
   /** Screenshot mask for secret fields: "mask" adds it, "unmask" removes it. */
   secrets: (op: "mask" | "unmask") => call(pageSecrets, op),
   /**
-   * browser_eval: the model's `src` runs inside the scrubbing wrapper and the result is { ok, text, nonce } with secret field values
-   * redacted (see pageEvalScrubbed). "expression" form returns the value of `src`, as a bare expression (a promise is awaited);
-   * "statements" form is the fallback when that does not compile: `src` is a function body, and its value is whatever it `return`s.
-   * The wrapper is the only thing that can produce the per-call `nonce`; the caller must check it, so source that breaks out of the
-   * wrapper cannot return anything the caller accepts.
+   * browser_eval: the model's `src` runs inside the scrubbing wrapper and the result is { ok, text } with secret field values
+   * redacted (see pageEvalScrubbed). "expression" returns the value of `src` (a promise is awaited); "statements" treats `src` as a
+   * function body and returns what it `return`s. The caller must have checked that `src` compiles as such a body on its own (see
+   * secrets.ts), which is what keeps it from closing the wrapper early.
    */
-  evalScrubbed: (src: string, form: "expression" | "statements", nonce: string) =>
-    `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}, ${jsLiteral(nonce)}); })()`,
+  evalScrubbed: (src: string, form: "expression" | "statements") =>
+    `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}); })()`,
   focusedIsPassword: () => call(pageFocusedIsPassword),
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),

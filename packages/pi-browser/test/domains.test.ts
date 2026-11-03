@@ -58,7 +58,7 @@ function fakeDriver(landing: string) {
     state: async () => ({ url, title: "", loading: false }),
     back: async () => {},
     reload: async () => {},
-    evaluate: async (script: string) => ({ ok: true, text: "secret page text", nonce: script.match(/"([0-9a-f-]{36})"\)/)?.[1] }),
+    evaluate: async () => ({ ok: true, text: "secret page text" }),
     input: async () => true,
     screenshot: async () => ({ data: "", mimeType: "image/png" }),
   } as BrowserDriver;
@@ -114,7 +114,7 @@ test("an unreadable (empty) page URL fails closed after a bounded retry, and rec
 test("eval, input and screenshot refuse to act on a blocked page that was already open", async () => {
   const { driver, calls, setUrl } = fakeDriver("https://example.com/");
   let acted = 0;
-  const spy = { ...driver, evaluate: async (script: string) => (acted++, { ok: true, text: "x", nonce: script.match(/"([0-9a-f-]{36})"\)/)?.[1] }), input: async () => (acted++, true), screenshot: async () => (acted++, { data: "", mimeType: "image/png" }) } as BrowserDriver;
+  const spy = { ...driver, evaluate: async () => (acted++, { ok: true, text: "x" }), input: async () => (acted++, true), screenshot: async () => (acted++, { data: "", mimeType: "image/png" }) } as BrowserDriver;
   const t = tools(spy, allow);
   for (const [name, args] of [["browser_eval", { script: "1" }], ["browser_screenshot", {}]] as const) {
     setUrl("https://evil.com/");
