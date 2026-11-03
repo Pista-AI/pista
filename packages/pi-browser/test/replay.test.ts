@@ -74,4 +74,6 @@ test("a blocked start page hands off before anything is opened, and a declined s
   );
   assert.equal(!declined.ok && declined.reason, "declined");
   assert.equal(!declined.ok && declined.failedIndex, 1);
+  const aborted = await runReplay({ startUrl: "https://ok.test/", steps: [] }, { driver, downloadRoot: "/nonexistent", downloadPath: "a.pdf", signal: AbortSignal.abort() });
+  assert.equal(!aborted.ok && aborted.reason, "aborted");
 });

@@ -20,7 +20,7 @@ export type ReplayStep =
   | { kind: "wait"; expect: ReplayExpect }
   | { kind: "download"; target?: ReplayLocator; url?: string; fileType?: string };
 
-export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "sign-in-needed" | "error";
+export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "error";
 
 /**
  * Either the saved file, or a handoff at the first step that failed. `failedIndex` numbers steps from 1 like the stored playbook;
@@ -97,7 +97,7 @@ const describeLocator = (l: ReplayLocator) => [l.role, l.name ? JSON.stringify(l
 export async function pollUntil(check: () => Promise<boolean>, timeoutMs: number, pollMs: number, now: () => number, sleep: (ms: number) => Promise<void>, signal?: AbortSignal): Promise<boolean> {
   const start = now();
   for (;;) {
-    if (signal?.aborted) throw new Handoff("declined", "The run was stopped.");
+    if (signal?.aborted) throw new Handoff("aborted", "The run was stopped.");
     if (await check().catch(() => false)) return true;
     if (now() - start >= timeoutMs) return false;
     await sleep(pollMs);
@@ -146,10 +146,10 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
 
   const click = async (target: string, what: string) => {
     const r = await runPageAction(d, { action: "click", target }, riskApprove);
-    if (r.note) throw new Handoff(/^Stopped/.test(r.note) ? "declined" : "error", `${what}: ${r.note}`);
+    if (r.note) throw new Handoff(o.signal?.aborted ? "aborted" : /^Stopped/.test(r.note) ? "declined" : "error", `${what}: ${r.note}`);
   };
   const run = async (step: ReplayStep, index: number) => {
-    if (o.signal?.aborted) throw new Handoff("declined", "The run was stopped.");
+    if (o.signal?.aborted) throw new Handoff("aborted", "The run was stopped.");
     if (step.kind !== "navigate" && step.kind !== "wait" && o.approve && !(await o.approve(step, index))) throw new Handoff("declined", "The user declined this step.");
     switch (step.kind) {
       case "navigate": {
@@ -213,7 +213,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       await run(step, i);
     } catch (error) {
       o.onStep?.(i, "failed");
-      const reason: ReplayReason = error instanceof Handoff ? error.reason : error instanceof DomainBlockedError ? "blocked" : "error";
+      const reason: ReplayReason = error instanceof Handoff ? error.reason : o.signal?.aborted ? "aborted" : error instanceof DomainBlockedError ? "blocked" : "error";
       const detail = (error instanceof Error ? error.message : String(error)).slice(0, DETAIL_MAX);
       // A blocked page was reset to about:blank by the guard; reading the raw driver would only show that.
       const url = await d.state().then((s) => s.url, () => "");
