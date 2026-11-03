@@ -74,7 +74,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     const raw = await rawDriver();
     return raw.probe ? raw : await driver();
   };
-  const gated = async <R>(run: (d: BrowserDriver) => Promise<R>, opts: { leaving?: boolean; before?: (gate: ReturnType<typeof gateFor>, raw: BrowserDriver) => Promise<void> } = {}) => {
+  const gated = async <R>(run: (d: BrowserDriver) => Promise<R>, opts: { leaving?: boolean; before?: (gate: ReturnType<typeof gateFor>, raw: BrowserDriver) => Promise<void>; evalDocument?: () => string | undefined } = {}) => {
     const gate = gateFor(await rawDriver());
     const target = await gateTarget();
     if (!opts.leaving) await gate.beforeAction(target);
@@ -87,7 +87,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     } catch (error) {
       failure = error;
     }
-    const note = await gate.afterAction(target).catch((error) => (failure ??= error, undefined));
+    const note = await gate.afterAction(target, opts.evalDocument?.()).catch((error) => (failure ??= error, undefined));
     if (note) return respond(await (await driver()).state(), { note });
     if (failure) throw failure;
     return out as R;
@@ -385,15 +385,20 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: run script",
       description: "Run a JavaScript expression in the current page and return its value. Prefer browser_snapshot and browser_read; not for entering passwords or completing purchases.",
       parameters: Type.Object({ script: Type.String({ description: "JavaScript expression" }) }),
-      execute: (_id, { script }) =>
-        gated(
+      execute: (_id, { script }) => {
+        let checked: { documentId: string; pin?: number } | undefined;
+        return gated(
           async (d) => {
             d.setActivity?.("Running script");
-            const text = await evaluateScrubbed(d, script);
+            // The script is pinned to the document that was checked, so a redirect after the check cannot run it elsewhere.
+            const raw = await rawDriver();
+            const pinned = raw.evaluateIn && checked?.pin !== undefined ? Object.assign(Object.create(d), { evaluate: async (s: string) => (await d.state(), raw.evaluateIn!(s, checked!.pin!)) }) : d;
+            const text = await evaluateScrubbed(pinned, script);
             return respond(await d.state(), { text });
           },
-          { before: (gate, raw) => gate.beforeEval(raw) },
-        ),
+          { before: async (gate, target) => void (checked = await gate.beforeEval(target)), evalDocument: () => checked?.documentId },
+        );
+      },
     }),
   );
 }

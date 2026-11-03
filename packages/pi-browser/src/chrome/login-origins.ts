@@ -11,7 +11,7 @@ export interface LoginOriginsDeps {
   query?: (path: string, sql: string) => Promise<Record<string, unknown>[]>;
 }
 
-async function sqliteQuery(path: string, sql: string) {
+export async function sqliteQuery(path: string, sql: string) {
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(path, { readOnly: true });
   try {

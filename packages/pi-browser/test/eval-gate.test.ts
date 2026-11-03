@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { LOGIN_ORIGINS_SQL, readLoginOrigins } from "../src/chrome/login-origins.ts";
+import { LOGIN_ORIGINS_SQL, readLoginOrigins, sqliteQuery } from "../src/chrome/login-origins.ts";
 import type { CdpEvent, CdpTransport } from "../src/chrome/pipe.ts";
 import type { BrowserDriver, DocumentProbe } from "../src/driver.ts";
 import { ChromeDriver } from "../src/drivers/chrome.ts";
@@ -97,22 +97,24 @@ test("a password field in a document no script ran in is not reloaded", async ()
   assert.equal(f.log.reloads, 0);
 });
 
-test("handing the browser over reloads a script-touched document only when it has a sign-in", async () => {
-  const f = fake({ url: "https://spa.test/", documentId: "d1", secret: false });
+test("handing the browser over reloads any document a script ran in, and forgets the saved-login cache", async () => {
+  let reads = 0;
+  const f = fake({ url: "https://spa.test/", documentId: "d1", secret: false }, { savedLoginOrigins: async () => (reads++, []) });
+  await f.run("browser_show_user");
+  assert.equal(f.log.reloads, 0); // no script ran: nothing to undo
   await f.run("browser_eval", { script: "1" });
-  await f.run("browser_show_user"); // no password field, no saved login: form state is kept
-  assert.equal(f.log.reloads, 0);
-  f.doc.secret = true;
   assert.match(JSON.parse((await f.run("browser_show_user")).content[0]!.text!).note, /reloaded first/);
   assert.equal(f.log.reloads, 1);
-  f.doc.secret = false;
   f.doc.documentId = "d2"; // the reloaded document is clean
+  await f.run("browser_eval", { script: "1" });
+  assert.equal(reads, 2); // cache dropped on handoff
+  f.doc.documentId = "d3";
   await f.run("browser_show_user");
   assert.equal(f.log.reloads, 1);
 });
 
 test("browser-internal pages cannot be opened or used", async () => {
-  for (const url of ["chrome://settings", "chrome-extension://abc/x.html", "devtools://devtools/bundled/inspector.html", "view-source:https://a.test/", "about:config"]) assert.ok(internalPageReason(url), url);
+  for (const url of ["chrome://settings", "chrome-extension://abc/x.html", "devtools://devtools/bundled/inspector.html", "view-source:https://a.test/", "about:config", "javascript:alert(1)"]) assert.ok(internalPageReason(url), url);
   for (const url of ["about:blank", "https://a.test/", "chrome-error://chromewebdata/", ""]) assert.equal(internalPageReason(url), undefined, url);
   const f = fake({ url: "https://a.test/", documentId: "d1", secret: false });
   await assert.rejects(f.run("browser_navigate", { url: "chrome://settings/passwords" }), /off limits/);
@@ -149,7 +151,7 @@ test("the password check runs in an isolated world per frame document, so main-w
   let loaderId = "L1";
   const { driver, calls } = chromeWith(() => ({ frame: { id: "F1", loaderId, url: "https://a.test/", urlFragment: "#x" }, childFrames: [{ frame: { id: "F2", loaderId: "C1", url: "https://a.test/f" } }] }));
   const first = await driver.probe();
-  assert.deepEqual(first, { url: "https://a.test/#x", documentId: "F1:L1", secret: true });
+  assert.deepEqual(first, { url: "https://a.test/#x", documentId: "F1:L1", secret: true, pin: undefined });
   const created = () => calls.filter((c) => c.method === "Page.createIsolatedWorld");
   assert.deepEqual(created().map((c) => c.params.frameId), ["F1", "F2"]);
   const evals = calls.filter((c) => c.method === "Runtime.evaluate");
@@ -178,4 +180,64 @@ test("browser_fill runs under the gate: a sign-in form appearing in a script-tou
   assert.match(JSON.stringify(out), /reloaded because a sign-in form appeared/);
   f.doc.url = "chrome://settings/";
   await assert.rejects(f.run("browser_fill", { fields: [] }), /off limits/);
+});
+
+test("a redirect while the script starts: the script is pinned to the checked document and nothing is returned", async () => {
+  const f = fake({ url: "https://a.test/", documentId: "d1", secret: false, pin: 5 } as never, {
+    savedLoginOrigins: async () => ["https://saved.test"],
+    evaluateIn: (async (_s: string, pin: number) => {
+      // the page redirected to a saved-login site right before the script started: its context is gone
+      Object.assign(f.doc, { url: "https://saved.test/", documentId: "d2", pin: 6 });
+      assert.equal(pin, 5);
+      throw new Error("The page navigated before the script could start, so nothing ran. Try again.");
+    }) as never,
+  });
+  const out = await f.run("browser_eval", { script: "1" });
+  assert.match(JSON.stringify(out), /navigated while the script was starting/);
+  assert.equal(f.log.evals, 0); // never ran unpinned
+  assert.equal(f.log.reloads, 1); // the new page is a saved-login site
+  await assert.rejects(f.run("browser_eval", { script: "1" }), /saved logins/);
+});
+
+test("scripts only run on http(s) origins; blob: URLs belong to their creator's site", async () => {
+  const f = fake({ url: "data:text/html,hi", documentId: "d1", secret: false });
+  await assert.rejects(f.run("browser_eval", { script: "1" }), /only run on http/);
+  assert.equal(siteOf("blob:https://app.example.com/1234"), "example.com");
+});
+
+test("siteOf edge cases", () => {
+  assert.equal(siteOf("https://a.github.io/x"), "github.io"); // over-blocks every github.io page: no public-suffix list
+  assert.equal(siteOf("https://www.bbc.co.uk"), "bbc.co.uk");
+  assert.equal(siteOf("http://192.168.1.5:3000/"), "192.168.1.5");
+  assert.equal(siteOf("http://[::1]:8080/"), "[::1]");
+  assert.equal(siteOf("http://localhost:3000"), "localhost");
+  assert.equal(siteOf("https://shop.bücher.example/"), "xn--bcher-kva.example");
+  assert.equal(siteOf("https://EXAMPLE.com./"), "example.com");
+});
+
+test("readLoginOrigins on a real SQLite database with a WAL: origin columns only, temp copy removed", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const profile = mkdtempSync(join(tmpdir(), "pista-gate-test-"));
+  try {
+    mkdirSync(join(profile, "Default"), { recursive: true });
+    const db = new DatabaseSync(join(profile, "Default", "Login Data"));
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE logins (origin_url TEXT, signon_realm TEXT, username_value TEXT, password_value BLOB)");
+    db.prepare("INSERT INTO logins VALUES (?,?,?,?)").run("https://shop.test/login", "https://shop.test/", "ann", Buffer.from("SECRET-BLOB"));
+    // the database stays open, as Chrome keeps it, so the row may sit only in the WAL
+    const seen: { path: string; sql: string; rows: string }[] = [];
+    const origins = await readLoginOrigins(profile, {
+      query: async (path, sql) => {
+        const rows = await sqliteQuery(path, sql);
+        seen.push({ path, sql, rows: JSON.stringify(rows) });
+        return rows;
+      },
+    });
+    db.close();
+    assert.deepEqual(origins, ["https://shop.test"]);
+    assert.equal(seen[0]!.sql, LOGIN_ORIGINS_SQL);
+    assert.doesNotMatch(seen[0]!.rows, /ann|SECRET/); // only the origin columns came back
+    assert.equal(existsSync(dirname(seen[0]!.path)), false); // the temp copy is gone
+  } finally {
+    rmSync(profile, { recursive: true, force: true });
+  }
 });

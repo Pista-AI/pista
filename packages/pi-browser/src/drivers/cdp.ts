@@ -60,6 +60,8 @@ export class CdpDriver implements BrowserDriver {
   private loadError: string | undefined;
   private loadWaiters: (() => void)[] = [];
   /** One isolated world per frame, valid for one document (loaderId) of it. */
+  /** The page's own (main-world) script context per frame, from Runtime events; what `evaluateIn` pins a script to. */
+  private mainContexts = new Map<string, number>();
   private guardWorlds = new Map<string, { loaderId: string; contextId: number }>();
 
   constructor(private endpoint = "http://127.0.0.1:9222") {}
@@ -105,7 +107,9 @@ export class CdpDriver implements BrowserDriver {
     });
     this.conn = conn;
     this.guardWorlds.clear();
+    this.mainContexts.clear();
     await this.sendRaw("Page.enable");
+    await this.sendRaw("Runtime.enable"); // reports the existing contexts first, then every new one
     const { frameTree } = await this.sendRaw("Page.getFrameTree");
     this.mainFrameId = frameTree.frame.id;
     try {
@@ -122,6 +126,12 @@ export class CdpDriver implements BrowserDriver {
   protected async onAttachFailed(_conn: { transport: CdpTransport; sessionId?: string }): Promise<void> {}
 
   private onEvent(msg: { method: string; params?: any }) {
+    if (msg.method === "Runtime.executionContextCreated") {
+      const c = msg.params?.context;
+      if (c?.auxData?.isDefault && c.auxData.frameId) this.mainContexts.set(c.auxData.frameId, c.id);
+    } else if (msg.method === "Runtime.executionContextDestroyed") {
+      for (const [frame, id] of this.mainContexts) if (id === msg.params?.executionContextId) this.mainContexts.delete(frame);
+    } else if (msg.method === "Runtime.executionContextsCleared") this.mainContexts.clear();
     if (msg.params?.frameId !== this.mainFrameId) return;
     if (msg.method === "Page.frameStartedLoading") this.loading = true;
     if (msg.method === "Page.frameStoppedLoading") {
@@ -188,6 +198,18 @@ export class CdpDriver implements BrowserDriver {
     return result.value;
   }
 
+  async evaluateIn(script: string, pin: number): Promise<unknown> {
+    let reply: any;
+    try {
+      reply = await this.send("Runtime.evaluate", { expression: script, contextId: pin, awaitPromise: true, returnByValue: true });
+    } catch (error) {
+      if (/context/i.test((error as Error).message)) throw new Error("The page navigated before the script could start, so nothing ran. Try again.");
+      throw error;
+    }
+    if (reply.exceptionDetails) throw new Error(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text);
+    return reply.result.value;
+  }
+
   /**
    * Looks for password fields in every frame the page session can reach, in an isolated world: it has its own builtins, so
    * code the page planted or patched cannot change the answer. Fails closed: the top frame not answering throws.
@@ -207,7 +229,7 @@ export class CdpDriver implements BrowserDriver {
       }
     }
     const top = frameTree.frame;
-    return { url: top.url + (top.urlFragment ?? ""), documentId: `${top.id}:${top.loaderId}`, secret };
+    return { url: top.url + (top.urlFragment ?? ""), documentId: `${top.id}:${top.loaderId}`, secret, pin: this.mainContexts.get(top.id) };
   }
 
   private async frameHasPassword(frame: { id: string; loaderId: string }): Promise<boolean> {

@@ -2,8 +2,8 @@ import type { BrowserDriver, DocumentProbe } from "./driver.ts";
 import { scripts } from "./page-scripts.ts";
 
 /** Pages of the browser itself. `chrome-error:` (a failed load) and `about:blank` are not among them. */
-const INTERNAL_PROTOCOLS = new Set(["chrome:", "chrome-extension:", "chrome-untrusted:", "chrome-search:", "chrome-native:", "devtools:", "view-source:", "edge:", "brave:", "about:"]);
-const SAVED_LOGIN_TTL_MS = 60_000;
+const INTERNAL_PROTOCOLS = new Set(["chrome:", "chrome-extension:", "chrome-untrusted:", "chrome-search:", "chrome-native:", "devtools:", "view-source:", "edge:", "brave:", "about:", "javascript:"]);
+const SAVED_LOGIN_TTL_MS = 10_000;
 
 /** Why the agent may not open or use `url` (a page of the browser itself), or undefined. */
 export function internalPageReason(url: string): string | undefined {
@@ -14,7 +14,7 @@ export function internalPageReason(url: string): string | undefined {
     return undefined;
   }
   if (!INTERNAL_PROTOCOLS.has(protocol) || url === "about:blank") return undefined;
-  return `${protocol} pages are part of the browser itself and are off limits to the agent.`;
+  return `${protocol} addresses are off limits to the agent (browser-internal pages and script URLs).`;
 }
 
 const EVAL_REFUSED = "browser_eval is disabled on this page";
@@ -24,7 +24,8 @@ const OTHER_TOOLS = "Use browser_snapshot, browser_read, browser_click and brows
 export function siteOf(url: string): string {
   let host: string;
   try {
-    host = new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
+    const origin = new URL(url).origin; // blob: and filesystem: URLs carry their creator's origin
+    host = new URL(origin === "null" ? url : origin).hostname.toLowerCase().replace(/\.+$/, "");
   } catch {
     return url;
   }
@@ -74,22 +75,31 @@ export class EvalGate {
     return this.saved.sites;
   }
 
-  /** Throws when a script may not run on the current page; otherwise marks the document as one a script runs in. */
-  async beforeEval(d: BrowserDriver): Promise<void> {
+  /**
+   * Throws when a script may not run on the current page; otherwise marks the document as one a script runs in and returns it, with
+   * the handle the script must be pinned to (so a navigation after this check cannot make it run in another document).
+   */
+  async beforeEval(d: BrowserDriver): Promise<{ documentId: string; pin?: number }> {
     const p = await this.probe(d);
     const internal = internalPageReason(p.url);
     if (internal) throw new Error(`${EVAL_REFUSED}: ${internal}`);
     const origin = originOf(p.url);
+    if (!/^https?:\/\//.test(origin)) throw new Error(`${EVAL_REFUSED}: scripts only run on http(s) pages. ${OTHER_TOOLS}`);
     if (p.secret) this.blocked.add(origin);
     if (this.blocked.has(origin)) throw new Error(`${EVAL_REFUSED}: a sign-in form was seen on ${origin}, so scripts stay off there for the rest of this chat. ${OTHER_TOOLS}`);
-    let sites: Set<string>;
-    try {
-      sites = await this.savedSites(d);
-    } catch {
-      throw new Error(`${EVAL_REFUSED}: the list of sites with saved logins could not be read. ${OTHER_TOOLS}`);
-    }
-    if (sites.has(siteOf(p.url))) throw new Error(`browser_eval is disabled on sites with saved logins (${siteOf(p.url)}). ${OTHER_TOOLS}`);
+    if (await this.isSavedSite(d, p.url)) throw new Error(`browser_eval is disabled on sites with saved logins (${siteOf(p.url)}). ${OTHER_TOOLS}`);
+    if (d.evaluateIn && p.pin === undefined) throw new Error("The page is still loading, so nothing ran. Try again.");
     this.tainted.add(p.documentId);
+    return { documentId: p.documentId, pin: p.pin };
+  }
+
+  /** Whether `url` is on a site with a saved login; a list that cannot be read counts as yes. */
+  private async isSavedSite(d: BrowserDriver, url: string): Promise<boolean> {
+    try {
+      return (await this.savedSites(d)).has(siteOf(url));
+    } catch {
+      return true;
+    }
   }
 
   /** Refuses any action on a browser-internal page. */
@@ -103,9 +113,18 @@ export class EvalGate {
    * Runs after a tool did its work and before its result is returned. Returns a note, and the caller must then drop what the tool
    * read, when the page was replaced: a password field showed up in a document a script ran in (reloaded), or the tab sits on a browser page (blanked).
    */
-  async afterAction(d: BrowserDriver): Promise<string | undefined> {
+  async afterAction(d: BrowserDriver, evalDocument?: string): Promise<string | undefined> {
     if (!d.probe) return undefined;
     const p = await this.probe(d);
+    // The page changed while a script was starting (a redirect): the script was pinned to the old document and ran nowhere else,
+    // but the new one is treated as one a script ran in. Whatever came back is dropped.
+    if (evalDocument && p.documentId !== evalDocument) {
+      this.tainted.add(p.documentId);
+      if (p.secret) this.blocked.add(originOf(p.url));
+      if (internalPageReason(p.url)) await d.navigate("about:blank");
+      else if (p.secret || (await this.isSavedSite(d, p.url))) await d.reload();
+      return "The page navigated while the script was starting, so nothing was returned (the script did not run in the new page). Check where you are with browser_read and try again.";
+    }
     if (p.secret) this.blocked.add(originOf(p.url));
     if (internalPageReason(p.url)) {
       await d.navigate("about:blank");
@@ -120,21 +139,12 @@ export class EvalGate {
 
   /** Before the browser goes to the user: a document a script ran in is reloaded, so nothing planted sees what they type. */
   async beforeHandoff(d: BrowserDriver): Promise<string | undefined> {
+    this.saved = undefined;
     const p = await this.probe(d);
     if (p.secret) this.blocked.add(originOf(p.url));
     if (!this.tainted.has(p.documentId)) return undefined;
-    // A script-free-looking page keeps its form state: only a page that has, or is on a site with, a sign-in is reloaded.
-    let login = p.secret;
-    if (!login) {
-      try {
-        login = (await this.savedSites(d)).has(siteOf(p.url));
-      } catch {
-        login = true; // unknown counts as saved
-      }
-    }
-    if (!login) return undefined;
     await d.reload();
-    return "The page was reloaded first, because a script had run in it and it has a sign-in.";
+    return "The page was reloaded first, because a script had run in it (anything typed there earlier is gone).";
   }
 }
 
