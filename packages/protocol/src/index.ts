@@ -785,6 +785,47 @@ export type AuthPrompt =
   | { type: string; message?: string; [key: string]: unknown };
 
 // ---------------------------------------------------------------------------
+// Playbooks: a learned path through a site, replayed by the host (credentials are never stored)
+// ---------------------------------------------------------------------------
+
+export interface PlaybookLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string }
+export interface PlaybookExpect { urlIncludes?: string; text?: string; element?: PlaybookLocator }
+export type PlaybookStep =
+  | { kind: "navigate"; url: string; expect?: PlaybookExpect }
+  | { kind: "click"; target: PlaybookLocator; fallbacks?: PlaybookLocator[]; expect?: PlaybookExpect }
+  /** Replay fills the saved login for `origin`; no credential is part of the playbook. */
+  | { kind: "signIn"; origin: string; expect?: PlaybookExpect }
+  | { kind: "wait"; expect: PlaybookExpect }
+  | { kind: "download"; target?: PlaybookLocator; url?: string; fileType?: string };
+
+export interface Playbook {
+  version: 1;
+  /** Registrable domain the playbook belongs to. */
+  site: string;
+  startUrl: string;
+  steps: PlaybookStep[];
+  createdAt: string;
+  updatedAt: string;
+  lastSucceeded?: string;
+  successCount: number;
+  /** Consecutive failures since the last success. */
+  failCount: number;
+  status: "ok" | "needs-attention";
+  history: { at: string; summary: string }[];
+}
+
+export interface PlaybookMeta {
+  site: string;
+  startUrl: string;
+  stepCount: number;
+  status: Playbook["status"];
+  lastSucceeded?: string;
+  successCount: number;
+  failCount: number;
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // RPC surface
 // ---------------------------------------------------------------------------
 
@@ -849,6 +890,10 @@ export interface Methods {
   /** Lists the quantizations (with sizes) of one Hugging Face repo. */
   "llama.models.inspect": { params: { id: string }; result: LlamaHubModel };
 
+  "playbook.list": { params: {}; result: PlaybookMeta[] };
+  "playbook.get": { params: { site: string }; result: Playbook | null };
+  "playbook.delete": { params: { site: string }; result: { ok: true } };
+
   "mcp.status": { params: { threadId?: string }; result: McpServerStatus[] };
 
   /** Checks whether a page allows being embedded in the web build's iframe browser. */
@@ -900,7 +945,8 @@ export type HostEvent =
   | { type: "llama.status"; status: LlamaRuntimeStatus }
   /** The full router model list, after any load, unload or download. */
   | { type: "llama.models"; models: LlamaModel[] }
-  | ({ type: "llama.download" } & LlamaDownload);
+  | ({ type: "llama.download" } & LlamaDownload)
+  | { type: "playbook.event"; threadId: string; kind: "learned" | "updated" | "followed" | "needs-attention"; site: string; step?: number };
 
 export type ClientFrame = { kind: "req"; id: string; method: MethodName; params: unknown };
 export type HostFrame =

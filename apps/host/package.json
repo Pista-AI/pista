@@ -22,6 +22,7 @@
     "@pista/protocol": "workspace:*",
     "pi-memory": "^0.4.2",
     "pi-web-access": "^0.46.0",
+    "tldts": "7.4.19",
     "typebox": "^1.4.3",
     "undici": "8.12.3",
     "ws": "^8.22.0"
