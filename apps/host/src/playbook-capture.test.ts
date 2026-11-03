@@ -40,7 +40,7 @@ describe("playbook_save", () => {
 
   it("builds a playbook from the chosen entries and emits learned", () => {
     const r = savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], { "4": "Your invoices" }, "t1");
-    assert.deepEqual(r.event, { type: "playbook.event", threadId: "t1", kind: "learned", site: "127.0.0.1" });
+    assert.deepEqual(r.event, { type: "playbook.event", threadId: "t1", kind: "learned", site: "127.0.0.1", stepCount: 3 });
     const pb = getPlaybook("127.0.0.1")!;
     assert.equal(pb.startUrl, `${B}home.html`);
     assert.deepEqual(pb.steps, [
