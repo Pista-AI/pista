@@ -788,7 +788,15 @@ export type AuthPrompt =
 // Playbooks: a learned path through a site, replayed by the host (credentials are never stored)
 // ---------------------------------------------------------------------------
 
-export interface PlaybookLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string }
+export interface PlaybookLocator {
+  role?: string;
+  name?: string;
+  text?: string;
+  selector?: string;
+  frameUrl?: string;
+  /** The locator names the repeated element (e.g. each row's download link); the row is chosen at replay time from the job's invoice. No row content is stored. */
+  row?: { match: ("date" | "amount")[] };
+}
 export interface PlaybookExpect { urlIncludes?: string; text?: string; element?: PlaybookLocator }
 export type PlaybookStep =
   | { kind: "navigate"; url: string; expect?: PlaybookExpect }

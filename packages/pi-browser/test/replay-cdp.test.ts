@@ -24,6 +24,8 @@ before(async () => {
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname === "/__fixture/label") return void res.writeHead(200).end((label = url.searchParams.get("text") || "Download invoice"));
     if (url.pathname === "/invoices/inv-001.pdf") return void res.writeHead(200, { "content-type": "application/pdf" }).end("%PDF-1.4\n%%EOF\n");
+    const dated = /^\/invoices\/(inv-2026-\d\d[ab]?)\.pdf$/.exec(url.pathname);
+    if (dated) return void res.writeHead(200, { "content-type": "application/pdf" }).end(`%PDF-1.4\n% ${dated[1]}\n%%EOF\n`);
     try {
       const body = readFileSync(join(root, url.pathname)).toString().replace("{{LABEL}}", label);
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(body);
@@ -88,4 +90,34 @@ test("without the user's yes, the consequential sign-in click hands off as decli
   const r = await runReplay({ startUrl: `${base}login.html`, steps: steps() }, { ...options("invoices/c.pdf"), confirmRisk: undefined });
   assert.equal(!r.ok && r.reason, "declined");
   assert.equal(!r.ok && r.failedIndex, 1);
+});
+
+const rowStep = (): ReplayStep => ({ kind: "download", target: { role: "link", name: "Download invoice", row: { match: ["date", "amount"] } }, fileType: "pdf" });
+const rows = (invoice: { date: string; amount?: number; currency?: string }, path: string) => runReplay({ startUrl: `${base}list-months.html`, steps: [rowStep()] }, { ...options(path), invoice });
+
+test("the row for the invoice date is downloaded, with date tolerance", { skip }, async () => {
+  const r = await rows({ date: "2026-10-04" }, "invoices/r1.pdf");
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(readFileSync(join(dir, "invoices/r1.pdf"), "latin1").includes("inv-2026-10"));
+});
+
+test("two rows on one date are told apart by amount, and left to the user without it", { skip }, async () => {
+  const r = await rows({ date: "2026-11-03", amount: 99, currency: "EUR" }, "invoices/r2.pdf");
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(readFileSync(join(dir, "invoices/r2.pdf"), "latin1").includes("inv-2026-11b"));
+  const none = await rows({ date: "2026-11-03" }, "invoices/r3.pdf");
+  assert.equal(!none.ok && none.reason, "row-ambiguous");
+  assert.ok(!none.ok && none.detail.includes("2026-11-03"));
+});
+
+test("a date with no row hands off as row-not-found, and a missing invoice as needs-invoice", { skip }, async () => {
+  const r = await rows({ date: "2026-12-20" }, "invoices/r4.pdf");
+  assert.equal(!r.ok && r.reason, "row-not-found");
+  const n = await runReplay({ startUrl: `${base}list-months.html`, steps: [rowStep()] }, options("invoices/r5.pdf"));
+  assert.equal(!n.ok && n.reason, "needs-invoice");
+});
+
+test("a lone link whose row is not an explicit row element is never matched on its page text", { skip }, async () => {
+  const r = await runReplay({ startUrl: `${base}list-single.html`, steps: [rowStep()] }, { ...options("invoices/r6.pdf"), invoice: { date: "2026-09-03" } });
+  assert.equal(!r.ok && r.reason, "row-ambiguous");
 });

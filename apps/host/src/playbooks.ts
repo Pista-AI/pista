@@ -71,6 +71,8 @@ function locator(v: unknown, site: string): PlaybookLocator {
   if (text) out.text = text;
   if (selector) out.selector = selector;
   if (typeof o.frameUrl === "string" && o.frameUrl) out.frameUrl = sanitizeUrl(o.frameUrl, site);
+  const match = o.row && typeof o.row === "object" && Array.isArray((o.row as { match?: unknown }).match) ? [...new Set((o.row as { match: unknown[] }).match.filter((m): m is "date" | "amount" => m === "date" || m === "amount"))] : [];
+  if (match.includes("date")) out.row = { match: match.sort() }; // matching by amount alone is never enough
   return out;
 }
 

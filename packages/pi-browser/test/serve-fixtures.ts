@@ -1,5 +1,6 @@
 // Serves test/fixture on http://127.0.0.1:8765 until stopped: `pnpm --filter @pista/pi-browser exec tsx test/serve-fixtures.ts`
 // Invoice site (fixture/invoices/): login -> home -> billing (iframe of list.html) -> list.html with a download link to inv-001.pdf.
+// list-months.html: several rows with identical download links to inv-2026-*.pdf (each PDF names itself).
 // GET /__fixture/label?text=Get%20PDF changes the download link's label in list.html without changing its address.
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -27,6 +28,8 @@ createServer((req, res) => {
     label = url.searchParams.get("text") || "Download invoice";
     return void res.writeHead(200).end(label);
   }
+  const dated = /^\/invoices\/(inv-2026-\d\d[ab]?)\.pdf$/.exec(url.pathname);
+  if (dated) return void res.writeHead(200, { "content-type": "application/pdf" }).end(`%PDF-1.4\n% ${dated[1]}\n%%EOF\n`);
   const path = normalize(url.pathname).replace(/^(\.\.[/\\])+/, "");
   if (path === "/invoices/inv-001.pdf") return void res.writeHead(200, { "content-type": "application/pdf" }).end(tinyPdf());
   try {
