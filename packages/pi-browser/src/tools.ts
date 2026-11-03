@@ -87,7 +87,10 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     } catch (error) {
       failure = error;
     }
-    const note = await gate.afterAction(target, opts.evalDocument?.()).catch((error) => (failure ??= error, undefined));
+    let checkFailed = false;
+    const note = await gate.afterAction(target, opts.evalDocument?.()).catch(() => ((checkFailed = true), undefined));
+    // When the check itself fails, nothing the tool read or said is passed on, not even its own error text.
+    if (checkFailed) throw new Error("The page changed during this action; try again.");
     if (note) return respond(await (await driver()).state(), { note });
     if (failure) throw failure;
     return out as R;
