@@ -58,7 +58,8 @@ function fakeDriver(landing: string) {
     state: async () => ({ url, title: "", loading: false }),
     back: async () => {},
     reload: async () => {},
-    evaluate: async () => ({ ok: true, text: "secret page text" }),
+    // The eval gate asks the page about password fields first (a boolean); every other script gets the page text.
+    evaluate: async (script: string) => (script.includes('getAttribute("type")') ? false : { ok: true, text: "secret page text" }),
     input: async () => true,
     screenshot: async () => ({ data: "", mimeType: "image/png" }),
   } as BrowserDriver;
@@ -132,7 +133,7 @@ test("chrome-error pages: only the exact error page is tolerated, and never as a
   const t = tools(driver, allow);
   await assert.rejects(t.get("browser_navigate")!.execute("1", { url: "chrome-error://chromewebdata/" }), /Blocked/);
   setUrl("chrome-error://chromewebdata/");
-  await t.get("browser_eval")!.execute("2", { script: "1" });
+  await assert.rejects(t.get("browser_eval")!.execute("2", { script: "1" }), /only run on http/); // tolerated by the domain rules, but no page to script
   setUrl("chrome-error://evil/");
   await assert.rejects(t.get("browser_eval")!.execute("3", { script: "1" }), /Blocked/);
 });

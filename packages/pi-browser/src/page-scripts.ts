@@ -743,6 +743,27 @@ function pageFocusedIsPassword(): boolean {
 }
 
 /**
+ * Whether this document (and open shadow roots) holds a password field: type=password, a password autocomplete hint, or a field
+ * already marked secret. Run in an isolated world by the eval gate, so page code cannot patch what it uses. Values are never read.
+ */
+function pageHasPassword(token?: string, clear?: boolean): boolean {
+  // The token marks this document as the one that was checked (see EvalGate.beforeEval); the eval wrapper looks for it in the page's own world.
+  if (token) document.documentElement.setAttribute("data-pista-eval", token);
+  if (clear) document.documentElement.removeAttribute("data-pista-eval");
+  const walk = (root: Document | ShadowRoot): boolean => {
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+        if ((el.getAttribute("type") ?? "").toLowerCase() === "password" || (el as HTMLInputElement).type === "password") return (__marks.add(el), true);
+        if (__marks.has(el) || /password/i.test(el.getAttribute("autocomplete") ?? "")) return true;
+      }
+      if (el.shadowRoot && walk(el.shadowRoot)) return true;
+    }
+    return false;
+  };
+  return walk(document);
+}
+
+/**
  * Draws secret fields (top document, same-origin iframes, open shadow roots) as dots for a screenshot the model receives:
  * `mask` tags them and adds a style, `unmask` removes both. Values are never read.
  */
@@ -1076,6 +1097,16 @@ const preamble = () =>
 export const call = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
   `(() => { ${preamble()} return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
 
+/**
+ * Prelude of an eval that must run in the document the gate checked: reads the token the gate wrote onto this document's root element
+ * with builtins captured now, and answers `navigated` before any model code runs when it is not there. A page can read or forge the
+ * token on its own document; the token only proves "same document as checked", and a redirected document never had it.
+ * The token is removed again when the script is done.
+ */
+const evalGuard = (token: string) =>
+  `const __root = document.documentElement; const __get = Element.prototype.getAttribute; const __del = Element.prototype.removeAttribute;` +
+  ` if (__get.call(__root, "data-pista-eval") !== ${jsLiteral(token)}) return { ok: false, text: "", navigated: true };`;
+
 export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),
   href: (target: string) => call(pageHref, target),
@@ -1084,6 +1115,8 @@ export const scripts = {
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),
   selectActive: () => call(pageSelectActive),
+  /** Whether the document holds a password field (see pageHasPassword). */
+  hasPassword: (token?: string, clear?: boolean) => call(pageHasPassword, token, clear),
   /** Screenshot mask for secret fields: "mask" adds it, "unmask" removes it. */
   secrets: (op: "mask" | "unmask") => call(pageSecrets, op),
   /**
@@ -1092,8 +1125,11 @@ export const scripts = {
    * function body and returns what it `return`s. The caller must have checked that `src` compiles as such a body on its own (see
    * secrets.ts), which is what keeps it from closing the wrapper early.
    */
-  evalScrubbed: (src: string, form: "expression" | "statements") =>
-    `(() => { ${preamble()} return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}); })()`,
+  evalScrubbed: (src: string, form: "expression" | "statements", token?: string) => {
+    const run = `(${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}})`;
+    const body = token ? `${evalGuard(token)} return (async () => { try { return await ${run}; } finally { __del.call(__root, "data-pista-eval"); } })();` : `return ${run};`;
+    return `(() => { ${preamble()} ${body} })()`;
+  },
   focusedIsPassword: () => call(pageFocusedIsPassword),
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),

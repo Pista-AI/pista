@@ -55,6 +55,7 @@ test("browser tools write private, correctly shaped lines", async () => {
   let trips = 0;
   const driver = {
     state: async () => ({ url: "https://shop.example/cart?email=a@b.c#top", title: "Secret title", loading: false }),
+    probe: async () => ({ url: "https://shop.example/cart", documentId: "d1", secret: false }),
     evaluate: async (script: string) => (trips++, script.includes("fail") ? Promise.reject(new Error("Timed out waiting for SECRET")) : { ok: true, text: "\"secret value\"" }),
     stats: () => ({ roundTrips: trips }),
   } as unknown as BrowserDriver;
