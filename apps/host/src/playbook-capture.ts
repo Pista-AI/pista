@@ -4,7 +4,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { BrowserTraceEntry } from "@pista/pi-browser";
 import { Type } from "typebox";
 import type { HostEvent, Playbook, PlaybookExpect, PlaybookLocator, PlaybookStep } from "@pista/protocol";
-import { getPlaybook, isOpaque, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { getPlaybook, isOpaque, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 export type TraceRow = { n: number } & BrowserTraceEntry;
@@ -102,7 +102,10 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
     const startChanged = old.startUrl !== fresh.startUrl;
-    if (!changed.length && !startChanged) return { message: `The playbook for ${built.site} already matches this path; nothing changed.` };
+    if (!changed.length && !startChanged) {
+      recordSuccess(built.site); // the same path just worked again
+      return { message: `The playbook for ${built.site} already matches this path; nothing changed.` };
+    }
     const now = new Date().toISOString();
     savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
     const first = startChanged ? 1 : changed[0]! + 1;

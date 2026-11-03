@@ -83,6 +83,19 @@ describe("playbook_save", () => {
     assert.equal(pb.failCount, 0);
   });
 
+  it("saving the identical path counts as a success: status ok, failures reset, no event", () => {
+    const rows = trace().list();
+    savePlaybookFromTrace(rows, [2, 4, 5, 6], undefined, "t");
+    for (let i = 0; i < 3; i++) recordFailure("127.0.0.1");
+    const r = savePlaybookFromTrace(rows, [2, 4, 5, 6], undefined, "t");
+    assert.equal(r.event, undefined);
+    const pb = getPlaybook("127.0.0.1")!;
+    assert.equal(pb.status, "ok");
+    assert.equal(pb.failCount, 0);
+    assert.equal(pb.successCount, 1);
+    assert.ok(pb.lastSucceeded);
+  });
+
   it("a changed start URL is reported as step 1", () => {
     const rows = trace().list();
     savePlaybookFromTrace(rows, [2, 5, 6], undefined, "t");
