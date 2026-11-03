@@ -22,6 +22,7 @@ import {
 } from "@pista/protocol";
 import { setupCredentials } from "./auth-setup.ts";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
+import { deletePlaybook, getPlaybook, listPlaybooks } from "./playbooks.ts";
 import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
 import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
 import { extensionsSummary } from "./policy.ts";
@@ -185,6 +186,12 @@ const handlers: { [M in MethodName]: Handler<M> } = {
   },
   "project.readFile": ({ projectId, relPath }) => readProjectFile(projectPath(projectId), relPath),
   "project.reveal": ({ projectId }) => revealProjectInvoices(projectPath(projectId)),
+  "playbook.list": () => listPlaybooks(),
+  "playbook.get": ({ site }) => getPlaybook(site),
+  "playbook.delete": ({ site }) => {
+    deletePlaybook(site);
+    return { ok: true };
+  },
   "projects.remove": async ({ projectId }) => {
     await threads.removeProject(projectId);
   },

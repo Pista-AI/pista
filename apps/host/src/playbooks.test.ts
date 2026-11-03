@@ -1,0 +1,84 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import type { Playbook } from "@pista/protocol";
+import { FAIL_THRESHOLD, deletePlaybook, getPlaybook, listPlaybooks, recordFailure, recordSuccess, sanitizeUrl, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+
+const base = (extra: Record<string, unknown> = {}) => ({ startUrl: "https://app.example.com/login", steps: [{ kind: "navigate", url: "https://example.com/invoices" }], ...extra });
+
+describe("siteKey", () => {
+  it("collapses subdomains and handles multi-part suffixes and IPs", () => {
+    assert.equal(siteKey("https://a.b.Example.com/x"), "example.com");
+    assert.equal(siteKey("https://shop.example.co.uk"), "example.co.uk");
+    assert.equal(siteKey("http://127.0.0.1:8080/p"), "127.0.0.1");
+    assert.equal(siteKey("http://localhost:3000"), "localhost");
+  });
+  it("rejects non-http(s)", () => {
+    assert.throws(() => siteKey("file:///etc/passwd"));
+    assert.throws(() => siteKey("javascript:alert(1)"));
+  });
+});
+
+describe("sanitizeUrl", () => {
+  it("rejects cross-site and userinfo", () => {
+    assert.throws(() => sanitizeUrl("https://evil.com/", "example.com"));
+    assert.throws(() => sanitizeUrl("https://u:p@example.com/", "example.com"));
+  });
+  it("strips secrets, opaque values and fragments, keeps benign params", () => {
+    const out = new URL(sanitizeUrl(`https://x.example.com/p?token=1&Code=2&utm_source=a&page=2&blob=${"a".repeat(40)}#frag`, "example.com"));
+    assert.equal(out.hash, "");
+    assert.deepEqual([...out.searchParams.keys()], ["page"]);
+  });
+});
+
+describe("validatePlaybook", () => {
+  it("drops unknown fields and truncates long text", () => {
+    const pb = validatePlaybook(base({ evil: 1, steps: [{ kind: "click", target: { name: "x".repeat(500), bogus: 1 }, extra: 1 }] }), "example.com");
+    assert.equal("evil" in pb, false);
+    const s = pb.steps[0] as { target: { name: string } };
+    assert.equal(s.target.name.length, 200);
+    assert.equal("bogus" in s.target, false);
+  });
+  it("enforces limits and rejects unknown kinds and foreign origins", () => {
+    const nav = { kind: "navigate", url: "https://example.com/" };
+    assert.throws(() => validatePlaybook(base({ steps: Array(31).fill(nav) }), "example.com"));
+    assert.throws(() => validatePlaybook(base({ steps: [{ kind: "click", target: {}, fallbacks: Array(6).fill({}) }] }), "example.com"));
+    assert.throws(() => validatePlaybook(base({ steps: [{ kind: "eval", code: "1" }] }), "example.com"));
+    assert.throws(() => validatePlaybook(base({ steps: [{ kind: "signIn", origin: "https://evil.com" }] }), "example.com"));
+  });
+});
+
+describe("store", () => {
+  const prev = process.env.PISTA_HOME;
+  beforeEach(() => { process.env.PISTA_HOME = mkdtempSync(join(tmpdir(), "pista-pb-")); });
+  afterEach(() => { if (prev === undefined) delete process.env.PISTA_HOME; else process.env.PISTA_HOME = prev; });
+
+  const make = (): Playbook => validatePlaybook(base(), "example.com");
+
+  it("round-trips save, list, get, delete", () => {
+    savePlaybook(make());
+    assert.equal(listPlaybooks().length, 1);
+    assert.equal(listPlaybooks()[0].stepCount, 1);
+    assert.equal(getPlaybook("example.com")?.startUrl, "https://app.example.com/login");
+    assert.deepEqual(readdirSync(join(process.env.PISTA_HOME!, "playbooks")), ["example.com.json"]);
+    deletePlaybook("example.com");
+    assert.equal(getPlaybook("example.com"), null);
+    assert.deepEqual(listPlaybooks(), []);
+  });
+  it("rejects unsafe site names", () => {
+    assert.throws(() => getPlaybook("../x"));
+    assert.throws(() => deletePlaybook("a/b"));
+  });
+  it("flags needs-attention after repeated failures and resets on success", () => {
+    savePlaybook(make());
+    for (let i = 1; i < FAIL_THRESHOLD; i++) assert.equal(recordFailure("example.com")?.status, "ok");
+    assert.equal(recordFailure("example.com")?.status, "needs-attention");
+    const ok = recordSuccess("example.com");
+    assert.equal(ok?.status, "ok");
+    assert.equal(ok?.failCount, 0);
+    assert.equal(ok?.successCount, 1);
+    assert.ok(ok?.lastSucceeded);
+  });
+});
