@@ -66,7 +66,7 @@ test("browser tools write private, correctly shaped lines", async () => {
   assert.equal(ok.tool, "browser_eval");
   assert.equal(ok.threadId, "thr-1");
   assert.equal(ok.url, "shop.example/cart");
-  assert.equal(ok.cdp, 1);
+  assert.equal(ok.cdp, 3); // mark secret fields, run the script, scrub the result
   assert.equal(ok.isError, false);
   assert.ok(ok.chars > 0 && typeof ok.ms === "number");
   assert.deepEqual([bad.isError, bad.error], [true, "timeout"]);

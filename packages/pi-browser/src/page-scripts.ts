@@ -129,9 +129,12 @@ export const SECRET_FIELD =
  * `pattern` to SECRET_FIELD): the snapshot masks, browser_type and browser_press refuse, and the effect summary hides the value
  * for exactly the fields it says yes to. A field is secret when it is type=password, has a password autocomplete hint, or any of its
  * autocomplete, id, name, aria-label, placeholder, <label> text (also `<label for>`), aria-labelledby text or `accessibleName` matches the pattern.
+ * Sticky: a field seen as type=password stays secret for the life of the document, so a "show password" toggle (type=text) does not unmask it.
  */
 function isSecretField(el: Element, pattern: string, accessibleName?: string): boolean {
-  if ((el as HTMLInputElement).type === "password") return true;
+  const marks = ((window as unknown as { __pistaSecretMarks?: WeakSet<Element> }).__pistaSecretMarks ??= new WeakSet<Element>());
+  if ((el as HTMLInputElement).type === "password") return (marks.add(el), true);
+  if (marks.has(el)) return true;
   const labels = (el as HTMLInputElement).labels;
   const labelledBy = (el.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((id) => (id ? (document.getElementById(id)?.textContent ?? "") : ""));
   const text = [
@@ -709,6 +712,53 @@ function pageFocusedIsPassword(): boolean {
   return __isSecret(el, (window as unknown as { __pistaDescribe?: (e: Element) => { name: string } }).__pistaDescribe?.(el).name);
 }
 
+/**
+ * Secret fields of the top document, same-origin iframes and open shadow roots, for the model-facing views that must never carry
+ * their values. `mark` only registers password fields (see isSecretField), so a later toggle to type=text keeps them secret.
+ * `scrub` returns `text` with every secret value of 4+ chars (and its JSON-escaped form) replaced by [redacted]; the values never
+ * leave the page. `mask` / `unmask` add and remove a style that draws those fields as dots, for screenshots.
+ */
+function pageSecrets(op: string, text = ""): string {
+  const docs: Document[] = [];
+  const fields: HTMLInputElement[] = [];
+  const walk = (root: Document | ShadowRoot) => {
+    if (root.nodeType === 9) docs.push(root as Document);
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") fields.push(el as HTMLInputElement);
+      if (el.shadowRoot) walk(el.shadowRoot);
+      if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
+        // Cross-origin frames throw (or give null) and cannot be reached from here.
+        try {
+          const inner = (el as HTMLIFrameElement).contentDocument;
+          if (inner) walk(inner);
+        } catch {}
+      }
+    }
+  };
+  walk(document);
+  const secret = fields.filter((f) => __isSecret(f));
+  if (op === "scrub") {
+    const values = [...new Set(secret.map((f) => f.value).filter((v) => v.length >= 4))].sort((a, b) => b.length - a.length);
+    let out = text;
+    for (const v of values) for (const form of [v, JSON.stringify(v).slice(1, -1)]) out = out.split(form).join("[redacted]");
+    return out;
+  }
+  if (op === "mask") {
+    for (const f of secret) f.setAttribute("data-pista-secret", "");
+    for (const d of docs) {
+      const style = d.createElement("style");
+      style.setAttribute("data-pista-mask", "");
+      style.textContent = "[data-pista-secret]{-webkit-text-security:disc !important;text-shadow:none !important}";
+      (d.head ?? d.documentElement).appendChild(style);
+    }
+  }
+  if (op === "unmask") {
+    for (const f of fields) f.removeAttribute("data-pista-secret");
+    for (const d of docs) for (const style of Array.from(d.querySelectorAll("style[data-pista-mask]"))) style.remove();
+  }
+  return "";
+}
+
 function pageSyntheticKey(key: string): string {
   const el = (document.activeElement as HTMLElement | null) ?? document.body;
   for (const type of ["keydown", "keyup"]) el.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true }));
@@ -868,6 +918,8 @@ export const scripts = {
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),
   selectActive: () => call(pageSelectActive),
+  /** See pageSecrets: op is "mark", "scrub" (returns `text` with secret values replaced), "mask" or "unmask". */
+  secrets: (op: "mark" | "scrub" | "mask" | "unmask", text?: string) => call(pageSecrets, op, text),
   focusedIsPassword: () => call(pageFocusedIsPassword),
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),
