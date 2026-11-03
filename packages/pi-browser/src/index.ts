@@ -19,3 +19,4 @@ export {
 export { findBrowser, type BrowserKind, type FoundBrowser, type FindEnv } from "./chrome/find.ts";
 export { launchBrowser, ProfileInUseError, pistaChromeProfileDir, type LaunchedBrowser, type LaunchDeps } from "./chrome/launch.ts";
 export { PipeTransport, type CdpTransport, type CdpEvent } from "./chrome/pipe.ts";
+export { parseDates, parseAmounts, matchRows, matchPeriod, type CandidateDate, type RowMatch, type MatchRow, type Amount } from "./row-match.ts";
