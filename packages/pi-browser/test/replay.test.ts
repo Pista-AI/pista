@@ -230,3 +230,18 @@ test("a truncated snapshot hands off as row-ambiguous instead of choosing among 
   assert.equal(!r.ok && r.reason, "row-ambiguous");
   assert.ok(!r.ok && r.detail.includes("2026-10-04"));
 });
+
+test("a period step needs the invoice and hands off when no month, or several, cover its date", async () => {
+  const tab = (ref: string, name: string) => ({ ref, role: "tab", name });
+  const run = async (names: string[], invoice?: { date: string }) => {
+    const snap = { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: [...names.map((n, i) => tab(`e${i + 1}`, n)), { ref: "e9", role: "tab", name: "Settings" }] };
+    const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate: async () => snap } as unknown as BrowserDriver;
+    const dir = mkdtempSync(join(tmpdir(), "period-"));
+    const step = { kind: "click" as const, target: { role: "tab", period: true } };
+    const r = await runReplay({ startUrl: "https://x.test/list", steps: [step, { kind: "download", url: "https://x.test/a.pdf" }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf", ...(invoice ? { invoice } : {}) });
+    return r.ok ? "ok" : r.reason;
+  };
+  assert.equal(await run(["September 2026", "October 2026"]), "needs-invoice");
+  assert.equal(await run(["September 2026", "October 2026"], { date: "2026-12-04" }), "row-not-found");
+  assert.equal(await run(["October 2026", "Oct 2026"], { date: "2026-10-04" }), "row-ambiguous");
+});

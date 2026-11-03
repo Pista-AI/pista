@@ -149,3 +149,57 @@ describe("playbook_save", () => {
     assert.deepEqual((getPlaybook("127.0.0.1")!.steps[0] as { target: object }).target, { role: "button" });
   });
 });
+
+describe("playbook_save with repeated rows and month selectors", () => {
+  const SECRET = "Acme Corp INV-7731 jane@example.com";
+  const texts = [`2026-09-03 49.00 EUR ${SECRET}`, `2026-10-03 49.00 EUR ${SECRET}`, `2026-10-20 12.00 EUR ${SECRET}`];
+  const link = { role: "link", name: "Download invoice", text: "Download invoice" };
+  const build = (clickedIndex: number, rowTexts: (string | null)[] = texts) => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}months.html` }); // 1
+    t.add({ kind: "click", locator: { role: "link", name: "October 2026", text: "October 2026" }, urlAfter: `${B}m-2026-10.html`, periodContext: { names: ["September 2026", "October 2026", "November 2026", null], clickedIndex: 1 } }); // 2
+    t.add({ kind: "download", source: "ref", locator: link, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: rowTexts, clickedIndex } }); // 3
+    return t.list();
+  };
+  const save = (rows: ReturnType<typeof build>, invoice?: unknown) => savePlaybookFromTrace(rows, [1, 2, 3], undefined, "t", invoice);
+
+  it("saves the row and the month as rules, with no row text and no invoice in the stored playbook", () => {
+    const r = save(build(2), { date: "2026-10-20", amount: 12, currency: "eur" });
+    assert.equal(r.event?.kind, "learned");
+    const pb = getPlaybook("127.0.0.1")!;
+    assert.deepEqual(pb.steps, [
+      { kind: "click", target: { role: "link", period: true } },
+      { kind: "download", target: { role: "link", name: "Download invoice", text: "Download invoice", row: { match: ["date"] } }, fileType: "pdf" },
+    ]);
+    const json = JSON.stringify(pb);
+    for (const leak of ["Acme", "INV-7731", "jane@", "2026-10-20", "October"]) assert.ok(!json.includes(leak), leak);
+  });
+
+  it("adds the amount only when the date alone does not pick the row", () => {
+    const same = [`2026-10-03 49.00 EUR`, `2026-10-03 12.00 EUR`];
+    save(build(1, same), { date: "2026-10-03", amount: 12 });
+    assert.deepEqual((getPlaybook("127.0.0.1")!.steps[1] as { target: { row: object } }).target.row, { match: ["amount", "date"] }); // stored sorted
+  });
+
+  it("refuses a step that picks a row when no invoice is given, or when the rule picks another row", () => {
+    assert.match(save(build(2)).message, /pass the invoice it was for/);
+    assert.match(save(build(1), { date: "2026-10-20" }).message, /not identify the row you clicked \(row 2 of 3\)/);
+    assert.match(save(build(2, [texts[0]!, texts[1]!, null]), { date: "2026-10-20" }).message, /not identify/);
+    assert.equal(getPlaybook("127.0.0.1"), null);
+  });
+
+  it("rejects malformed invoice parameters", () => {
+    for (const bad of [{ date: "20/10/2026" }, { date: "2026-02-31" }, { date: "2026-10-20", amount: NaN }, { date: "2026-10-20", currency: "EURO" }, {}]) assert.match(save(build(2), bad).message, /^Not saved: invoice\./);
+  });
+
+  it("lists the place in the list, never the row text", () => {
+    const text = describeTrace(build(2));
+    assert.match(text, /^3 download link "Download invoice" \(row 3 of 3\) \(application\/pdf/m);
+    assert.ok(!text.includes("Acme") && !text.includes("2026-10-20"));
+  });
+
+  it("saves nothing for an invoice whose date matches no row, even if the month click would stay literal", () => {
+    assert.match(save(build(2), { date: "2026-12-20" }).message, /^Not saved/);
+    assert.equal(getPlaybook("127.0.0.1"), null);
+  });
+});

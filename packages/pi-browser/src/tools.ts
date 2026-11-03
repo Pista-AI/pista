@@ -2,6 +2,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
+import { isPeriodLabel } from "./row-match.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
@@ -15,11 +16,20 @@ import { traceTools } from "./trace.ts";
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
+/**
+ * What a click or download target had around it, read before the action. In memory only: it holds page text (the rows' text, the
+ * sibling labels), so it must never be persisted, listed or sent anywhere; the host uses it once, to check a rule against the invoice.
+ * `rowContext`: the target shares role and name with other elements (the same link in each row of a list); `texts` is each one's row
+ * text in page order. `periodContext`: the target's name is a period label; `names` is every same-role element's name (null when it is no label).
+ */
+export type TraceRowContext = { texts: (string | null)[]; clickedIndex: number };
+export type TracePeriodContext = { names: (string | null)[]; clickedIndex: number };
+
 /** One successful, replayable browser action. Typed text, keys and selected options are never recorded (they may be secrets). */
 export type BrowserTraceEntry =
   | { kind: "navigate"; url: string }
-  | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string }
-  | { kind: "download"; url?: string; /** "url": the model supplied the address; "ref": it came from the page (the element's link or its click). */ source: "ref" | "url"; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string }
+  | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string; rowContext?: TraceRowContext; periodContext?: TracePeriodContext }
+  | { kind: "download"; url?: string; /** "url": the model supplied the address; "ref": it came from the page (the element's link or its click). */ source: "ref" | "url"; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string; rowContext?: TraceRowContext }
   | { kind: "signIn"; origin: string };
 
 export interface BrowserToolOptions {
@@ -78,6 +88,17 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     const l = (await d.evaluate(scripts.locate(target)).catch(() => null)) as { role: string; name: string; text: string } | null;
     return l ? { ...(l.role ? { role: l.role } : {}), ...(l.name ? { name: l.name } : {}), ...(l.text ? { text: l.text } : {}) } : undefined;
   };
+  /** Where the target sits among same-role and same-name elements, for the trace (see TraceRowContext). Best effort: nothing on any failure. */
+  const contextOf = async (d: BrowserDriver, target: string): Promise<{ rowContext?: TraceRowContext; periodContext?: TracePeriodContext }> => {
+    const s = (await d.evaluate(scripts.siblings(target)).catch(() => null)) as { refs: string[]; index: number; names: string[]; nameIndex: number } | null;
+    if (!s) return {};
+    if (s.refs.length > 1 && s.index >= 0) {
+      const texts = (await d.evaluate(scripts.rowTexts(s.refs)).catch(() => null)) as (string | null)[] | null;
+      return texts ? { rowContext: { texts, clickedIndex: s.index } } : {};
+    }
+    const names = s.names.map((n) => (isPeriodLabel(n) ? n : null));
+    return s.nameIndex >= 0 && names[s.nameIndex] !== null && names.filter(Boolean).length > 1 ? { periodContext: { names, clickedIndex: s.nameIndex } } : {};
+  };
   /**
    * Runs one tool under the eval gate (eval-gate.ts): refuses browser-internal pages first, and after the work drops the result
    * when the page had to be replaced. `leaving` tools (navigate, back) may run on an internal page, as the way out of it.
@@ -120,9 +141,10 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     };
     // Resolved before the click: the element may be gone afterwards, and the ref numbers change with the next snapshot.
     const located = options.onTrace && req.action === "click" ? await locateTarget(d, req.target) : undefined;
+    const context = located && req.action === "click" ? await contextOf(d, req.target) : {};
     const result = await runPageAction(d, req, approve);
     const state = await d.state();
-    if (located && result.outcome?.startsWith("Clicked")) options.onTrace?.({ kind: "click", locator: located, urlAfter: state.url });
+    if (located && result.outcome?.startsWith("Clicked")) options.onTrace?.({ kind: "click", locator: located, urlAfter: state.url, ...context });
     return respond(state, result);
   };
 
@@ -297,11 +319,13 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
             : undefined;
           const href = fromRef && "url" in fromRef ? fromRef.url : "";
           // Resolved before the click: the element may be gone afterwards.
-          const located = options.onTrace && ref && !href ? await locateTarget(d, ref) : undefined;
+          // A link repeated in a list is traced by its place in the list, not by this row's address.
+          const located = options.onTrace && ref ? await locateTarget(d, ref) : undefined;
+          const { rowContext } = located && ref ? await contextOf(d, ref) : {};
           const saved = await saveDownload(d, { root: folder, path, overwrite }, url ? { url } : fromRef!);
           const replaced = saved.replaced;
-          const direct = url ?? (href || undefined);
-          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : { locator: located }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
+          const direct = url ?? (href && !rowContext ? href : undefined);
+          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : { locator: located, ...(rowContext ? { rowContext } : {}) }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },
