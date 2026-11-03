@@ -79,7 +79,6 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     const l = (await d.evaluate(scripts.locate(target)).catch(() => null)) as { role: string; name: string; text: string } | null;
     return l ? { ...(l.role ? { role: l.role } : {}), ...(l.name ? { name: l.name } : {}), ...(l.text ? { text: l.text } : {}) } : undefined;
   };
-  const page = async (req: PageAction, signal?: AbortSignal) => {
   /**
    * Runs one tool under the eval gate (eval-gate.ts): refuses browser-internal pages first, and after the work drops the result
    * when the page had to be replaced. `leaving` tools (navigate, back) may run on an internal page, as the way out of it.
