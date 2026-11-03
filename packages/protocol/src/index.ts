@@ -946,7 +946,25 @@ export type HostEvent =
   /** The full router model list, after any load, unload or download. */
   | { type: "llama.models"; models: LlamaModel[] }
   | ({ type: "llama.download" } & LlamaDownload)
-  | { type: "playbook.event"; threadId: string; kind: "learned" | "updated" | "followed" | "needs-attention"; site: string; /** 1-based step number; for "updated" the first changed step (a changed start URL counts as step 1). */ step?: number };
+  /**
+   * Playbook progress shown as an in-chat card. Every string (site, reason, invoice, before, after) is untrusted display text: render as text only.
+   * `invoice` is the job's own invoice and is shown only in this user's chat.
+   */
+  | {
+      type: "playbook.event";
+      threadId: string;
+      kind: "learned" | "updated" | "followed" | "needs-attention" | "repairing";
+      site: string;
+      /** 1-based step number; for "updated" the first changed step (a changed start URL counts as step 1). */
+      step?: number;
+      stepCount?: number;
+      /** Short failure reason, capped by the host. */
+      reason?: string;
+      invoice?: { date: string; amount?: number; currency?: string };
+      /** Step labels for "updated". */
+      before?: string;
+      after?: string;
+    };
 
 export type ClientFrame = { kind: "req"; id: string; method: MethodName; params: unknown };
 export type HostFrame =

@@ -54,6 +54,10 @@ export interface ThreadView extends Omit<ThreadSnapshot, "summary" | "decisions"
   goal?: GoalState;
 }
 
+export type PlaybookCardEvent = Omit<Extract<HostEvent, { type: "playbook.event" }>, "type">;
+export interface PlaybookCardItem { id: number; anchor: number; event: PlaybookCardEvent }
+let playbookSeq = 0;
+
 export interface Approval {
   approvalId: string;
   threadId: string;
@@ -136,6 +140,8 @@ interface AppState {
   models: ModelInfo[];
   providers: ProviderStatus[];
   approvals: Approval[];
+  /** Playbook cards per thread in arrival order; `anchor` is how many messages the thread had when the event arrived. */
+  playbookEvents: Record<string, PlaybookCardItem[]>;
   authPrompt?: { promptId: string; provider: string; prompt: AuthPrompt };
   /** Latest sign-in notice per provider; cleared when a sign-in succeeds. */
   authNotices: Record<string, AuthNotice>;
@@ -179,6 +185,7 @@ export const useApp = create<AppState>(() => ({
   providers: [],
   authNotices: {},
   approvals: [],
+  playbookEvents: {},
   toasts: [],
   panel: { open: true, tabs: [], activeId: null, chatWidth: 520, maximized: false },
   ...loadLayout(),
@@ -736,6 +743,12 @@ function onHostEvent(event: HostEvent) {
         activeThreadId: s.activeThreadId === event.threadId ? null : s.activeThreadId,
       }));
       break;
+    case "playbook.event": {
+      const { type: _t, ...ev } = event;
+      const anchor = get().views[event.threadId]?.messages.length ?? 0;
+      set((s) => ({ playbookEvents: { ...s.playbookEvents, [event.threadId]: [...(s.playbookEvents[event.threadId] ?? []), { id: ++playbookSeq, anchor, event: ev }] } }));
+      break;
+    }
     case "approval.request":
       set((s) => ({ approvals: [...s.approvals, event] }));
       break;
