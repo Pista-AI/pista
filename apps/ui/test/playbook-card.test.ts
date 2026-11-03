@@ -23,6 +23,9 @@ test("repairing names the step, reason and invoice", () => {
 
 test("updated and learned", () => {
   assert.equal(playbookCardText({ threadId: "t", kind: "updated", site: "a.com", step: 4 }).title, "Updated playbook for a.com (step 4 changed)");
+  const u = playbookCardText({ threadId: "t", kind: "updated", site: "a.com", step: 2, stepCount: 3, before: 'click link "Billing"', after: 'click link "Invoices"' });
+  assert.deepEqual(u.lines, ['click link "Billing" → click link "Invoices"']);
+  assert.deepEqual(playbookCardText({ threadId: "t", kind: "needs-attention", site: "a.com", step: 2, stepCount: 3 }).lines, ["Step 2 keeps failing"]);
   const l = playbookCardText({ threadId: "t", kind: "learned", site: "a.com", stepCount: 5 });
   assert.equal(l.tone, "learn");
   assert.deepEqual(l.lines, ["5 steps saved · used next time"]);

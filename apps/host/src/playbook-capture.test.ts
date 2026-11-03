@@ -66,7 +66,8 @@ describe("playbook_save", () => {
     savePlaybookFromTrace(rows, [2, 4, 5, 6], undefined, "t");
     assert.equal(savePlaybookFromTrace(rows, [2, 4, 5, 6], undefined, "t").event, undefined);
     const r = savePlaybookFromTrace(rows, [2, 5, 6], undefined, "t");
-    assert.deepEqual(r.event, { type: "playbook.event", threadId: "t", kind: "updated", site: "127.0.0.1", step: 1 });
+    assert.deepEqual(r.event, { type: "playbook.event", threadId: "t", kind: "updated", site: "127.0.0.1", step: 1, stepCount: 2, before: 'click link "Billing"', after: "open a page" });
+    assert.ok(r.event?.type === "playbook.event" && (r.event.before?.length ?? 0) <= 120 && !/\?|https?:/.test(`${r.event.before}${r.event.after}`));
     const pb = getPlaybook("127.0.0.1")!;
     assert.equal(pb.steps.length, 2);
     assert.match(pb.history.at(-1)!.summary, /changed steps? 1,2/);

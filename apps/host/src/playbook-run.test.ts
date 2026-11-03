@@ -67,18 +67,33 @@ test("a playbook_run the user declines at the approval gate still opens the site
 
 test("failures count towards needs-attention at three; declines and stops do not count; a success resets", () => {
   save();
-  assert.deepEqual(recordRun("127.0.0.1", handoff("declined"), "t"), []);
-  assert.deepEqual(recordRun("127.0.0.1", handoff("aborted"), "t"), []);
-  for (const r of ["row-not-found", "row-ambiguous", "needs-invoice", "sign-in-needed", "blocked", "expectation-timeout"] as const) assert.deepEqual(recordRun("127.0.0.1", handoff(r), "t"), [], r);
+  const inv = { date: "2026-10-03", amount: 12.5, currency: "EUR" };
+  const run = (r: ReturnType<typeof handoff> | { ok: true; download: { path: string; bytes: number }; steps: number }) => recordRun("127.0.0.1", r, "t", inv, 2);
+  const repairing = (reason: string) => ({ type: "playbook.event", threadId: "t", kind: "repairing", site: "127.0.0.1", step: 2, reason, stepCount: 2, invoice: inv });
+  assert.deepEqual(run(handoff("declined")), []);
+  assert.deepEqual(run(handoff("aborted")), []);
+  for (const r of ["row-not-found", "row-ambiguous", "needs-invoice", "sign-in-needed", "blocked", "expectation-timeout"] as const) {
+    const ev = run(handoff(r));
+    assert.deepEqual(ev.map((e) => e.type === "playbook.event" && e.kind), ["repairing"], r);
+  }
   assert.equal(getPlaybook("127.0.0.1")!.failCount, 0);
-  assert.deepEqual(recordRun("127.0.0.1", handoff("not-found"), "t"), []);
-  assert.deepEqual(recordRun("127.0.0.1", handoff("not-found"), "t"), []);
-  assert.deepEqual(recordRun("127.0.0.1", handoff("not-found"), "t"), [{ type: "playbook.event", threadId: "t", kind: "needs-attention", site: "127.0.0.1", step: 2 }]);
+  assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link")]);
+  assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link")]);
+  assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link"), { type: "playbook.event", threadId: "t", kind: "needs-attention", site: "127.0.0.1", step: 2, stepCount: 2 }]);
   assert.equal(getPlaybook("127.0.0.1")!.status, "needs-attention");
-  assert.deepEqual(recordRun("127.0.0.1", handoff("not-found"), "t"), [], "flagged once");
+  assert.equal(run(handoff("not-found")).length, 1, "flagged once");
   const ok = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2 };
-  assert.deepEqual(recordRun("127.0.0.1", ok, "t"), [{ type: "playbook.event", threadId: "t", kind: "followed", site: "127.0.0.1" }]);
+  assert.deepEqual(run(ok), [{ type: "playbook.event", threadId: "t", kind: "followed", site: "127.0.0.1", stepCount: 2, invoice: inv }]);
   assert.deepEqual([getPlaybook("127.0.0.1")!.status, getPlaybook("127.0.0.1")!.failCount], ["ok", 0]);
+});
+
+test("the repairing reason names the failed step's target and is capped", () => {
+  save();
+  const failed = (name: string) => ({ ...handoff("not-found"), step: { kind: "click" as const, target: { role: "link", name } } });
+  const ev = (name: string) => recordRun("127.0.0.1", failed(name), "t")[0] as { reason: string; invoice?: unknown };
+  assert.equal(ev("Download invoice").reason, 'Couldn\'t find "Download invoice"');
+  assert.equal(ev("Download invoice").invoice, undefined);
+  assert.ok(ev("x".repeat(500)).reason.length <= 120);
 });
 
 type Handler = (event: unknown, ctx: unknown) => Promise<{ block?: boolean } | undefined>;
@@ -122,7 +137,7 @@ test("after a handoff, saving keeps the replayed steps and replaces only the rep
   trace.add({ kind: "replayed", index: 1, step: old.steps[0]! });
   trace.add({ kind: "download", source: "ref", locator: { role: "link", name: "Get PDF" }, url: `${B}inv-2026-10a.pdf`, contentType: "application/pdf", path: "invoices/a.pdf" });
   const r = savePlaybookFromTrace(trace.list(), [1, 2, 3], undefined, "t");
-  assert.deepEqual(r.event, { type: "playbook.event", threadId: "t", kind: "updated", site: "127.0.0.1", step: 2 });
+  assert.deepEqual(r.event, { type: "playbook.event", threadId: "t", kind: "updated", site: "127.0.0.1", step: 2, stepCount: 2, before: 'download link "Download invoice"', after: "download a file" });
   const pb = getPlaybook("127.0.0.1")!;
   assert.deepEqual(pb.steps[0], old.steps[0]);
   assert.match(pb.history.at(-1)!.summary, /changed step 2$/);
