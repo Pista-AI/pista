@@ -573,6 +573,19 @@ select {
   font-size: 13px;
   color: var(--text-2);
 }
+.icon-btn.has-waiting {
+  position: relative;
+}
+.icon-btn.has-waiting::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+}
 .side-item .approval-flag {
   color: var(--amber, var(--red));
   margin-right: 4px;
