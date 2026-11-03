@@ -9,6 +9,7 @@ import { registerChooseTool } from "./choose.ts";
 import { registerContextPruning } from "./context.ts";
 import { findLogin, guardDriver, type DomainRules } from "./domains.ts";
 import type { BrowserDriver, PageState } from "./driver.ts";
+import { gateFor, internalPageReason } from "./eval-gate.ts";
 import { fillEnabled, registerFillTool } from "./fill.ts";
 import { evaluateScrubbed, screenshotMasked } from "./secrets.ts";
 import { traceTools } from "./trace.ts";
@@ -79,6 +80,38 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     return l ? { ...(l.role ? { role: l.role } : {}), ...(l.name ? { name: l.name } : {}), ...(l.text ? { text: l.text } : {}) } : undefined;
   };
   const page = async (req: PageAction, signal?: AbortSignal) => {
+  /**
+   * Runs one tool under the eval gate (eval-gate.ts): refuses browser-internal pages first, and after the work drops the result
+   * when the page had to be replaced. `leaving` tools (navigate, back) may run on an internal page, as the way out of it.
+   */
+  // Drivers that can make an isolated world are probed directly; others through the guarded driver, so the domain rules still come first.
+  const gateTarget = async () => {
+    const raw = await rawDriver();
+    return raw.probe ? raw : await driver();
+  };
+  const gated = async <R>(run: (d: BrowserDriver) => Promise<R>, opts: { leaving?: boolean; before?: (gate: ReturnType<typeof gateFor>, raw: BrowserDriver) => Promise<void>; evalDocument?: () => string | undefined } = {}) => {
+    const gate = gateFor(await rawDriver());
+    const target = await gateTarget();
+    if (!opts.leaving) await gate.beforeAction(target);
+    await opts.before?.(gate, target);
+    // A tool that threw may have read the page too; its error text is dropped the same way as a result.
+    let out: R | undefined;
+    let failure: unknown;
+    try {
+      out = await run(await driver());
+    } catch (error) {
+      failure = error;
+    }
+    let checkFailed = false;
+    const note = await gate.afterAction(target, opts.evalDocument?.()).catch(() => ((checkFailed = true), undefined));
+    // When the check itself fails, nothing the tool read or said is passed on, not even its own error text.
+    if (checkFailed) throw new Error("The page changed during this action; try again.");
+    if (note) return respond(await (await driver()).state(), { note });
+    if (failure) throw failure;
+    return out as R;
+  };
+  const page = (req: PageAction, signal?: AbortSignal) => gated(() => pageRun(req, signal));
+  const pageRun = async (req: PageAction, signal?: AbortSignal) => {
     const d = await driver();
     // A yes that arrives after the run was stopped must not act, so the signal is checked again once the answer is in.
     // A stopped run is "aborted", not "denied": the action does nothing at all, where a no may still do the harmless part.
@@ -95,9 +128,12 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     return respond(state, result);
   };
 
-  if (fillEnabled()) registerFillTool(pi, { driver, askApproval }, respond);
+  // browser_fill and browser_choose act on and read the page like the tools below, so they run under the gate too.
+  const gatedPi = Object.create(pi) as typeof pi;
+  gatedPi.registerTool = ((tool: any) => pi.registerTool({ ...tool, execute: (...args: unknown[]) => gated(() => tool.execute(...args)) })) as typeof pi.registerTool;
+  if (fillEnabled()) registerFillTool(gatedPi, { driver, askApproval }, respond);
   if (options.keepPageViews !== 0) registerContextPruning(pi, options.keepPageViews ?? 1, { staleDocumentTurns: options.staleDocumentTurns });
-  registerChooseTool(pi, driver, respond, askApproval); // only when PI_BROWSER_CHOOSE=1
+  registerChooseTool(gatedPi, driver, respond, askApproval); // only when PI_BROWSER_CHOOSE=1
 
   // One tool per action with obvious required arguments: small models handle
   // these far better than a single multi-action tool.
@@ -109,13 +145,19 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       promptSnippet: "browser_navigate: open a page in the browser",
       parameters: Type.Object({ url: Type.String({ description: "Full URL, e.g. https://www.google.com/search?q=..." }) }),
       execute: async (_id, { url }) => {
-        const d = await driver();
-        d.setActivity?.(`Opening ${url}`);
-        const opened = await d.navigate(url);
-        if (!opened.note) options.onTrace?.({ kind: "navigate", url: opened.url });
-        const declined = await declineCookieBanner(d);
-        if (!declined) return respond(opened);
-        return respond(await d.state().catch(() => opened), { note: `Declined the cookie banner (clicked "${declined}").` });
+        const blocked = internalPageReason(url);
+        if (blocked) throw new Error(`Not opened: ${blocked}`);
+        return gated(
+          async (d) => {
+            d.setActivity?.(`Opening ${url}`);
+            const opened = await d.navigate(url);
+            if (!opened.note) options.onTrace?.({ kind: "navigate", url: opened.url });
+            const declined = await declineCookieBanner(d);
+            if (!declined) return respond(opened);
+            return respond(await d.state().catch(() => opened), { note: `Declined the cookie banner (clicked "${declined}").` });
+          },
+          { leaving: true },
+        );
       },
     }),
   );
@@ -205,18 +247,21 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: back",
       description: "Go back to the previous page in the browser history. Takes no arguments.",
       parameters: Type.Object({}),
-      execute: async () => {
-        const d = await driver();
-        d.setActivity?.("Going back");
-        await d.back();
-        await new Promise((r) => setTimeout(r, 400));
-        return respond(await d.state());
-      },
+      execute: () =>
+        gated(
+          async (d) => {
+            d.setActivity?.("Going back");
+            await d.back();
+            await new Promise((r) => setTimeout(r, 400));
+            return respond(await d.state());
+          },
+          { leaving: true },
+        ),
     }),
   );
   if (options.downloadRoot) {
     const root = options.downloadRoot;
-    pi.registerTool(
+    gatedPi.registerTool(
       defineTool({
         name: "browser_download",
         label: "Browser: download",
@@ -310,7 +355,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         },
       }),
     );
-    pi.registerTool(
+    gatedPi.registerTool(
       defineTool({
         name: "browser_login",
         label: "Browser: sign in",
@@ -353,11 +398,12 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         execute: async () => {
           const d = await driver();
           if (!d.bringToFront) throw new Error("browser_show_user is not supported with this browser driver.");
+          const reloaded = await gateFor(await rawDriver()).beforeHandoff(await gateTarget());
           if ((await d.bringToFront()) === false) {
             const none = { ok: false, note: "No browser window is open yet. Open a page with browser_navigate first." };
             return { content: [{ type: "text" as const, text: JSON.stringify(none, null, 2) }], details: none };
           }
-          const r = { ok: true, note: "The browser is in front of the user. Tell them what to do, then wait for them to say they are done before you continue." };
+          const r = { ok: true, note: `${reloaded ? `${reloaded} ` : ""}The browser is in front of the user. Tell them what to do, then wait for them to say they are done before you continue.` };
           return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r };
         },
       }),
@@ -369,11 +415,11 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: screenshot",
       description: "Capture a screenshot of the page open in the browser. Takes no arguments.",
       parameters: Type.Object({}),
-      execute: async () => {
-        const d = await driver();
-        d.setActivity?.("Taking screenshot");
-        return respond(await d.state(), {}, await screenshotMasked(d));
-      },
+      execute: () =>
+        gated(async (d) => {
+          d.setActivity?.("Taking screenshot");
+          return respond(await d.state(), {}, await screenshotMasked(d));
+        }),
     }),
   );
   pi.registerTool(
@@ -382,11 +428,17 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: run script",
       description: "Run a JavaScript expression in the current page and return its value. Prefer browser_snapshot and browser_read; not for entering passwords or completing purchases.",
       parameters: Type.Object({ script: Type.String({ description: "JavaScript expression" }) }),
-      execute: async (_id, { script }) => {
-        const d = await driver();
-        d.setActivity?.("Running script");
-        const text = await evaluateScrubbed(d, script);
-        return respond(await d.state(), { text });
+      execute: (_id, { script }) => {
+        let checked: { documentId: string; token?: string } | undefined;
+        return gated(
+          async (d) => {
+            d.setActivity?.("Running script");
+            // The script starts only in the document that was checked (it looks for the gate's token first).
+            const text = await evaluateScrubbed(d, script, checked?.token);
+            return respond(await d.state(), { text });
+          },
+          { before: async (gate, target) => void (checked = await gate.beforeEval(target)), evalDocument: () => checked?.documentId },
+        );
       },
     }),
   );

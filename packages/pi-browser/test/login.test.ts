@@ -11,6 +11,7 @@ function setup(overrides: Partial<BrowserDriver> = {}, url = "https://shop.test/
   const driver = {
     state: async () => ({ url, title: "", loading: false }),
     loginList: async () => saved,
+    probe: async () => ({ url, documentId: "d1", secret: false }),
     loginFill: async (site: string) => (fills.push(site), { ok: true, note: "Signed in." }),
     ...overrides,
   } as unknown as BrowserDriver;
