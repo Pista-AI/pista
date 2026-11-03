@@ -252,18 +252,21 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");
         if ("url" in source) guardUrl(source.url, "The download address");
+        let cancelled = false;
         const validate = (file: string, got: { contentType?: string; urlChain?: string[] }) => {
+          if (cancelled) throw new Handoff("error", "The download finished after replay gave up on it.");
           for (const u of got.urlChain ?? []) guardUrl(u, "The download came from");
           const reject = (why: string) => {
             throw new Handoff("error", `The downloaded file was not kept: ${why}.`);
           };
-          const ct = got.contentType?.toLowerCase();
+          // An empty or generic binary type says nothing: a PDF is then recognised by its first bytes.
+          const ct = /^(application|binary)\/octet-stream\b/.test(got.contentType?.toLowerCase() ?? "") ? undefined : got.contentType?.toLowerCase() || undefined;
           const type = step.fileType?.toLowerCase();
           if (!type) return void (ct?.includes("text/html") && reject("it is a web page"));
           if (ct) return void (!ct.includes(type) && reject(`expected ${type}, got ${ct}`));
           if (type !== "pdf" || !readFileSync(file).subarray(0, 5).toString("latin1").startsWith("%PDF-")) reject(`its type is unknown and it is not a ${type}`);
         };
-        // A download still running at the deadline is still validated if it lands later; only its result is ignored.
+        // A download still running at the deadline or a stop is discarded if it lands later: validate refuses it, so it never replaces the target.
         const got = await within(
           saveDownload(d, { root: o.downloadRoot, path: o.downloadPath, overwrite: o.overwrite, validate }, { ...source, ...(o.signal ? { signal: o.signal } : {}) }),
           o.downloadTimeoutMs ?? 60_000,
@@ -271,7 +274,10 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           () => {
             throw new Handoff("error", "The download did not finish in time.");
           },
-        );
+        ).catch((error) => {
+          cancelled = true;
+          throw error;
+        });
         saved = { path: o.downloadPath, bytes: got.bytes, ...(got.contentType ? { contentType: got.contentType } : {}) };
         break;
       }

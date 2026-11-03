@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -126,6 +126,45 @@ test("a download that is not the expected file never replaces the good one", asy
   assert.equal(reasonOf(await run({ body: "<html>sign in</html>", contentType: "text/html" })), "1:error");
   assert.equal(reasonOf(await run({ body: "not a pdf" }, "pdf")), "1:error");
   assert.equal(readFileSync(join(root, "a.pdf"), "latin1"), "%PDF-1.4 good");
+  assert.equal(reasonOf(await run({ body: "not a pdf", contentType: "application/octet-stream" }, "pdf")), "1:error");
+  assert.equal(readFileSync(join(root, "a.pdf"), "latin1"), "%PDF-1.4 good");
+  assert.equal(reasonOf(await run({ body: "%PDF-1.6 binary", contentType: "binary/octet-stream" }, "pdf")), "ok");
   assert.equal(reasonOf(await run({ body: "%PDF-1.7 new" }, "pdf")), "ok");
   assert.equal(readFileSync(join(root, "a.pdf"), "latin1"), "%PDF-1.7 new");
+});
+
+test("a download that lands after the deadline is discarded and the old file stays", async () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-"));
+  writeFileSync(join(root, "a.pdf"), "%PDF-1.4 good");
+  let landed!: () => void;
+  const late = new Promise<void>((r) => (landed = r));
+  const f = fakeDriver();
+  (f.driver as { download?: unknown }).download = async ({ path }: { path: string }) => {
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(path, "%PDF-1.7 late");
+    setTimeout(landed, 0);
+    return { bytes: 13, contentType: "application/pdf" };
+  };
+  const r = await runReplay({ startUrl: "https://ok.test/", steps: [{ kind: "download", url: "https://ok.test/a.pdf", fileType: "pdf" }] }, { ...base, downloadRoot: root, overwrite: true, downloadTimeoutMs: 10, driver: f.driver });
+  assert.equal(reasonOf(r), "1:error");
+  await late;
+  assert.equal(readFileSync(join(root, "a.pdf"), "latin1"), "%PDF-1.4 good");
+  assert.deepEqual(readdirSync(root), ["a.pdf"]);
+});
+
+test("a click that leads off the site hands off as blocked", async () => {
+  let url = "about:blank";
+  const driver = {
+    navigate: async (to: string) => ((url = to), { url, title: "", loading: false }),
+    state: async () => ({ url, title: "", loading: false }),
+    evaluate: async (script: string) => {
+      if (script.includes("pageSnapshot")) return { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 1, viewport: 1 }, elements: [{ ref: "e1", role: "link", name: "Billing" }] };
+      if (script.includes("pagePrepare")) return { kind: "link", name: "Billing", label: 'link "Billing"', x: 1, y: 1 };
+      return "";
+    },
+    input: async (e: { type: string }) => (e.type === "click" && (url = "https://other.test/phish"), true),
+  } as unknown as BrowserDriver;
+  const r = await runReplay({ startUrl: "https://ok.test/", steps: [{ kind: "click", target: { role: "link", name: "Billing" } }] }, { ...base, driver });
+  assert.equal(reasonOf(r), "1:blocked");
+  assert.equal(!r.ok && r.snapshot, "");
 });
