@@ -69,7 +69,11 @@ function readLock(profileDir: string, deps: LaunchDeps): LockInfo | undefined {
   return Number.isInteger(pid) && pid > 0 ? { pid, host: target.slice(0, i) } : undefined;
 }
 
-const trimSlashes = (p: string) => (p.length > 1 ? p.replace(/[\\/]+$/, "") : p);
+function trimSlashes(p: string): string {
+  let end = p.length;
+  while (end > 1 && (p[end - 1] === "/" || p[end - 1] === "\\")) end--;
+  return p.slice(0, end);
+}
 
 /** The spellings a browser may have been started with: as given and resolved (relative path, /var vs /private/var). */
 function profileSpellings(profileDir: string): string[] {
