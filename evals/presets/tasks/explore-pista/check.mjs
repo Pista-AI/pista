@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 let text = "";
 try { text = readFileSync("ANSWER.md", "utf8"); } catch { console.error("no ANSWER.md"); process.exit(1); }
-const first = (id) => text.match(new RegExp(`(?<![\\w])${id.replace(/\./g, "\\.")}(?![\\w])`))?.index ?? -1;
+const first = (id) => text.match(new RegExp(`(?<![\\w])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`))?.index ?? -1;
 const required = ["approvalExtension", "approval.request", "ApprovalCard", "respondApproval", "approval.respond", "settle"];
 const extra = ["tool_call", "hub.ask", "onHostEvent", "approval.resolved"];
 const missing = required.filter((id) => first(id) < 0);
