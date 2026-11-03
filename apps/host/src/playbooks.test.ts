@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -14,10 +14,12 @@ describe("siteKey", () => {
     assert.equal(siteKey("https://shop.example.co.uk"), "example.co.uk");
     assert.equal(siteKey("http://127.0.0.1:8080/p"), "127.0.0.1");
     assert.equal(siteKey("http://localhost:3000"), "localhost");
+    assert.notEqual(siteKey("https://a.github.io"), siteKey("https://b.github.io"));
   });
   it("rejects non-http(s)", () => {
     assert.throws(() => siteKey("file:///etc/passwd"));
     assert.throws(() => siteKey("javascript:alert(1)"));
+    assert.throws(() => siteKey("data:text/html,hi"));
   });
 });
 
@@ -25,6 +27,13 @@ describe("sanitizeUrl", () => {
   it("rejects cross-site and userinfo", () => {
     assert.throws(() => sanitizeUrl("https://evil.com/", "example.com"));
     assert.throws(() => sanitizeUrl("https://u:p@example.com/", "example.com"));
+  });
+  it("rejects opaque path segments", () => {
+    assert.throws(() => sanitizeUrl(`https://example.com/reset/${"ab12".repeat(16)}`, "example.com"));
+  });
+  it("matches secret keys as whole words only", () => {
+    const out = new URL(sanitizeUrl("https://example.com/p?monkey=1&passenger=2&accessible=3&access_token=a&X-Auth=b&TOKEN=c", "example.com"));
+    assert.deepEqual([...out.searchParams.keys()], ["monkey", "passenger", "accessible"]);
   });
   it("strips secrets, opaque values and fragments, keeps benign params", () => {
     const out = new URL(sanitizeUrl(`https://x.example.com/p?token=1&Code=2&utm_source=a&page=2&blob=${"a".repeat(40)}#frag`, "example.com"));
@@ -50,6 +59,19 @@ describe("validatePlaybook", () => {
   });
 });
 
+describe("validatePlaybook details", () => {
+  it("rejects cross-site frameUrl and download url, drops opaque expectations, trims signIn dot", () => {
+    assert.throws(() => validatePlaybook(base({ steps: [{ kind: "click", target: { frameUrl: "https://evil.com/" } }] }), "example.com"));
+    assert.throws(() => validatePlaybook(base({ steps: [{ kind: "download", url: "https://evil.com/a.pdf" }] }), "example.com"));
+    const pb = validatePlaybook(base({ steps: [
+      { kind: "wait", expect: { urlIncludes: "a".repeat(40), text: "b".repeat(40) } },
+      { kind: "signIn", origin: "https://app.example.com./x" },
+    ] }), "example.com");
+    assert.deepEqual(pb.steps[0], { kind: "wait", expect: {} });
+    assert.equal((pb.steps[1] as { origin: string }).origin, "https://app.example.com");
+  });
+});
+
 describe("store", () => {
   const prev = process.env.PISTA_HOME;
   beforeEach(() => { process.env.PISTA_HOME = mkdtempSync(join(tmpdir(), "pista-pb-")); });
@@ -66,6 +88,15 @@ describe("store", () => {
     deletePlaybook("example.com");
     assert.equal(getPlaybook("example.com"), null);
     assert.deepEqual(listPlaybooks(), []);
+  });
+  it("skips corrupt files and files whose site differs from the filename", () => {
+    savePlaybook(make());
+    const d = join(process.env.PISTA_HOME!, "playbooks");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "broken.com.json"), "{nope");
+    writeFileSync(join(d, "other.com.json"), JSON.stringify({ ...make(), site: "example.com" }));
+    assert.deepEqual(listPlaybooks().map((m) => m.site), ["example.com"]);
+    assert.equal(getPlaybook("other.com"), null);
   });
   it("rejects unsafe site names", () => {
     assert.throws(() => getPlaybook("../x"));

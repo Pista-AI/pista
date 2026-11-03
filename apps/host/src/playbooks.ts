@@ -27,13 +27,14 @@ function parseHttp(url: string): URL {
   return u;
 }
 
-/** Registrable domain of an http(s) URL, lowercase; the hostname for IPs and localhost. */
+/** Registrable domain of an http(s) URL, lowercase; the hostname for IPs and localhost. IPv6 hosts are unsupported (they fail the site-name check in the store). */
 export function siteKey(url: string): string {
   const u = parseHttp(url);
-  return (getDomain(u.hostname) ?? u.hostname).toLowerCase();
+  return (getDomain(u.hostname, { allowPrivateDomains: true }) ?? u.hostname).toLowerCase();
 }
 
-const SECRET_KEY = /token|code|state|nonce|session|sid|auth|key|signature|^sig$|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml|^utm_/i;
+// Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
+const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;
 const OPAQUE_VALUE = /^[A-Za-z0-9_\-.~%+/=]{32,}$/;
 
 /** Same-site http(s) URL without userinfo, fragment, secret-looking query params or long opaque values. Throws otherwise. */
@@ -41,6 +42,8 @@ export function sanitizeUrl(url: string, site: string): string {
   const u = parseHttp(url);
   if (u.username || u.password) throw new Error("url must not contain credentials");
   if (siteKey(url) !== site) throw new Error("url is on a different site");
+  // A secret in the path cannot be stripped without breaking replay, so the URL is rejected.
+  if (u.pathname.split("/").some((seg) => OPAQUE_VALUE.test(seg))) throw new Error("url path contains an opaque value");
   u.hash = "";
   for (const [k, v] of [...u.searchParams.entries()]) {
     if (SECRET_KEY.test(k) || OPAQUE_VALUE.test(v)) u.searchParams.delete(k);
@@ -72,8 +75,8 @@ function expectOf(v: unknown, site: string): PlaybookExpect | undefined {
   const o = obj(v);
   const out: PlaybookExpect = {};
   const urlIncludes = str(o.urlIncludes, MAX_TEXT), text = str(o.text, MAX_TEXT);
-  if (urlIncludes) out.urlIncludes = urlIncludes;
-  if (text) out.text = text;
+  if (urlIncludes && !OPAQUE_VALUE.test(urlIncludes)) out.urlIncludes = urlIncludes;
+  if (text && !OPAQUE_VALUE.test(text)) out.text = text;
   if (o.element !== undefined) out.element = locator(o.element, site);
   return out;
 }
@@ -93,6 +96,7 @@ function step(v: unknown, site: string): PlaybookStep {
     case "signIn": {
       const origin = parseHttp(String(o.origin));
       if (siteKey(origin.href) !== site) throw new Error("signIn origin is on a different site");
+      origin.hostname = origin.hostname.replace(/\.$/, "");
       return { kind: "signIn", origin: origin.origin, ...withExpect };
     }
     case "wait":
@@ -114,6 +118,7 @@ function step(v: unknown, site: string): PlaybookStep {
 /** Builds a fresh Playbook from untrusted input, keeping known fields only. Throws with a short reason. */
 export function validatePlaybook(input: unknown, site: string): Playbook {
   const o = obj(input);
+  if (o.site !== undefined && o.site !== site) throw new Error("site does not match");
   if (!Array.isArray(o.steps)) throw new Error("steps must be an array");
   if (o.steps.length > MAX_STEPS) throw new Error(`too many steps (max ${MAX_STEPS})`);
   const now = new Date().toISOString();
@@ -171,7 +176,12 @@ export function savePlaybook(pb: Playbook): void {
   mkdirSync(dir(), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(clean, null, 2), { mode: 0o600 });
-  renameSync(tmp, file);
+  try {
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 export function deletePlaybook(site: string): void {
