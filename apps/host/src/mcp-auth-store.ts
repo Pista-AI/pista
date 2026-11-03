@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AuthKeySource } from "./auth-key.ts";
-import { fsyncDir, readEncryptedFile, writeEncryptedFile } from "./auth-store.ts";
+import { BACKUP_SUFFIX, DecryptError, describeDecryptFailure, dropBackupIfEncryptedOk, moveToBackup, readEncryptedFile, writeEncryptedFile } from "./auth-store.ts";
 import { type AuthStorageBackend, loadMcpOAuthCredentialStore, type LockResult, type McpOAuthCredentialStoreCtor, type McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 
 /** Pi holds the lock for milliseconds, so a lock older than this belongs to a crashed process. */
@@ -128,6 +128,8 @@ export async function setupMcpAuth(
   const encFile = join(agentDir, "mcp-auth.enc.json");
   const plainFile = join(agentDir, "mcp-auth.json");
   if (source.kind === "plain") {
+    const bak = `${plainFile}${BACKUP_SUFFIX}`;
+    if (existsSync(bak)) log(`[pista-host] mcp auth: WARNING a plaintext backup of migrated MCP tokens exists at ${bak}`);
     if (existsSync(encFile)) throw new Error("mcp-auth.enc.json exists; refusing to start in plain mode (unset PISTA_AUTH_PLAIN or supply the key)");
     return {};
   }
@@ -138,11 +140,10 @@ export async function setupMcpAuth(
     readEncryptedFile(encFile, key); // read-only check, no lock, so a read-only directory still starts
   } catch (e) {
     key.fill(0);
-    if (e instanceof Error && /cannot decrypt/.test(e.message)) {
-      throw new Error(`mcp-auth.enc.json cannot be decrypted with the current key (wrong key or corrupt file). Delete ${encFile} to start over; you will need to sign in to MCP servers again.`, { cause: e });
-    }
-    throw new Error(`mcp-auth.enc.json cannot be read: ${e instanceof Error ? e.message : "unknown error"}`, { cause: e });
+    if (e instanceof DecryptError) throw new Error(describeDecryptFailure("mcp-auth.enc.json", encFile, e, plainFile), { cause: e });
+    throw new Error(`mcp-auth.enc.json cannot be read: ${e instanceof Error ? e.message : "unknown error"}. The file has been left untouched at ${encFile}.`, { cause: e });
   }
+  dropBackupIfEncryptedOk(encFile, plainFile, log);
   const result = { credentials: new Store(backend, agentDir) };
 
   try {
@@ -168,6 +169,7 @@ export async function setupMcpAuth(
 
     const imported: string[] = [];
     const skipped: string[] = [];
+    let syncWarning: string | undefined;
     let outcome: Outcome | { keep: string };
     try {
       // One lock around read, merge, write and unlink, so another process cannot write between them.
@@ -198,25 +200,20 @@ export async function setupMcpAuth(
         }
         if (imported.length) writeEncryptedFile(encFile, key, JSON.stringify(merged, null, 2));
         if (skipped.length) return { result: "kept-skipped" };
-        // The encrypted copy is fsynced by now. Zero the plaintext before unlinking; best effort on SSDs and copy-on-write filesystems.
+        // The encrypted copy is fsynced by now. Keep the plaintext as a 0600 backup; the next start removes it once
+        // the encrypted file has decrypted with the current key.
         try {
-          const fd = openSync(plainFile, "r+");
-          try {
-            writeSync(fd, Buffer.alloc(statSync(plainFile).size));
-            fsyncSync(fd);
-          } finally {
-            closeSync(fd);
-          }
-        } catch {
-          // Unlink below still runs.
+          const moved = moveToBackup(plainFile);
+          if (moved.syncError) syncWarning = `[pista-host] mcp auth: kept the migrated plaintext as ${moved.bak} (mode 0600); syncing the directory failed (${moved.syncError}), so the move may not be durable`;
+        } catch (e) {
+          return { result: { keep: `could not move it to a backup: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}` } };
         }
-        unlinkSync(plainFile);
-        fsyncDir(agentDir);
         return { result: "migrated" };
       });
     } catch (e) {
       return keepPlain(`migration failed: ${(e as NodeJS.ErrnoException).code ?? "could not be merged into the encrypted file"}`);
     }
+    if (syncWarning) log(syncWarning);
     if (outcome === "gone") return result;
     if (typeof outcome === "object") return keepPlain(outcome.keep);
     if (imported.length) log(`[pista-host] mcp auth: migrated ${imported.length} MCP server sign-in(s) from mcp-auth.json into mcp-auth.enc.json`);

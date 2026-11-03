@@ -78,9 +78,20 @@ test("wrong key errors instead of looking empty", async () => {
   const { store, file } = setup();
   await store.modify("a", async () => ({ type: "api_key", key: "1" }));
   const other = createEncryptedCredentialStore({ file, key: randomBytes(32) });
-  await assert.rejects(other.list(), /auth store: cannot decrypt .*wrong key or corrupt file/);
+  await assert.rejects(other.list(), /auth store: cannot decrypt .*encrypted with a different key/);
   await assert.rejects(other.modify("b", async () => oauth), /cannot decrypt/);
   assert.deepEqual((await store.list()).length, 1);
+});
+
+test("a file without a key id (written before it existed) still loads; a wrong key on it reads as unknown", async () => {
+  const { store, file } = setup();
+  await store.modify("a", async () => ({ type: "api_key", key: "1" }));
+  const env = JSON.parse(readFileSync(file, "utf-8"));
+  assert.match(env.kid, /^[0-9a-f]{16}$/);
+  delete env.kid;
+  writeFileSync(file, JSON.stringify(env));
+  assert.equal((await store.list()).length, 1);
+  await assert.rejects(createEncryptedCredentialStore({ file, key: randomBytes(32) }).list(), /wrong key or corrupt file/);
 });
 
 test("corrupt file errors and is left untouched", async () => {

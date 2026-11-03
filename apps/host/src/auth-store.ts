@@ -1,5 +1,5 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, fstatSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { clearConfigValueCache, resolveConfigValue, type CommandExec } from "./config-value.ts";
@@ -11,7 +11,25 @@ export interface EncryptedCredentialStore extends CredentialStore {
   exportSnapshot(): Promise<Record<string, Credential>>;
 }
 
-type Envelope = { version: 1; alg: "aes-256-gcm"; iv: string; tag: string; data: string };
+/** `kid` (key id) is optional: files written before it existed still load. It sits outside the AAD for the same reason. */
+type Envelope = { version: 1; alg: "aes-256-gcm"; kid?: string; iv: string; tag: string; data: string };
+
+/** First 8 bytes (hex) of HMAC-SHA256(key, "pista-auth-key-id"). Lets a load tell "different key" from "corrupt" without the key leaking. */
+export function keyId(key: Buffer): string {
+  return createHmac("sha256", key).update("pista-auth-key-id").digest().subarray(0, 8).toString("hex");
+}
+
+/** A failed decrypt. `reason` is "different-key" only when the file's key id proves it; "unknown" means a key id was absent, so a wrong key and damage look alike. */
+export class DecryptError extends Error {
+  constructor(
+    readonly file: string,
+    readonly reason: "different-key" | "corrupt" | "unknown",
+    why: string,
+  ) {
+    super(`auth store: cannot decrypt ${file}: ${why}`);
+    this.name = "DecryptError";
+  }
+}
 
 function validate(data: unknown, label: string): Record<string, Credential> {
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -74,8 +92,8 @@ export function readEncryptedFile(file: string, key: Buffer): string | undefined
     throw new Error(`auth store: cannot stat ${file}`);
   }
   if (st.isSymbolicLink() || !st.isFile()) throw new Error(`auth store: ${file} is not a regular file (symlinks and special files are refused)`);
-  const fail = (why: string): never => {
-    throw new Error(`auth store: cannot decrypt ${file}: ${why}`);
+  const fail = (why: string, reason: DecryptError["reason"] = "corrupt"): never => {
+    throw new DecryptError(file, reason, why);
   };
   let env: Envelope;
   try {
@@ -90,13 +108,15 @@ export function readEncryptedFile(file: string, key: Buffer): string | undefined
   const tag = strictBase64(env.tag);
   const ct = strictBase64(env.data);
   if (!iv || !tag || !ct || iv.length !== 12 || tag.length !== 16) return fail("corrupt file");
+  if (env.kid !== undefined && (typeof env.kid !== "string" || !/^[0-9a-f]{16}$/.test(env.kid))) return fail("corrupt file");
+  if (env.kid !== undefined && env.kid !== keyId(key)) return fail("encrypted with a different key", "different-key");
   try {
     const d = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: 16 });
     d.setAAD(AAD);
     d.setAuthTag(tag);
     return Buffer.concat([d.update(ct), d.final()]).toString("utf-8");
   } catch {
-    return fail("wrong key or corrupt file");
+    return fail("wrong key or corrupt file", env.kid === undefined ? "unknown" : "corrupt");
   }
 }
 
@@ -106,7 +126,7 @@ export function writeEncryptedFile(file: string, key: Buffer, plain: string): vo
   const c = createCipheriv("aes-256-gcm", key, iv);
   c.setAAD(AAD);
   const data = Buffer.concat([c.update(plain, "utf-8"), c.final()]);
-  const env: Envelope = { version: 1, alg: "aes-256-gcm", iv: iv.toString("base64"), tag: c.getAuthTag().toString("base64"), data: data.toString("base64") };
+  const env: Envelope = { version: 1, alg: "aes-256-gcm", kid: keyId(key), iv: iv.toString("base64"), tag: c.getAuthTag().toString("base64"), data: data.toString("base64") };
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32" && (statSync(dir).mode & 0o077) !== 0) chmodSync(dir, 0o700);
@@ -137,6 +157,111 @@ export function writeEncryptedFile(file: string, key: Buffer, plain: string): vo
   }
 }
 
+/** Suffix of the plaintext backup a migration leaves next to the credential file: `auth.json` becomes `auth.json.migrated.bak`. */
+export const BACKUP_SUFFIX = ".migrated.bak";
+
+/**
+ * Renames a migrated plain file to `<name>.migrated.bak` (mode 0600). Throws if a backup is already there, so one is
+ * never overwritten. When only the directory sync fails, the backup exists and `syncError` carries the error code.
+ */
+export function moveToBackup(plainFile: string): { bak: string; syncError?: string } {
+  const bak = `${plainFile}${BACKUP_SUFFIX}`;
+  if (existsSync(bak)) throw new Error(`a backup already exists at ${bak}`);
+  chmodSync(plainFile, 0o600);
+  renameSync(plainFile, bak);
+  try {
+    fsyncDir(dirname(bak));
+  } catch (e) {
+    return { bak, syncError: (e as NodeJS.ErrnoException).code ?? "unknown" };
+  }
+  return { bak };
+}
+
+/**
+ * Zero-overwrites and unlinks a plaintext backup. Only a regular file with a single link is touched, and it is opened
+ * without following symlinks. Best effort on SSDs and copy-on-write filesystems, which may keep old blocks. Returns
+ * false (after calling `warn`) when the file was left in place.
+ */
+export function secureRemove(file: string, warn: (line: string) => void = () => {}): boolean {
+  try {
+    const st = lstatSync(file);
+    if (!st.isFile()) {
+      warn(`${file} is not a regular file; left in place`);
+      return false;
+    }
+    if (st.nlink > 1) {
+      warn(`${file} has more than one hard link; left in place`);
+      return false;
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return true; // nothing there
+    warn(`could not inspect ${file}: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
+    return false;
+  }
+  try {
+    const fd = openSync(file, fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      writeSync(fd, Buffer.alloc(fstatSync(fd).size));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Unlink below still runs.
+  }
+  try {
+    unlinkSync(file);
+    fsyncDir(dirname(file));
+    return true;
+  } catch {
+    warn(`could not remove ${file}`);
+    return false;
+  }
+}
+
+/** A plaintext backup stays this long after its migration, so a key that was lost right after the move can still be recovered from it. */
+export const BACKUP_KEEP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Once `encFile` exists and has decrypted with the current key, the plaintext backup of its migration is removed, but
+ * only when it is at least 24 hours old (by ctime, which the rename sets). Younger ones are logged, once per call.
+ */
+export function dropBackupIfEncryptedOk(encFile: string, plainFile: string, log: (line: string) => void, now: number = Date.now()): void {
+  const bak = `${plainFile}${BACKUP_SUFFIX}`;
+  if (!existsSync(encFile)) return;
+  let ctimeMs: number;
+  try {
+    ctimeMs = lstatSync(bak).ctimeMs;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") log(`[pista-host] auth: could not inspect the plaintext backup ${bak}: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
+    return;
+  }
+  const dueAt = ctimeMs + BACKUP_KEEP_MS;
+  if (now < dueAt) {
+    log(`[pista-host] auth: a plaintext backup of migrated credentials exists at ${bak}; it is removed on a start after ${new Date(dueAt).toISOString()}`);
+    return;
+  }
+  if (!secureRemove(bak, (w) => log(`[pista-host] auth: WARNING ${w}`))) log(`[pista-host] auth: could not remove the plaintext backup ${bak}; delete it yourself once you no longer need it`);
+}
+
+/** Says what happened to one file that failed to decrypt, that it is untouched, and where a plaintext backup is. */
+export function describeDecryptFailure(name: string, file: string, e: unknown, plainFile: string): string {
+  const bak = `${plainFile}${BACKUP_SUFFIX}`;
+  let what: string;
+  if (e instanceof DecryptError) {
+    what =
+      e.reason === "different-key"
+        ? "was encrypted with a different key than the one the app supplied"
+        : e.reason === "corrupt"
+          ? "is corrupt"
+          : "cannot be decrypted with the current key (a different key, or the file is corrupt)";
+  } else {
+    what = `cannot be read (${e instanceof Error ? e.message : "unknown error"})`;
+  }
+  const backup = existsSync(bak) ? ` The plaintext backup from the earlier migration is still at ${bak}; you can recover from it.` : "";
+  return `${name} ${what}. The file has been left untouched at ${file}.${backup}`;
+}
+
 /** Mutual exclusion is in-process only (one host per PISTA_HOME); Pi's cross-process lockfile is not replicated. */
 export function createEncryptedCredentialStore({
   file,
@@ -157,7 +282,7 @@ export function createEncryptedCredentialStore({
     try {
       parsed = JSON.parse(plain);
     } catch {
-      throw new Error(`auth store: cannot decrypt ${file}: corrupt file`);
+      throw new DecryptError(file, "corrupt", "corrupt file");
     }
     return validate(parsed, file);
   };

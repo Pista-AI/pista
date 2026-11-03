@@ -121,3 +121,42 @@ test("hostChildEnv drops auth variables from the user's shell and keeps ours", (
   const env = hostChildEnv({ PISTA_AUTH_KEY: "ab".repeat(32), PISTA_AUTH_KEY_PORT: "0", PISTA_AUTH_PLAIN: "1", FOO: "bar" }, { PISTA_AUTH_KEY_PORT: "1" });
   assert.deepEqual(env, { FOO: "bar", PISTA_AUTH_KEY_PORT: "1" });
 });
+
+test("concurrent first loads agree on one key and the file holds it", async () => {
+  const { file, vault } = await setup();
+  const keys = await Promise.all(Array.from({ length: 8 }, () => vault.load()));
+  for (const k of keys) assert.ok(k.equals(keys[0]!));
+  assert.ok((await vault.load()).equals(keys[0]!));
+  assert.equal(JSON.parse(await readFile(file, "utf8")).blob, Buffer.from(MARK + keys[0]!.toString("hex")).toString("base64"));
+  assert.deepEqual((await readdir(join(file, ".."))).filter((n) => n.endsWith(".tmp")), []);
+});
+
+test("an existing key file is never overwritten", async () => {
+  const { file, vault } = await setup();
+  const first = await vault.load();
+  const before = await readFile(file, "utf8");
+  const other = createAuthKeyVault({ file, crypto: fakeCrypto() });
+  assert.ok((await other.load()).equals(first));
+  assert.equal(await readFile(file, "utf8"), before);
+});
+
+test("vaults with different wraps on one file agree on the key", async () => {
+  const { file } = await setup();
+  const wrap = (tag: string): VaultCrypto => ({
+    isAvailable: async () => true,
+    backend: () => tag,
+    encrypt: async (t: string) => Buffer.from(tag + t),
+    decrypt: async (b: Buffer) => b.toString().replace(/^[A-Z]+:/, ""),
+  });
+  const [a, b] = await Promise.all([createAuthKeyVault({ file, crypto: wrap("AAA:") }).load(), createAuthKeyVault({ file, crypto: wrap("BBB:") }).load()]);
+  assert.ok(a.equals(b));
+});
+
+test("losing the link race returns the winner's key and removes the temp file", async () => {
+  const { file } = await setup();
+  const winner = createAuthKeyVault({ file, crypto: fakeCrypto() });
+  const loser = createAuthKeyVault({ file, crypto: fakeCrypto(), beforeLink: async () => void (await winner.load()) });
+  const key = await loser.load();
+  assert.ok(key.equals(await winner.load()));
+  assert.deepEqual((await readdir(join(file, ".."))).filter((n) => n.endsWith(".tmp")), []);
+});
