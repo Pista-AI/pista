@@ -80,10 +80,12 @@ function toNumber(raw: string): number {
   return decimal ? Number(s.slice(0, last).replace(/[.,]/g, "") + "." + tail) : Number(s.replace(/[.,]/g, ""));
 }
 
-export function parseAmounts(text: string): Amount[] {
+/** `strict` keeps only amounts that carry a currency or decimals, so day and year numbers in dates are not read as amounts. */
+export function parseAmounts(text: string, opts: { strict?: boolean } = {}): Amount[] {
   const out: Amount[] = [];
   for (const m of text.matchAll(AMOUNT_RE)) {
     const c = [m[1], m[3]].find((x) => x && (SYM[x] || CURRENCIES.has(x)));
+    if (opts.strict && !c && !/[.,]\d{1,2}$/.test(m[2])) continue;
     const value = toNumber(m[2]);
     if (Number.isFinite(value)) out.push(c ? { value, currency: SYM[c] ?? c } : { value });
   }
@@ -105,7 +107,7 @@ export function matchRows(
   // A row showing amounts, none equal to the target, is excluded; rows with no amount stay candidates.
   const amountOk = (i: number) => {
     if (target.amount === undefined) return true;
-    const amts = parseAmounts(text.get(i)!);
+    const amts = parseAmounts(text.get(i)!, { strict: true });
     if (!amts.length) return true;
     return amts.some((a) => Math.abs(a.value - target.amount!) <= 0.01 && (!a.currency || !target.currency || a.currency === target.currency.toUpperCase()));
   };
