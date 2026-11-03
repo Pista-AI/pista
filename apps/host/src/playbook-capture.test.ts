@@ -165,7 +165,7 @@ describe("playbook_save with repeated rows and month selectors", () => {
 
   it("saves the row and the month as rules, with no row text and no invoice in the stored playbook", () => {
     const r = save(build(2), { date: "2026-10-20", amount: 12, currency: "eur" });
-    assert.equal(r.event?.kind, "learned");
+    assert.equal(r.event?.type, "playbook.event");
     const pb = getPlaybook("127.0.0.1")!;
     assert.deepEqual(pb.steps, [
       { kind: "click", target: { role: "link", period: true } },
