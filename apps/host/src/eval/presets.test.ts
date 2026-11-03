@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { workspaceDiff } from "./diff.ts";
 import { slicedFake } from "./fake-solution.ts";
-import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
+import { type RunResult, addResult, childEnv, fixturePaths, judgePrompt, failed, finalText, loadTasks, stageTaskFixture, parseJudge, parseResult, parseSubtests, runEval, summarize, tally, toMarkdown } from "./presets.ts";
 const root = fileURLToPath(new URL("../../../../evals/presets", import.meta.url));
 const base = { presetsDir: `${root}/presets`, tasksDir: `${root}/tasks` };
 
@@ -141,9 +142,10 @@ test("the diff has relative paths for modified, added and deleted files and skip
     put("work", "fresh.txt", "new\n");
     put("work", ".pista/verify.json", "{}");
     put("work", "node_modules/x/index.js", "x");
+    put("work", ".codegraph/codegraph.db", "x");
     const { diff, stats } = await workspaceDiff(join(dir, "stage/fixture"), join(dir, "work"));
     assert.ok(!diff.includes(dir) && !diff.includes("stage/fixture") && !/\bwork\//.test(diff), diff);
-    assert.ok(!diff.includes(".pista") && !diff.includes("node_modules"));
+    assert.ok(!diff.includes(".pista") && !diff.includes("node_modules") && !diff.includes(".codegraph"));
     assert.deepEqual(stats, { files: 3, added: 2, removed: 2 });
     for (const f of ["keep.txt", "gone.txt", "fresh.txt"]) assert.match(diff, new RegExp(`diff --git a/${f} b/${f}`));
   } finally {
@@ -284,5 +286,44 @@ test("a fake sliced task with fewer slices than minSlices runs solo and still pa
     assert.equal(report.results[0]!.finalText, "Done.");
   } finally {
     rmSync(tasks, { recursive: true, force: true });
+  }
+});
+
+test("a sourceRepo task starts from the pinned commit (minus excluded paths) with fixture/ layered on top", () => {
+  const dir = mkdtempSync(join(tmpdir(), "source-repo-test-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: dir, encoding: "utf8" }).trim();
+    const put = (file: string, text: string) => {
+      mkdirSync(join(dir, file, ".."), { recursive: true });
+      writeFileSync(join(dir, file), text);
+    };
+    git("init", "-q");
+    put("src/a.ts", "pinned\n");
+    put("docs/answer.md", "secret\n");
+    put("evals/tasks/t/task.json", "{}");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    const commit = git("rev-parse", "HEAD");
+    put("src/a.ts", "later\n");
+    put("evals/tasks/t/fixture/src/b.ts", "layered\n");
+    const task = { dir: join(dir, "evals/tasks/t"), sourceRepo: { commit, exclude: ["docs", "evals"] } };
+    const dest = join(dir, "out");
+    stageTaskFixture(task, dest);
+    assert.equal(readFileSync(join(dest, "src/a.ts"), "utf8"), "pinned\n");
+    assert.equal(readFileSync(join(dest, "src/b.ts"), "utf8"), "layered\n");
+    assert.ok(!existsSync(join(dest, "docs")) && !existsSync(join(dest, "evals")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a sourceRepo commit missing from the clone fails with a clear error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "source-repo-missing-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    const task = { dir, sourceRepo: { commit: "0123456789abcdef0123456789abcdef01234567" } };
+    assert.throws(() => stageTaskFixture(task, join(dir, "out")), /is not in this clone; fetch full history \(git fetch --unshallow\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
