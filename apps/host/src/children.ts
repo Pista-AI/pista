@@ -109,7 +109,7 @@ export function extensionsFor(kind: ThreadKind, deps: ExtensionDeps): InlineExte
   return [
     // Restricted roles and orchestrators get no codemode, tool search, MCP or browser, unless the role lists browser tools itself.
     ...(restricted
-      ? wantsBrowser(role, deps) ? [browserExtension(hub, ref, store.managedPolicy?.browser, { guardPlaybooks: roleOf(role!, deps.roles).tools.includes("playbook_run") })] : []
+      ? wantsBrowser(role, deps) ? [browserExtension(hub, ref, store.managedPolicy?.browser, { guardPlaybooks: roleOf(role!, deps.roles).tools.includes("playbook_run"), invoicesOnly: role === "invoice-fetch" })] : []
       : [
           createCodemodeExtension({ mode: "on" }),
           createToolSearchExtension(),

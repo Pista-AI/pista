@@ -8,7 +8,7 @@ import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
-import { playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
+import { PLAYBOOK_DECLINED, playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
 
 export type { ThreadRef };
 
@@ -162,8 +162,11 @@ export function toolLimitExtension(hub: Hub, ref: ThreadRef, gate: ToolLimitGate
   };
 }
 
-/** `guardPlaybooks`: the thread's role lists playbook_run, so navigating to a site with a saved playbook waits until playbook_run was tried there. */
-export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules, opts: { guardPlaybooks?: boolean } = {}): InlineExtension {
+/**
+ * `guardPlaybooks`: the thread's role lists playbook_run, so opening a site with a saved playbook waits until playbook_run was tried there.
+ * `invoicesOnly`: playbook_run saves only under `<project>/invoices/`.
+ */
+export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules, opts: { guardPlaybooks?: boolean; invoicesOnly?: boolean } = {}): InlineExtension {
   const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref, domainRules });
   const trace = new PlaybookTrace();
   const attempted = new Set<string>();
@@ -172,16 +175,12 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
     factory: (pi: ExtensionAPI) => {
       // Same condition as browser_download (downloadRoot): a playbook ends in a download.
       registerPlaybookSave(pi, trace, (e) => hub.emit(e), ref.threadId);
-      registerPlaybookRun(pi, { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId });
+      registerPlaybookRun(pi, { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, invoicesOnly: opts.invoicesOnly, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId });
       if (opts.guardPlaybooks) {
+        // A run the user declined at the approval gate counts as tried: the site opens, and no failure is recorded.
+        pi.events?.on(PLAYBOOK_DECLINED, (site) => typeof site === "string" && attempted.add(site));
         pi.on("tool_call", (event) => {
-          // A call counts as tried even when the user then declines it or the run stops: the site opens, but no failure is recorded.
-          if (event.toolName === "playbook_run") {
-            const pb = playbookFor((event.input as { site?: unknown }).site);
-            if (pb) attempted.add(pb.site);
-            return undefined;
-          }
-          const refused = event.toolName === "browser_navigate" ? playbookGuardMessage(attempted, (event.input as { url?: unknown }).url) : undefined;
+          const refused = playbookGuardMessage(attempted, event.toolName, event.input);
           return refused ? { block: true, reason: refused } : undefined;
         });
       }
@@ -402,6 +401,7 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
             // This approval does not lift the browser tools' consequential-action stops: it showed only a ref, so the user never saw what would be clicked. The tool asks again, with the exact action.
             return undefined;
           }
+          if (playbook) pi.events?.emit(PLAYBOOK_DECLINED, playbook.site);
           const note = answer.note?.trim();
           if (note) {
             // Declined with guidance: the agent continues, following what the user said.
