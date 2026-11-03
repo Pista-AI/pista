@@ -66,8 +66,13 @@ export async function refDownloadSource(d: BrowserDriver, ref: string, approve: 
 /**
  * Saves one download to `path` under `root` (confined, see confineToFolder). An existing file is replaced only with `overwrite` or
  * when it is clearly a failed earlier download; the new file is written beside it and renamed over it, so a failed download never destroys it.
+ * `validate` sees the new file before it replaces anything; when it throws, the new file is removed and the old one stays.
  */
-export async function saveDownload(d: BrowserDriver, to: { root: string; path: string; overwrite?: boolean }, source: { url?: string; trigger?: () => Promise<unknown> }) {
+export async function saveDownload(
+  d: BrowserDriver,
+  to: { root: string; path: string; overwrite?: boolean; validate?: (file: string, saved: { bytes: number; contentType?: string; urlChain?: string[] }) => void },
+  source: { url?: string; trigger?: () => Promise<unknown>; signal?: AbortSignal },
+) {
   const target = confineToFolder(to.root, to.path);
   let replaced = "";
   if (existsSync(target)) {
@@ -79,8 +84,14 @@ export async function saveDownload(d: BrowserDriver, to: { root: string; path: s
   const dest = replaced ? tempDownloadPath(target) : target;
   try {
     const saved = await d.download({ path: dest, ...source });
+    try {
+      to.validate?.(dest, saved);
+    } catch (error) {
+      rmSync(dest, { force: true });
+      throw error;
+    }
     if (replaced) renameSync(dest, target);
-    return { ...saved, replaced, remove: () => rmSync(target, { force: true }) };
+    return { ...saved, replaced };
   } catch (error) {
     if (replaced) rmSync(dest, { force: true });
     throw error;
