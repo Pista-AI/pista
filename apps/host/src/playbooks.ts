@@ -10,7 +10,10 @@ export const FAIL_THRESHOLD = 3;
 export const MAX_STEPS = 30;
 export const MAX_FALLBACKS = 5;
 const MAX_HISTORY = 20;
-const MAX_TEXT = 200;
+/** Longest free text (names, texts, urls, summaries) a playbook stores. */
+export const MAX_TEXT = 200;
+/** Longest one-line label shown for a step or reason. */
+export const LABEL_MAX = 120;
 const MAX_SELECTOR = 300;
 
 // Resolved at call time so tests can point PISTA_HOME at a temp dir.

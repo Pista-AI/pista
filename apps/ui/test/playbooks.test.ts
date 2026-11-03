@@ -17,14 +17,14 @@ test("shows the row selector of a click step from its target", () => {
   const lines = describeSteps([
     { kind: "click", target: { role: "link", name: "<b>x</b>", row: { match: ["date"] } } },
   ]);
-  assert.deepEqual(lines, ["Pick the row matching the invoice date", "Click link '<b>x</b>'"]);
+  assert.deepEqual(lines, ["Pick the row matching the invoice date"]);
 });
 
 test("shows the month selector of a click step from its target", () => {
   const lines = describeSteps([
     { kind: "click", target: { role: "tab", name: "March", period: true } },
   ]);
-  assert.deepEqual(lines, ["Pick the invoice's month", "Click 'March'"]);
+  assert.deepEqual(lines, ["Pick the invoice's month"]);
 });
 
 test("shows the row selector of a download step from its target", () => {

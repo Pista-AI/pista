@@ -13,7 +13,9 @@ import type { BrowserDriver } from "./driver.ts";
 import { isPeriodLabel, matchPeriod, matchRows, parseDates } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
-export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string; row?: { match: ("date" | "amount")[] }; period?: boolean }
+/** What a row is matched on. Mirrors the protocol type; pi-browser does not depend on protocol (the host test checks they agree). */
+export type ReplayRowMatch = ("date" | "amount")[];
+export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string; row?: { match: ReplayRowMatch }; period?: boolean }
 export interface ReplayExpect { urlIncludes?: string; text?: string; element?: ReplayLocator }
 export type ReplayStep =
   | { kind: "navigate"; url: string; expect?: ReplayExpect }
@@ -64,6 +66,8 @@ export interface ReplayOptions {
 
 const DETAIL_MAX = 300;
 const URL_MAX = 500;
+/** Longest address quoted in a blocked-page message. */
+const BLOCKED_URL_MAX = 200;
 const SNAPSHOT_MAX = 8000;
 const RESOLVE_MAX_ELEMENTS = 500;
 
@@ -257,7 +261,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     return o.allowUrl(url);
   };
   const guardUrl = (url: string, what: string) => {
-    if (!allowed(url)) throw new Handoff("blocked", `${what} ${url.slice(0, 200)} is outside this playbook's site or not an http(s) address.`);
+    if (!allowed(url)) throw new Handoff("blocked", `${what} ${url.slice(0, BLOCKED_URL_MAX)} is outside this playbook's site or not an http(s) address.`);
   };
   const stillOnSite = async () => guardUrl((await d.state()).url, "The page moved to");
   let saved: { path: string; bytes: number; contentType?: string } | undefined;
