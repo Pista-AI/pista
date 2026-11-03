@@ -1,106 +1,149 @@
 import assert from "node:assert/strict";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext } from "node:vm";
 import { test } from "node:test";
 import type { BrowserDriver } from "../src/driver.ts";
-import { scripts } from "../src/page-scripts.ts";
 import { evaluateScrubbed, screenshotMasked } from "../src/secrets.ts";
 import { registerBrowserTools } from "../src/tools.ts";
 
 /** A just-enough DOM: a flat list of inputs, no layout. The real injected page scripts run against it. */
-type FakeField = { tagName: string; type: string; value: string; id: string; attrs: Record<string, string>; getAttribute(n: string): string | null; setAttribute(n: string, v: string): void; removeAttribute(n: string): void };
-function field(type: string, value: string, attrs: Record<string, string> = {}): FakeField {
-  const f: FakeField = {
-    tagName: "INPUT", type, value, id: "", attrs: { ...attrs },
-    getAttribute: (n) => f.attrs[n] ?? null,
-    setAttribute: (n, v) => void (f.attrs[n] = v),
-    removeAttribute: (n) => void delete f.attrs[n],
-  };
-  return f;
+class FakeNodeList { [i: number]: unknown; constructor(private items: unknown[]) { items.forEach((x, i) => (this[i] = x)); } get length() { return this.items.length; } item(i: number) { return this.items[i]; } }
+class FakeInput {
+  tagName = "INPUT"; id = ""; type: string; _v: string; attrs: Record<string, string>;
+  constructor(type: string, value: string, attrs: Record<string, string> = {}) { this.type = type; this._v = value; this.attrs = { ...attrs }; }
+  get value() { return this._v; }
+  set value(v: string) { this._v = v; }
+  get shadowRoot() { return null; }
+  getAttribute(n: string) { return this.attrs[n] ?? null; }
+  setAttribute(n: string, v: string) { this.attrs[n] = v; }
+  removeAttribute(n: string) { delete this.attrs[n]; }
 }
-function fakePage(fields: FakeField[]) {
-  const styles: object[] = [];
-  const doc = {
-    nodeType: 9, head: { appendChild: (s: object) => void styles.push(s) }, documentElement: {},
-    createElement: () => {
-      const style = { setAttribute() {}, textContent: "", remove: () => void styles.splice(styles.indexOf(style), 1) };
-      return style;
-    },
-    querySelectorAll: (sel: string) => (sel === "*" ? fields : sel.startsWith("style") ? [...styles] : []),
-    getElementById: () => null,
-  };
-  const win: Record<string, unknown> = {};
-  return { styles, run: (script: string) => runInNewContext(script, { window: win, document: doc, RegExp, JSON, Array, Set, Document: Object }) };
+const input = (type: string, value: string, attrs?: Record<string, string>) => new FakeInput(type, value, attrs);
+
+function fakePage(fields: FakeInput[]) {
+  const styles: { remove(): void }[] = [];
+  const list = (items: unknown[]) => new FakeNodeList(items);
+  class Doc {
+    nodeType = 9; head = { appendChild: (s: { remove(): void }) => void styles.push(s) }; documentElement = {};
+    createElement() { const style = { setAttribute() {}, textContent: "", remove: () => void styles.splice(styles.indexOf(style), 1) }; return style; }
+    querySelectorAll(sel: string) { return list(sel === "input" || sel === "*" ? fields : sel.startsWith("style") ? [...styles] : []); }
+    getElementById() { return null; }
+  }
+  // The page's own realm: builtins are the context's, so a script that patches them cannot touch this test process.
+  const ctx = createContext({
+    document: new Doc(), Document: Doc, DocumentFragment: class { querySelectorAll() { return list([]); } }, NodeList: FakeNodeList,
+    Element: FakeInput, HTMLInputElement: FakeInput, HTMLTextAreaElement: class { get value() { return ""; } }, HTMLIFrameElement: class { get contentDocument() { return null; } },
+  });
+  runInContext("var window = globalThis", ctx);
+  return { styles, run: (script: string) => runInContext(script, ctx) };
 }
 
-/** A driver over the fake page: page scripts run for real, anything else is the user's script. */
-function driver(page: ReturnType<typeof fakePage>, user: () => unknown = () => null, shot: () => Promise<{ data: string; mimeType: string }> = async () => ({ data: "jpg", mimeType: "image/jpeg" })) {
+/** A driver over the fake page: page scripts run for real. */
+function driver(page: ReturnType<typeof fakePage>, shot: () => Promise<{ data: string; mimeType: string }> = async () => ({ data: "jpg", mimeType: "image/jpeg" })) {
   return {
     state: async () => ({ url: "http://x/", title: "t", loading: false }),
-    evaluate: async (script: string) => (script.includes("__pistaSecretMarks") ? page.run(script) : user()),
+    evaluate: async (script: string) => page.run(script),
     screenshot: shot,
   } as unknown as BrowserDriver;
 }
+/** The script as the model would write it: it sees the page's own `window`/`document` via the fake's globals. */
+const withPw = (value = "hunter2-secret", type = "password") => { const pw = input(type, value); return { pw, page: fakePage([pw]) }; };
 
 test("an autofilled password in an eval result comes back as [redacted]", async () => {
-  const page = fakePage([field("password", "hunter2-secret"), field("text", "alice", { name: "user" })]);
-  const text = await evaluateScrubbed(driver(page, () => ({ pw: "hunter2-secret", who: "alice", list: ["x hunter2-secret y"], esc: 'a"b' })), "dump()");
+  const page = fakePage([input("password", "hunter2-secret"), input("text", "alice", { name: "user" })]);
+  const text = await evaluateScrubbed(driver(page), `({ pw: "hunter2-secret", who: "alice", list: ["x hunter2-secret y"], esc: 'a"b' })`);
   assert.ok(!text.includes("hunter2-secret"));
   assert.match(text, /"pw": "\[redacted\]"/);
   assert.match(text, /alice/); // an ordinary field is untouched
 });
 
-test("a value shorter than 4 characters is left alone", async () => {
-  assert.match(await evaluateScrubbed(driver(fakePage([field("password", "ab")]), () => "ab"), "x"), /"ab"/);
+test("a value under 6 characters is left alone, a JSON-escaped secret is scrubbed", async () => {
+  assert.match(await evaluateScrubbed(driver(fakePage([input("password", "abcde")])), `"abcde"`), /"abcde"/);
+  assert.equal(await evaluateScrubbed(driver(fakePage([input("password", 'pa"ss"word')])), `'pa"ss"word'`), '"[redacted]"');
 });
 
-test("a JSON-escaped form of a secret is scrubbed too", async () => {
-  const text = await evaluateScrubbed(driver(fakePage([field("password", 'pa"ss"word')]), () => 'pa"ss"word'), "x");
-  assert.equal(text, '"[redacted]"');
+test("a password field toggled to type=text stays secret", async () => {
+  const { pw, page } = withPw("s3cret-value");
+  page.run("window"); // any page script has not run yet; the eval itself classifies the field first
+  assert.equal(await evaluateScrubbed(driver(page), `"s3cret-value"`), '"[redacted]"');
+  pw.type = "text"; // the show-password toggle, after the field was seen as a password
+  assert.equal(await evaluateScrubbed(driver(page), `"s3cret-value"`), '"[redacted]"');
 });
 
-test("a password field toggled to type=text stays secret once a page script has seen it", async () => {
-  const pw = field("password", "s3cret-value");
-  const page = fakePage([pw]);
-  page.run(scripts.secrets("mark")); // e.g. an earlier snapshot
-  pw.type = "text"; // the show-password toggle
-  assert.equal(page.run(scripts.secrets("scrub", "s3cret-value")), "[redacted]");
-  // The snapshot's predicate is the same function: it is injected into every script as __isSecret.
-  assert.equal(page.run(scripts.focusedIsPassword()), false); // nothing focused; the predicate is exercised through mask below
-  page.run(scripts.secrets("mask"));
-  assert.ok("data-pista-secret" in pw.attrs);
+test("a script that reveals or changes the field itself is still scrubbed", async () => {
+  const a = withPw("s3cret-value");
+  assert.equal(await evaluateScrubbed(driver(a.page), `(document.querySelectorAll("input")[0].type = "text", "s3cret-value")`), '"[redacted]"');
+  const b = withPw("s3cret-value");
+  assert.equal(await evaluateScrubbed(driver(b.page), `(document.querySelectorAll("input")[0].value = "", "s3cret-value")`), '"[redacted]"'); // cleared: collected up front
+  const c = withPw("s3cret-value");
+  assert.equal(await evaluateScrubbed(driver(c.page), `(document.querySelectorAll("input")[0].value = "brand-new-secret", "brand-new-secret")`), '"[redacted]"'); // set: collected at the end
 });
 
-test("a script that reveals a password itself is still scrubbed", async () => {
-  const pw = field("password", "s3cret-value");
-  assert.equal(await evaluateScrubbed(driver(fakePage([pw]), () => ((pw.type = "text"), pw.value)), "reveal()"), '"[redacted]"');
+test("a script that throws the secret gives a scrubbed error", async () => {
+  const { page } = withPw("s3cret-value");
+  await assert.rejects(evaluateScrubbed(driver(page), `throw new Error(document.querySelectorAll("input")[0].value)`), (e: Error) => e.message.includes("[redacted]") && !e.message.includes("s3cret-value"));
 });
 
-test("when the secret check fails nothing is returned", async () => {
-  // Calls: mark, the user's script, then the scrub.
-  const fail = (last: () => unknown) => { let n = 0; return { evaluate: async () => (++n < 3 ? "hunter2-secret" : last()) } as unknown as BrowserDriver; };
-  await assert.rejects(evaluateScrubbed(fail(() => { throw new Error("page gone"); }), "x"), /not returned/);
-  await assert.rejects(evaluateScrubbed(fail(() => ({ not: "a string" })), "x"), /not returned/);
+test("a script that patches String, JSON and the marker before returning the secret is still redacted", async () => {
+  const { pw, page } = withPw("s3cret-value");
+  const attack = `(() => {
+    String.prototype.split = () => []; String.prototype.replaceAll = (a, b) => b; String.prototype.indexOf = () => -1; String.prototype.slice = () => "";
+    String.prototype[Symbol.split] = () => []; JSON.stringify = () => "leak";
+    Array.prototype.push = () => 0; WeakSet.prototype.has = () => false;
+    try { window.__pistaSecretMarks = { add() {}, has: () => false }; } catch {}
+    try { Object.defineProperty(window, "__pistaSecretMarks", { value: {} }); } catch {}
+    const f = document.querySelectorAll("input")[0]; f.type = "text";
+    return ["s3cret-value"];
+  })()`;
+  const text = await evaluateScrubbed(driver(page), attack);
+  assert.ok(!text.includes("s3cret-value"), text);
+  assert.ok(pw.value === "s3cret-value");
+});
+
+test("when the checking evaluation fails or reports nothing usable, nothing is returned", async () => {
+  const throwing = { evaluate: async () => { throw new Error("page gone SECRET"); } } as unknown as BrowserDriver;
+  await assert.rejects(evaluateScrubbed(throwing, "x"), (e: Error) => /not returned/.test(e.message) && !/SECRET/.test(e.message));
+  for (const odd of [undefined, "raw", { ok: true }, { ok: true, text: 5 }]) await assert.rejects(evaluateScrubbed({ evaluate: async () => odd } as unknown as BrowserDriver, "x"), /not returned/);
+});
+
+test("a long result is cut", async () => {
+  const text = await evaluateScrubbed({ evaluate: async () => ({ ok: true, text: "a".repeat(150_000) }) } as unknown as BrowserDriver, "x");
+  assert.ok(text.length < 100_300 && text.includes("cut"));
 });
 
 test("browser_eval returns the scrubbed text", async () => {
-  const page = fakePage([field("password", "hunter2-secret")]);
+  const { page } = withPw("hunter2-secret");
   const tools = new Map<string, { execute: (id: string, p: Record<string, unknown>) => Promise<{ content: { text?: string }[] }> }>();
-  registerBrowserTools({ registerTool: (t: { name: string }) => tools.set(t.name, t as never), on: () => {} } as never, () => driver(page, () => "hunter2-secret"), { keepPageViews: 0 });
-  const res = await tools.get("browser_eval")!.execute("t", { script: "x" });
+  registerBrowserTools({ registerTool: (t: { name: string }) => tools.set(t.name, t as never), on: () => {} } as never, () => driver(page), { keepPageViews: 0 });
+  const res = await tools.get("browser_eval")!.execute("t", { script: `"hunter2-secret"` });
   assert.equal(res.content[1]!.text, '"[redacted]"');
 });
 
 test("the screenshot mask style is added before capture and removed after, also when capture fails", async () => {
-  const f = field("text", "visible-pw", { autocomplete: "current-password" });
+  const f = input("text", "visible-pw", { autocomplete: "current-password" });
   const page = fakePage([f]);
   let during: { styles: number; marked: boolean } | undefined;
-  const d = driver(page, undefined, async () => ((during = { styles: page.styles.length, marked: "data-pista-secret" in f.attrs }), { data: "jpg", mimeType: "image/jpeg" }));
+  const d = driver(page, async () => ((during = { styles: page.styles.length, marked: "data-pista-secret" in f.attrs }), { data: "jpg", mimeType: "image/jpeg" }));
   assert.equal((await screenshotMasked(d)).data, "jpg");
   assert.deepEqual(during, { styles: 1, marked: true });
   assert.equal(page.styles.length, 0);
   assert.ok(!("data-pista-secret" in f.attrs));
-  await assert.rejects(screenshotMasked(driver(page, undefined, async () => { throw new Error("boom"); })), /boom/);
+  await assert.rejects(screenshotMasked(driver(page, async () => { throw new Error("boom"); })), /boom/);
   assert.equal(page.styles.length, 0);
+});
+
+test("a failing unmask warns without values and still returns the screenshot", async () => {
+  let n = 0;
+  const d = { evaluate: async () => { if (++n > 1) throw new Error("gone s3cret-value"); return ""; }, screenshot: async () => ({ data: "jpg", mimeType: "image/jpeg" }) } as unknown as BrowserDriver;
+  const warns: string[] = [];
+  const original = console.warn;
+  console.warn = (...a: unknown[]) => void warns.push(a.join(" "));
+  try {
+    assert.equal((await screenshotMasked(d)).data, "jpg");
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(warns.length, 1);
+  assert.ok(!warns[0]!.includes("s3cret-value"));
 });
 
 test("no screenshot is taken when the mask cannot be applied", async () => {

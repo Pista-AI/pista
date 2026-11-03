@@ -55,7 +55,7 @@ test("browser tools write private, correctly shaped lines", async () => {
   let trips = 0;
   const driver = {
     state: async () => ({ url: "https://shop.example/cart?email=a@b.c#top", title: "Secret title", loading: false }),
-    evaluate: async (script: string) => (trips++, script.includes("fail") ? Promise.reject(new Error("Timed out waiting for SECRET")) : "secret value"),
+    evaluate: async (script: string) => (trips++, script.includes("fail") ? Promise.reject(new Error("Timed out waiting for SECRET")) : { ok: true, text: "\"secret value\"" }),
     stats: () => ({ roundTrips: trips }),
   } as unknown as BrowserDriver;
   const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
@@ -66,7 +66,7 @@ test("browser tools write private, correctly shaped lines", async () => {
   assert.equal(ok.tool, "browser_eval");
   assert.equal(ok.threadId, "thr-1");
   assert.equal(ok.url, "shop.example/cart");
-  assert.equal(ok.cdp, 3); // mark secret fields, run the script, scrub the result
+  assert.equal(ok.cdp, 1);
   assert.equal(ok.isError, false);
   assert.ok(ok.chars > 0 && typeof ok.ms === "number");
   assert.deepEqual([bad.isError, bad.error], [true, "timeout"]);
