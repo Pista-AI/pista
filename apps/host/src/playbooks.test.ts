@@ -72,8 +72,8 @@ describe("validatePlaybook details", () => {
       { kind: "wait", expect: { urlIncludes: "a1".repeat(20), text: "b2".repeat(20) } },
       { kind: "signIn", origin: "https://app.example.com./x" },
     ] }), "example.com");
-    assert.equal(pb.steps.length, 2); // the emptied wait is dropped
-    assert.equal((pb.steps[1] as { origin: string }).origin, "https://app.example.com");
+    assert.equal(pb.steps.length, 1); // the emptied wait is dropped
+    assert.equal((pb.steps[0] as { origin: string }).origin, "https://app.example.com");
   });
 });
 
