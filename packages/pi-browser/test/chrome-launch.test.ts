@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { findBrowser } from "../src/chrome/find.ts";
-import { launchBrowser, pistaChromeProfileDir, ProfileInUseError } from "../src/chrome/launch.ts";
+import { isBrowserOnProfile, launchBrowser, pistaChromeProfileDir, ProfileInUseError } from "../src/chrome/launch.ts";
+import { ensureProfilePrefs } from "../src/chrome/prefs.ts";
 import { PipeTransport } from "../src/chrome/pipe.ts";
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -80,7 +84,7 @@ test("launch: close() kills after the timeout", async () => {
 
 test("launch: ProfileInUseError for a live lock, not for a stale one (dead pid removes the lock)", async () => {
   let removed = 0;
-  const base = { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, hostname: () => "host", lockGraceMs: 30, removeLock: () => removed++ };
+  const base = { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, hostname: () => "host", lockGraceMs: 30, removeLock: () => removed++, prepareProfile: () => {}, commandLine: async () => "/x/Google Chrome --user-data-dir=/p --foo" };
   await assert.rejects(launchBrowser({ browserPath: "c", profileDir: "/p" }, { ...base, isAlive: () => true }), ProfileInUseError);
   assert.equal(removed, 0);
   await launchBrowser({ browserPath: "c", profileDir: "/p" }, { ...base, isAlive: () => false });
@@ -92,7 +96,7 @@ test("launch: ProfileInUseError for a live lock, not for a stale one (dead pid r
 test("launch: a lock owner that is shutting down gets a grace period", async () => {
   let alive = true;
   setTimeout(() => (alive = false), 150);
-  await launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, hostname: () => "host", isAlive: () => alive, lockGraceMs: 2000, removeLock: () => {} });
+  await launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, hostname: () => "host", isAlive: () => alive, lockGraceMs: 2000, removeLock: () => {}, commandLine: async () => "chrome --user-data-dir=/p" });
 });
 
 test("close: waits for the exit, then for the lock owner when the spawned process handed off", async () => {
@@ -215,4 +219,52 @@ test("close: never kills a lock pid that is not a browser on our profile", async
     await c;
     assert.deepEqual(killed, [], `${platform} ${cmd}`);
   }
+});
+
+test("lock: a live pid counts only when it is a browser on this profile", async () => {
+  let removed = 0;
+  const run = (commandLine: (pid: number) => Promise<string | undefined>, isAlive = true) =>
+    launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => fakeChild().child, readLink: () => "host-4242", mkdir: () => {}, prepareProfile: () => {}, hostname: () => "host", isAlive: () => isAlive, lockGraceMs: 30, removeLock: () => removed++, commandLine, platform: "linux" });
+  await assert.rejects(run(async () => "/opt/google/chrome/chrome --user-data-dir=/p --x"), ProfileInUseError);
+  await run(async () => "/usr/bin/node server.js"); // a reused pid
+  await run(async () => "/opt/google/chrome/chrome --user-data-dir=/other"); // another profile
+  await run(async () => "/opt/google/chrome/chrome --user-data-dir=/p2"); // a longer directory name
+  assert.equal(removed, 3);
+  await run(async () => "/usr/bin/node", false); // dead pid
+  assert.equal(removed, 4);
+  assert.ok(isBrowserOnProfile("/usr/bin/chromium --user-data-dir=/p/ --x", "/p/")); // trailing slash
+  assert.ok(isBrowserOnProfile(`/usr/bin/chromium --user-data-dir=${process.cwd()}/rel`, "rel")); // relative dir
+  assert.ok(!isBrowserOnProfile("/usr/bin/node /home/chrome/app.js --user-data-dir=/p", "/p")); // "chrome" only in a path
+  assert.ok(isBrowserOnProfile("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/a b/p --x", "/a b/p"));
+});
+
+test("close: Browser.close first, then SIGTERM, then SIGKILL", async () => {
+  const { child, sent } = fakeChild();
+  const signals: string[] = [];
+  child.kill = (sig: string) => {
+    signals.push(sig);
+    if (sig === "SIGKILL") child.emit("exit", null, sig);
+  };
+  const b = await launchBrowser({ browserPath: "c", profileDir: "/p" }, { spawn: () => child, readLink: () => { throw new Error("x"); }, mkdir: () => {}, prepareProfile: () => {}, closeTimeoutMs: 10 });
+  await b.close();
+  assert.equal(sent[0].method, "Browser.close");
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("prefs: creates the file, keeps other keys, fixes a crashed exit, leaves malformed JSON alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pista-prefs-"));
+  const file = join(dir, "Default", "Preferences");
+  const read = () => JSON.parse(readFileSync(file, "utf8"));
+  assert.equal(ensureProfilePrefs(dir), true);
+  assert.equal(read().session.restore_on_startup, 1);
+  writeFileSync(file, JSON.stringify({ a: { b: 1 }, session: { x: 2 }, profile: { exit_type: "Crashed", exited_cleanly: false, name: "n" } }));
+  assert.equal(ensureProfilePrefs(dir), true);
+  assert.deepEqual(read(), { a: { b: 1 }, session: { x: 2, restore_on_startup: 1 }, profile: { exit_type: "Normal", exited_cleanly: true, name: "n" } });
+  assert.equal(ensureProfilePrefs(dir), false); // already right: no rewrite
+  writeFileSync(file, "{ not json");
+  assert.equal(ensureProfilePrefs(dir), false);
+  assert.equal(readFileSync(file, "utf8"), "{ not json");
+  const other = mkdtempSync(join(tmpdir(), "pista-prefs-"));
+  mkdirSync(join(other, "Default"));
+  assert.equal(ensureProfilePrefs(other), true);
 });

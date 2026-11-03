@@ -1,9 +1,10 @@
 import { execFile, spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, readlinkSync, rmSync } from "node:fs";
+import { mkdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { hostname as osHostname } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PipeTransport } from "./pipe.ts";
+import { ensureProfilePrefs } from "./prefs.ts";
 
 export class ProfileInUseError extends Error {
   constructor(public profileDir: string) {
@@ -25,6 +26,8 @@ export type LaunchDeps = {
   hostname?: () => string;
   /** Command line of a process, or undefined when unknown. */
   commandLine?: (pid: number) => Promise<string | undefined>;
+  /** Prepares the profile preferences before launch. */
+  prepareProfile?: (profileDir: string) => void;
   killPid?: (pid: number, signal: NodeJS.Signals) => void;
   removeLock?: (path: string) => void;
   platform?: NodeJS.Platform;
@@ -66,15 +69,45 @@ function readLock(profileDir: string, deps: LaunchDeps): LockInfo | undefined {
   return Number.isInteger(pid) && pid > 0 ? { pid, host: target.slice(0, i) } : undefined;
 }
 
+const trimSlashes = (p: string) => (p.length > 1 ? p.replace(/[\\/]+$/, "") : p);
+
+/** The spellings a browser may have been started with: as given and resolved (relative path, /var vs /private/var). */
+function profileSpellings(profileDir: string): string[] {
+  const out = new Set([trimSlashes(profileDir), trimSlashes(resolve(profileDir))]);
+  try {
+    out.add(trimSlashes(realpathSync(profileDir)));
+  } catch {}
+  return [...out];
+}
+
+/** True when `command` is a Chromium-family browser started with `--user-data-dir=<profileDir>`. */
+export function isBrowserOnProfile(command: string, profileDir: string): boolean {
+  // The executable is everything before the first flag; the profile path (which may contain "chrome") is not part of it.
+  const exe = basename(command.split(/\s--/)[0] ?? "");
+  if (!/chrom|msedge|brave/i.test(exe)) return false;
+  for (const dir of profileSpellings(profileDir)) {
+    const flag = `--user-data-dir=${dir}`;
+    for (let at = command.indexOf(flag); at >= 0; at = command.indexOf(flag, at + 1)) {
+      const next = command[at + flag.length];
+      if (next === undefined || /\s/.test(next) || next === "/") return true; // not a longer directory name
+    }
+  }
+  return false;
+}
+
 /**
  * Chrome's `SingletonLock` is a symlink to `<host>-<pid>`. It is held only while that pid is alive on
- * this host: a dead pid means a stale lock (Chrome crashed or was killed), which Chrome itself takes over.
+ * this host and is still a browser on this profile: a dead pid means a stale lock (Chrome crashed or was killed),
+ * and a live pid that runs something else is a pid reused after a reboot. Chrome itself takes over a stale lock.
  * A lock from another host cannot be checked, so it counts as in use, as in Chrome.
  */
-function lockHeld(lock: LockInfo | undefined, deps: LaunchDeps): boolean {
+async function lockHeld(lock: LockInfo | undefined, profileDir: string, deps: LaunchDeps): Promise<boolean> {
   if (!lock) return false;
   if (lock.host !== (deps.hostname ?? osHostname)()) return true;
-  return (deps.isAlive ?? pidAlive)(lock.pid);
+  if (!(deps.isAlive ?? pidAlive)(lock.pid)) return false;
+  if ((deps.platform ?? process.platform) === "win32") return true; // no command line check there
+  const command = await (deps.commandLine ?? defaultCommandLine)(lock.pid);
+  return command === undefined || isBrowserOnProfile(command, profileDir); // unknown: assume it is the browser
 }
 
 const defaultCommandLine = (pid: number) =>
@@ -97,7 +130,7 @@ export async function launchBrowser(
   (deps.mkdir ?? mkdirSync)(options.profileDir, { recursive: true, mode: 0o700 });
   // A browser that is still shutting down (just closed by us or the user) gets a short grace period.
   const graceEnd = Date.now() + (deps.lockGraceMs ?? 3000);
-  while (lockHeld(readLock(options.profileDir, deps), deps)) {
+  while (await lockHeld(readLock(options.profileDir, deps), options.profileDir, deps)) {
     if (Date.now() >= graceEnd) throw new ProfileInUseError(options.profileDir);
     await sleep(100);
   }
@@ -106,9 +139,13 @@ export async function launchBrowser(
       (deps.removeLock ?? ((p: string) => rmSync(p, { force: true })))(join(options.profileDir, "SingletonLock"));
     } catch {}
   }
+  try {
+    (deps.prepareProfile ?? ensureProfilePrefs)(options.profileDir);
+  } catch {} // best effort: a profile we cannot tune still launches
   const args = [
     `--user-data-dir=${options.profileDir}`,
     "--remote-debugging-pipe",
+    "--restore-last-session", // with the restore_on_startup preference, brings back the tabs and session-only cookies
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-blink-features=AutomationControlled",
@@ -151,6 +188,10 @@ export async function launchBrowser(
       transport.send("Browser.close").catch(() => {});
       await waitExit(closeTimeout);
       if (!exited) {
+        child.kill("SIGTERM");
+        await waitExit(2000);
+      }
+      if (!exited) {
         child.kill("SIGKILL");
         await waitExit(2000);
       }
@@ -165,7 +206,7 @@ export async function launchBrowser(
       while (alive(lock.pid) && Date.now() < until) await sleep(50);
       // Never signal a stranger: the pid may have been reused. Only kill a process that is demonstrably
       // a browser on our profile (never on Windows, where there is no command line check).
-      const ours = platform !== "win32" && alive(lock.pid) && ((await (deps.commandLine ?? defaultCommandLine)(lock.pid)) ?? "").includes(`--user-data-dir=${options.profileDir}`);
+      const ours = platform !== "win32" && alive(lock.pid) && isBrowserOnProfile((await (deps.commandLine ?? defaultCommandLine)(lock.pid)) ?? "", options.profileDir);
       if (ours && alive(lock.pid)) {
         try { kill(lock.pid, "SIGKILL"); } catch {}
         const end = Date.now() + 2000;
