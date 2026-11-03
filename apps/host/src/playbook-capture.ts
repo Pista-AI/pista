@@ -7,13 +7,16 @@ import type { HostEvent, Playbook, PlaybookExpect, PlaybookLocator, PlaybookStep
 import { getPlaybook, isOpaque, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
-export type TraceRow = { n: number } & BrowserTraceEntry;
+/** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
+export type ReplayedEntry = { kind: "replayed"; index: number; step: PlaybookStep };
+export type TraceEntry = BrowserTraceEntry | ReplayedEntry;
+export type TraceRow = { n: number } & TraceEntry;
 
 /** The last TRACE_LIMIT successful browser actions of one thread, numbered from 1 (numbers never repeat). */
 export class PlaybookTrace {
   private rows: TraceRow[] = [];
   private next = 1;
-  add(entry: BrowserTraceEntry): void {
+  add(entry: TraceEntry): void {
     this.rows.push({ n: this.next++, ...entry });
     if (this.rows.length > TRACE_LIMIT) this.rows.shift();
   }
@@ -37,6 +40,7 @@ export function describeTrace(rows: readonly TraceRow[]): string {
         case "click": return `${r.n} click ${where(r.locator)}${place(r)} -> ${r.urlAfter}`;
         case "download": return `${r.n} download ${r.url ?? where(r.locator ?? {}) + place(r)} (${r.contentType ?? "unknown type"}, ${r.source === "url" ? "address given by you" : "from the page"})`;
         case "signIn": return `${r.n} signIn ${r.origin}`;
+        case "replayed": return `${r.n} replayed step ${r.index} of the saved playbook (${r.step.kind})`;
       }
     })
     .join("\n");
@@ -106,6 +110,12 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
         if (byInvoice) throw new Error(`entry ${r.n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`);
         return { kind: "navigate", url: r.url, ...(text ? { expect } : {}) };
       case "signIn": return { kind: "signIn", origin: r.origin, ...(text ? { expect } : {}) };
+      case "replayed": {
+        const t = "target" in r.step ? r.step.target : undefined;
+        if (byInvoice && r.step.kind === "navigate") throw new Error(`entry ${r.n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`);
+        if (t?.row || t?.period) byInvoice = true;
+        return r.step;
+      }
       case "click": {
         // The page before this click on the replayed path (the previous chosen entry). A changed path is a stable thing to wait for.
         const before = urlOf(picked[i]!);
@@ -159,6 +169,7 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const now = new Date().toISOString();
     savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
     const first = startChanged ? 1 : changed[0]! + 1;
+    // TODO(chat-cards): add the before/after labels of the changed step to this event once the protocol's playbook.event has them.
     return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first } };
   } catch (e) {
     return { message: `Not saved: ${e instanceof Error ? e.message : String(e)}` };
