@@ -1,4 +1,4 @@
-import { type ReactNode, createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -18,6 +18,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ChatMessage, ToolCallBlock } from "@pista/protocol";
+import { PlaybookCard } from "./PlaybookCard.tsx";
 import { RoleBadge } from "./RoleBadge.tsx";
 import { describeTurnError } from "../lib/errors.ts";
 import { actions, childrenOf, type Approval, type ThreadView, type ToolRun, useApp } from "../lib/store.ts";
@@ -45,6 +46,8 @@ interface Turn {
   items: Item[];
   startedAt: number;
   endedAt: number;
+  /** Number of messages consumed up to and including this turn; places playbook cards. */
+  msgEnd: number;
 }
 
 /**
@@ -55,7 +58,7 @@ function buildTurns(messages: ChatMessage[], hideErrors = false, providerName: (
   const turns: Turn[] = [];
   let turn: Turn | undefined;
   const begin = (ts: number) => {
-    turn = { key: `${ts}-${turns.length}`, items: [], startedAt: ts, endedAt: ts };
+    turn = { key: `${ts}-${turns.length}`, items: [], startedAt: ts, endedAt: ts, msgEnd: 0 };
     turns.push(turn);
     return turn;
   };
@@ -67,12 +70,14 @@ function buildTurns(messages: ChatMessage[], hideErrors = false, providerName: (
     return g;
   };
 
-  for (const m of messages) {
+  for (const [mi, m] of messages.entries()) {
     if (m.role === "user") {
       begin(m.timestamp).items.push({ kind: "user", message: m });
+      turn!.msgEnd = mi + 1;
       continue;
     }
     const t = turn ?? begin(m.timestamp);
+    t.msgEnd = mi + 1;
     t.endedAt = Math.max(t.endedAt, m.timestamp);
     if (m.role === "assistant") {
       for (const block of m.content) {
@@ -280,6 +285,7 @@ export function Transcript({ view, threadId, footer, hideErrors }: { view: Threa
       .filter((a) => a.threadId === threadId || children.has(a.threadId))
       .map((a) => ({ approval: a, from: children.has(a.threadId) ? (children.get(a.threadId)?.role ?? "child") : undefined }));
   }, [allApprovals, threads, threadId]);
+  const pbItems = useApp((s) => s.playbookEvents[threadId]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const inner = useRef<HTMLDivElement>(null);
@@ -320,16 +326,25 @@ export function Transcript({ view, threadId, footer, hideErrors }: { view: Threa
       }}
     >
       <div className="transcript-inner" ref={inner}>
-        {turns.map((turn, i) => (
-          <TurnView
-            key={turn.key}
-            turn={turn}
-            results={results}
-            runs={view.toolRuns}
-            live={view.isStreaming && i === turns.length - 1}
-            liveStartedAt={view.turnStartedAt}
-          />
-        ))}
+        {turns.map((turn, i) => {
+          // A card sits after the turn that held the latest message when it arrived; later arrivals trail the last turn.
+          const prevEnd = turns[i - 1]?.msgEnd ?? 0;
+          const last = i === turns.length - 1;
+          const cards = (pbItems ?? []).filter((c) => (last ? c.anchor > prevEnd : c.anchor > prevEnd && c.anchor <= turn.msgEnd) || (i === 0 && c.anchor <= prevEnd));
+          return (
+            <Fragment key={turn.key}>
+              <TurnView
+                turn={turn}
+                results={results}
+                runs={view.toolRuns}
+                live={view.isStreaming && last}
+                liveStartedAt={view.turnStartedAt}
+              />
+              {cards.map((c) => <PlaybookCard key={c.id} event={c.event} />)}
+            </Fragment>
+          );
+        })}
+        {turns.length === 0 && (pbItems ?? []).map((c) => <PlaybookCard key={c.id} event={c.event} />)}
         {view.retry && <div className="msg-note">{view.retry}</div>}
         {view.compacting && <div className="msg-note">Compacting context…</div>}
         {approvals.map(({ approval, from }) => (

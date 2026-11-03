@@ -54,6 +54,15 @@ export interface ThreadView extends Omit<ThreadSnapshot, "summary" | "decisions"
   goal?: GoalState;
 }
 
+export type PlaybookCardEvent = Omit<Extract<HostEvent, { type: "playbook.event" }>, "type">;
+export interface PlaybookCardItem { id: number; anchor: number; event: PlaybookCardEvent }
+let playbookSeq = 0;
+const PLAYBOOK_EVENT_CAP = 20;
+const dropKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
+  const { [k]: _gone, ...rest } = o;
+  return rest;
+};
+
 export interface Approval {
   approvalId: string;
   threadId: string;
@@ -136,6 +145,8 @@ interface AppState {
   models: ModelInfo[];
   providers: ProviderStatus[];
   approvals: Approval[];
+  /** Playbook cards per thread in arrival order; `anchor` is how many messages the thread had when the event arrived. */
+  playbookEvents: Record<string, PlaybookCardItem[]>;
   authPrompt?: { promptId: string; provider: string; prompt: AuthPrompt };
   /** Latest sign-in notice per provider; cleared when a sign-in succeeds. */
   authNotices: Record<string, AuthNotice>;
@@ -179,6 +190,7 @@ export const useApp = create<AppState>(() => ({
   providers: [],
   authNotices: {},
   approvals: [],
+  playbookEvents: {},
   toasts: [],
   panel: { open: true, tabs: [], activeId: null, chatWidth: 520, maximized: false },
   ...loadLayout(),
@@ -440,6 +452,7 @@ export const actions = {
 
   async archive(threadId: string) {
     await host.call("thread.archive", { threadId });
+    set((s) => ({ playbookEvents: dropKey(s.playbookEvents, threadId) }));
     if (get().activeThreadId === threadId) set({ activeThreadId: null });
   },
 
@@ -734,8 +747,16 @@ function onHostEvent(event: HostEvent) {
       set((s) => ({
         threads: s.threads.filter((t) => t.id !== event.threadId),
         activeThreadId: s.activeThreadId === event.threadId ? null : s.activeThreadId,
+        playbookEvents: dropKey(s.playbookEvents, event.threadId),
       }));
       break;
+    case "playbook.event": {
+      const { type: _t, ...ev } = event;
+      // No loaded view yet: the card trails the last turn instead of anchoring at 0.
+      const anchor = get().views[event.threadId]?.messages.length ?? Number.MAX_SAFE_INTEGER;
+      set((s) => ({ playbookEvents: { ...s.playbookEvents, [event.threadId]: [...(s.playbookEvents[event.threadId] ?? []), { id: ++playbookSeq, anchor, event: ev }].slice(-PLAYBOOK_EVENT_CAP) } }));
+      break;
+    }
     case "approval.request":
       set((s) => ({ approvals: [...s.approvals, event] }));
       break;

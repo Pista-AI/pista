@@ -157,7 +157,7 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const old = getPlaybook(built.site);
     if (!old) {
       savePlaybook(fresh);
-      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site } };
+      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
