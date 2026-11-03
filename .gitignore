@@ -24,3 +24,6 @@ auth.json
 *.gguf
 *.onnx
 **/evals/presets/results/
+*.migrated.bak
+mcp-auth.json
+*.enc.json

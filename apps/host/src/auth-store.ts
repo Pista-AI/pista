@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, fstatSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { clearConfigValueCache, resolveConfigValue, type CommandExec } from "./config-value.ts";
@@ -160,30 +160,48 @@ export function writeEncryptedFile(file: string, key: Buffer, plain: string): vo
 /** Suffix of the plaintext backup a migration leaves next to the credential file: `auth.json` becomes `auth.json.migrated.bak`. */
 export const BACKUP_SUFFIX = ".migrated.bak";
 
-/** Renames a migrated plain file to `<name>.migrated.bak` (mode 0600). Throws if a backup is already there, so one is never overwritten. */
-export function moveToBackup(plainFile: string): string {
+/**
+ * Renames a migrated plain file to `<name>.migrated.bak` (mode 0600). Throws if a backup is already there, so one is
+ * never overwritten. When only the directory sync fails, the backup exists and `syncError` carries the error code.
+ */
+export function moveToBackup(plainFile: string): { bak: string; syncError?: string } {
   const bak = `${plainFile}${BACKUP_SUFFIX}`;
   if (existsSync(bak)) throw new Error(`a backup already exists at ${bak}`);
   chmodSync(plainFile, 0o600);
   renameSync(plainFile, bak);
-  fsyncDir(dirname(bak));
-  return bak;
+  try {
+    fsyncDir(dirname(bak));
+  } catch (e) {
+    return { bak, syncError: (e as NodeJS.ErrnoException).code ?? "unknown" };
+  }
+  return { bak };
 }
 
 /**
- * Zero-overwrites and unlinks a plaintext backup. Only a regular file is touched. Best effort on SSDs and
- * copy-on-write filesystems, which may keep old blocks. Returns false when the file was left in place.
+ * Zero-overwrites and unlinks a plaintext backup. Only a regular file with a single link is touched, and it is opened
+ * without following symlinks. Best effort on SSDs and copy-on-write filesystems, which may keep old blocks. Returns
+ * false (after calling `warn`) when the file was left in place.
  */
-export function secureRemove(file: string): boolean {
+export function secureRemove(file: string, warn: (line: string) => void = () => {}): boolean {
   try {
-    if (!lstatSync(file).isFile()) return false;
-  } catch {
-    return true; // nothing there
+    const st = lstatSync(file);
+    if (!st.isFile()) {
+      warn(`${file} is not a regular file; left in place`);
+      return false;
+    }
+    if (st.nlink > 1) {
+      warn(`${file} has more than one hard link; left in place`);
+      return false;
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return true; // nothing there
+    warn(`could not inspect ${file}: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
+    return false;
   }
   try {
-    const fd = openSync(file, "r+");
+    const fd = openSync(file, fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0));
     try {
-      writeSync(fd, Buffer.alloc(statSync(file).size));
+      writeSync(fd, Buffer.alloc(fstatSync(fd).size));
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -196,15 +214,34 @@ export function secureRemove(file: string): boolean {
     fsyncDir(dirname(file));
     return true;
   } catch {
+    warn(`could not remove ${file}`);
     return false;
   }
 }
 
-/** Once `encFile` exists and has decrypted with the current key, the plaintext backup of its migration is no longer needed. */
-export function dropBackupIfEncryptedOk(encFile: string, plainFile: string, log: (line: string) => void): void {
+/** A plaintext backup stays this long after its migration, so a key that was lost right after the move can still be recovered from it. */
+export const BACKUP_KEEP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Once `encFile` exists and has decrypted with the current key, the plaintext backup of its migration is removed, but
+ * only when it is at least 24 hours old (by ctime, which the rename sets). Younger ones are logged, once per call.
+ */
+export function dropBackupIfEncryptedOk(encFile: string, plainFile: string, log: (line: string) => void, now: number = Date.now()): void {
   const bak = `${plainFile}${BACKUP_SUFFIX}`;
-  if (!existsSync(encFile) || !existsSync(bak)) return;
-  if (!secureRemove(bak)) log(`[pista-host] auth: could not remove the plaintext backup ${bak}; delete it yourself once you no longer need it`);
+  if (!existsSync(encFile)) return;
+  let ctimeMs: number;
+  try {
+    ctimeMs = lstatSync(bak).ctimeMs;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") log(`[pista-host] auth: could not inspect the plaintext backup ${bak}: ${(e as NodeJS.ErrnoException).code ?? "unknown"}`);
+    return;
+  }
+  const dueAt = ctimeMs + BACKUP_KEEP_MS;
+  if (now < dueAt) {
+    log(`[pista-host] auth: a plaintext backup of migrated credentials exists at ${bak}; it is removed on a start after ${new Date(dueAt).toISOString()}`);
+    return;
+  }
+  if (!secureRemove(bak, (w) => log(`[pista-host] auth: WARNING ${w}`))) log(`[pista-host] auth: could not remove the plaintext backup ${bak}; delete it yourself once you no longer need it`);
 }
 
 /** Says what happened to one file that failed to decrypt, that it is untouched, and where a plaintext backup is. */

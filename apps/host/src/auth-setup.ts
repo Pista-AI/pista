@@ -2,7 +2,7 @@ import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
 import type { AuthKeySource } from "./auth-key.ts";
-import { createEncryptedCredentialStore, describeDecryptFailure, dropBackupIfEncryptedOk, moveToBackup, readEncryptedFile } from "./auth-store.ts";
+import { BACKUP_SUFFIX, createEncryptedCredentialStore, describeDecryptFailure, dropBackupIfEncryptedOk, moveToBackup, readEncryptedFile } from "./auth-store.ts";
 import { setupMcpAuth } from "./mcp-auth-store.ts";
 import type { McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 
@@ -44,6 +44,8 @@ async function setupProviderCredentials(
   const encFile = join(agentDir, "auth.enc.json");
   const plainFile = join(agentDir, "auth.json");
   if (source.kind === "plain") {
+    const bak = `${plainFile}${BACKUP_SUFFIX}`;
+    if (existsSync(bak)) log(`[pista-host] auth: WARNING a plaintext backup of migrated credentials exists at ${bak}`);
     if (existsSync(encFile)) throw new Error("auth.enc.json exists; refusing to start in plain mode (unset PISTA_AUTH_PLAIN or supply the key)");
     log("[pista-host] auth: PISTA_AUTH_PLAIN=1, provider credentials stay in plain auth.json");
     return { mode: "plain" };
@@ -95,8 +97,12 @@ async function setupProviderCredentials(
   // importPlain has fsynced the encrypted file and its directory by now. Keep the plaintext as a 0600 backup; the next
   // start removes it once the encrypted file has decrypted with the current key.
   try {
-    const bak = moveToBackup(plainFile);
-    log(`[pista-host] auth: kept the migrated plaintext as ${bak} (mode 0600); it is removed on the next start once auth.enc.json decrypts`);
+    const { bak, syncError } = moveToBackup(plainFile);
+    log(
+      syncError
+        ? `[pista-host] auth: kept the migrated plaintext as ${bak} (mode 0600); syncing the directory failed (${syncError}), so the move may not be durable`
+        : `[pista-host] auth: kept the migrated plaintext as ${bak} (mode 0600); it is removed 24 hours or more later, on a start where auth.enc.json decrypts`,
+    );
   } catch (e) {
     return keepPlain(`could not move it to a backup: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
   }

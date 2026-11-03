@@ -82,7 +82,7 @@ test("migrates plain mcp-auth.json; content round-trips; plain file kept as .bak
   assert.ok(!out.join("\n").includes("tok-fake-test"));
 });
 
-test("the mcp .bak is removed on the next start with the right key, and kept when the key is wrong", async () => {
+test("the mcp .bak is kept by a good start within 24 hours and by a wrong key", async () => {
   const d = dir();
   writeFileSync(join(d, "mcp-auth.json"), JSON.stringify({ s: { tokens: { access_token: "t" } } }));
   await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, () => {}, fakeLoad);
@@ -90,7 +90,7 @@ test("the mcp .bak is removed on the next start with the right key, and kept whe
   await assert.rejects(setupMcpAuth({ kind: "key", key: Buffer.alloc(32, 2) }, d, () => {}, fakeLoad), (e: Error) => /different key/.test(e.message) && /still at .*mcp-auth\.json\.migrated\.bak/.test(e.message));
   assert.ok(existsSync(bak));
   await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, () => {}, fakeLoad);
-  assert.ok(!existsSync(bak));
+  assert.ok(existsSync(bak));
 });
 
 test("unparseable plain file is kept at 0600 with one warning", async () => {

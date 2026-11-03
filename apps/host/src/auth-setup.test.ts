@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setupCredentials } from "./auth-setup.ts";
-import { createEncryptedCredentialStore } from "./auth-store.ts";
+import { BACKUP_KEEP_MS, createEncryptedCredentialStore, dropBackupIfEncryptedOk } from "./auth-store.ts";
 
 const key = Buffer.alloc(32, 7);
 const keyHex = key.toString("hex");
@@ -154,7 +154,7 @@ test("an encrypted file without a key id still loads", async () => {
   assert.equal((await res.credentials!.list()).length, 1);
 });
 
-test("the .bak survives its own migration run and is removed on the next successful start", async () => {
+test("the .bak survives its own run and a good start within 24 hours, which logs where it is", async () => {
   const d = dir();
   writeFileSync(join(d, "auth.json"), JSON.stringify({ x: { type: "api_key", key: "k" } }));
   await setupCredentials({ kind: "key", key: Buffer.from(key) }, d, () => {});
@@ -162,8 +162,32 @@ test("the .bak survives its own migration run and is removed on the next success
   assert.ok(existsSync(bak) && !existsSync(join(d, "auth.json")));
   if (process.platform !== "win32") assert.equal(statSync(bak).mode & 0o777, 0o600);
   assert.equal(JSON.parse(readFileSync(bak, "utf-8")).x.key, "k");
-  await setupCredentials({ kind: "key", key: Buffer.from(key) }, d, () => {});
+  const { out, log } = lines();
+  await setupCredentials({ kind: "key", key: Buffer.from(key) }, d, log);
+  assert.ok(existsSync(bak));
+  assert.ok(out.some((l) => /plaintext backup of migrated credentials exists at .*auth\.json\.migrated\.bak; it is removed on a start after/.test(l)), out.join("\n"));
+});
+
+test("a .bak older than 24 hours is removed after a good decrypt, a younger one is not", async () => {
+  const d = dir();
+  const enc = join(d, "auth.enc.json");
+  const plain = join(d, "auth.json");
+  const bak = `${plain}.migrated.bak`;
+  await createEncryptedCredentialStore({ file: enc, key }).modify("x", async () => ({ type: "api_key", key: "k" }));
+  writeFileSync(bak, "{}");
+  const now = Date.now();
+  dropBackupIfEncryptedOk(enc, plain, () => {}, now + BACKUP_KEEP_MS - 60_000);
+  assert.ok(existsSync(bak));
+  dropBackupIfEncryptedOk(enc, plain, () => {}, now + BACKUP_KEEP_MS + 60_000);
   assert.ok(!existsSync(bak));
+});
+
+test("plain mode warns where a .bak is", async () => {
+  const d = dir();
+  writeFileSync(join(d, "auth.json.migrated.bak"), "{}");
+  const { out, log } = lines();
+  await setupCredentials({ kind: "plain" }, d, log);
+  assert.ok(out.some((l) => /WARNING a plaintext backup .*auth\.json\.migrated\.bak/.test(l)));
 });
 
 test("a wrong key never removes the .bak", async () => {
