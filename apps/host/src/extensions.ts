@@ -374,10 +374,15 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         const forced = signInNeedsConfirmation(event.toolName, store.config.confirmSignIns, playbook?.steps.some((s) => s.kind === "signIn"));
         if (mode === "full-access" && !forced) return undefined;
         // The policy gate (last in line) refuses this call anyway; do not ask the user about it.
-        if (store.toolRules && denyToolCall(store.toolRules, event.toolName, event.input)) return undefined;
+        // A playbook run that read-only mode or the policy refuses counts as declined, so the site does not stay shut for browsing.
+        const refusedRun = () => playbook && pi.events?.emit(PLAYBOOK_DECLINED, playbook.site);
+        if (store.toolRules && denyToolCall(store.toolRules, event.toolName, event.input)) return void refusedRun();
         const reason = isWrite(event.toolName);
         if (!reason) return undefined;
-        if (mode === "read-only") return { block: true, reason: `Blocked: read-only mode (${reason}).` };
+        if (mode === "read-only") {
+          refusedRun();
+          return { block: true, reason: `Blocked: read-only mode (${reason}).` };
+        }
         if (!forced && alwaysAllowed.has(event.toolName)) return undefined;
         // Narrow, per-role exemptions (see extensionsFor); anything they do not name still asks.
         if (!forced && autoAllow?.(event.toolName, event.input as Record<string, unknown>)) return undefined;

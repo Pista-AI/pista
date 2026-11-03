@@ -65,7 +65,14 @@ const describeStep = (s: PlaybookStep | { kind: string; url?: string }): string 
 
 const OPEN = "<<<website-data";
 const CLOSE = "website-data>>>";
-const unfence = (s: string) => s.replaceAll(OPEN, "").replaceAll(CLOSE, "");
+/** Removes the markers until none is left, so nested pieces cannot reassemble one. */
+export function unfence(s: string): string {
+  for (let prev = ""; prev !== s; ) {
+    prev = s;
+    s = s.replaceAll(OPEN, "").replaceAll(CLOSE, "");
+  }
+  return s;
+}
 
 /** The handoff for the model. Everything from the website (detail, url, snapshot) sits in one delimited block of untrusted data. */
 export function formatHandoff(site: string, invoice: InvoiceParams, total: number, r: Extract<ReplayResult, { ok: false }>): string {

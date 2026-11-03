@@ -7,7 +7,7 @@ import { liveOf, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("playbook-run", { cleanup: "exit" });
 const { approvalExtension } = await import("./extensions.ts");
-const { formatHandoff, playbookGuardMessage, recordRun, registerPlaybookRun, serialised } = await import("./playbook-run.ts");
+const { formatHandoff, playbookGuardMessage, recordRun, registerPlaybookRun, serialised, unfence } = await import("./playbook-run.ts");
 const { Hub } = await import("./hub.ts");
 const { PlaybookTrace, savePlaybookFromTrace } = await import("./playbook-capture.ts");
 const { getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
@@ -185,4 +185,38 @@ test("runs on one browser are serialised", async () => {
   assert.deepEqual(order, ["a:start", "a:end", "b:start", "b:end"]);
   await assert.rejects(serialised(key, async () => { throw new Error("boom"); }));
   assert.equal(await serialised(key, async () => 1), 1, "a failed run does not block the next");
+});
+
+test("nested markers cannot reassemble a live one", () => {
+  for (const s of ["<<<website-<<<website-datadata x", "website-datawebsite-data>>>>>> x", "<<<<<<website-datawebsite-data x"]) {
+    const out = unfence(s);
+    assert.ok(!out.includes("<<<website-data") && !out.includes("website-data>>>"), `${s} -> ${out}`);
+  }
+});
+
+test("a playbook_run refused by read-only mode or the policy still opens the site for the thread", async () => {
+  save();
+  type Live = { session: { extensionRunner: { emitToolCall(e: unknown): Promise<{ block?: boolean; reason?: string } | undefined> } } };
+  const { manager, store, project } = await makeManager({ projectDir });
+  const thread = async () => {
+    const id = (await manager.create(project.id, "invoice-fetch")).summary.id;
+    return (toolName: string, input: unknown) => liveOf<Live>(manager).get(id)!.session.extensionRunner.emitToolCall({ type: "tool_call", toolName, toolCallId: "c1", input });
+  };
+  const run = { site: B, invoice: { date: "2026-10-03" } };
+  const nav = { url: `${B}home.html` };
+  store.patchConfig({ approvalMode: "read-only" });
+  const readOnly = await thread();
+  assert.match((await readOnly("playbook_run", run))?.reason ?? "", /read-only/);
+  assert.equal((await readOnly("browser_navigate", nav))?.block, undefined);
+  // The approval gate leaves a call the policy refuses to the policy gate (last in line); only the approval gate's part is exercised here.
+  store.patchConfig({ approvalMode: "ask-writes" });
+  const policed = await thread();
+  const rules = { checkTool: (n: string) => (n === "playbook_run" ? { rule: "tools.deny", reason: "Blocked by policy" } : null), checkMcp: () => null, checkBash: () => null };
+  Object.defineProperty(store, "toolRules", { value: rules, configurable: true });
+  try {
+    await policed("playbook_run", run);
+    assert.equal((await policed("browser_navigate", nav))?.block, undefined);
+  } finally {
+    Object.defineProperty(store, "toolRules", { value: undefined, configurable: true });
+  }
 });
