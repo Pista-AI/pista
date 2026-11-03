@@ -125,15 +125,11 @@ export const SECRET_FIELD =
   "(?:^|[^a-z])(?:card|cc|cvc|cvv|otp|pin|iban|ssn|one-?time|credit.?card|card.?number|pin.?code|security.?code)(?:[^a-z]|$)|password|lösenord|personnummer";
 
 /**
- * THE secret-field predicate, built once and used by every page script (it is injected into each one by `call`, which binds
- * `pattern` to SECRET_FIELD): the snapshot masks, browser_type and browser_press refuse, and the effect summary hides the value
- * for exactly the fields it says yes to. A field is secret when it is type=password, has a password autocomplete hint, or any of its
- * autocomplete, id, name, aria-label, placeholder, <label> text (also `<label for>`), aria-labelledby text or `accessibleName` matches the pattern.
- * Sticky: a field seen as type=password stays secret for the life of the document, so a "show password" toggle (type=text) does not unmask it.
+ * The sticky-marker set, defined on window once, read-only and non-configurable, with its WeakSet methods bound at creation, so page
+ * script cannot replace it or patch WeakSet to disable it. Whoever defines it first wins, so every injected script (see `preamble`)
+ * creates it before anything else, even on a page with no inputs yet.
  */
-function isSecretField(el: Element, pattern: string, accessibleName?: string): boolean {
-  // The marker set is defined once, read-only and non-configurable, with its WeakSet methods bound at creation, so page script cannot
-  // replace it or patch WeakSet to disable it. Whoever defines it first wins.
+function secretMarks(): { add(e: Element): void; has(e: Element): boolean } {
   const w = window as unknown as { __pistaSecretMarks?: { add(e: Element): void; has(e: Element): boolean } };
   if (!w.__pistaSecretMarks) {
     const set = new WeakSet<Element>();
@@ -141,7 +137,19 @@ function isSecretField(el: Element, pattern: string, accessibleName?: string): b
     const has = WeakSet.prototype.has;
     Object.defineProperty(w, "__pistaSecretMarks", { value: Object.freeze({ add: (e: Element) => void add.call(set, e), has: (e: Element) => has.call(set, e) }) });
   }
-  const marks = w.__pistaSecretMarks!;
+  return w.__pistaSecretMarks!;
+}
+declare const __marks: ReturnType<typeof secretMarks>;
+
+/**
+ * THE secret-field predicate, built once and used by every page script (it is injected into each one by `call`, which binds
+ * `pattern` to SECRET_FIELD): the snapshot masks, browser_type and browser_press refuse, and the effect summary hides the value
+ * for exactly the fields it says yes to. A field is secret when it is type=password, has a password autocomplete hint, or any of its
+ * autocomplete, id, name, aria-label, placeholder, <label> text (also `<label for>`), aria-labelledby text or `accessibleName` matches the pattern.
+ * Sticky: a field seen as type=password stays secret for the life of the document, so a "show password" toggle (type=text) does not unmask it.
+ */
+function isSecretField(el: Element, pattern: string, accessibleName?: string): boolean {
+  const marks = __marks;
   if ((el as HTMLInputElement).type === "password") return (marks.add(el), true);
   if (marks.has(el)) return true;
   const labels = (el as HTMLInputElement).labels;
@@ -766,6 +774,7 @@ function pageSecrets(op: string): string {
  * one). They never leave the page. Fields the script creates itself are not covered.
  */
 async function pageEvalScrubbed(run: () => unknown): Promise<{ ok: boolean; text: string }> {
+  // Stops accidental exposure of autofilled values, not a hostile script: that can transform the value or tamper with builtins across calls.
   const apply = Reflect.apply;
   const getter = (proto: object, key: string) => Object.getOwnPropertyDescriptor(proto, key)!.get!;
   const stringify = JSON.stringify;
@@ -1011,8 +1020,12 @@ function pageHref(target: string): string {
 export const jsLiteral = (value: unknown): string =>
   JSON.stringify(value ?? null).replace(/[<>/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
+/** The page-script prelude: the no-op `__name`, the marker set (created first) and the secret-field predicate. */
+const preamble = () =>
+  `const __name = (f) => f; const __marks = (${secretMarks.toString()})(); const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name);`;
+
 export const call = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
-  `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
+  `(() => { ${preamble()} return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
 
 export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),
@@ -1030,7 +1043,7 @@ export const scripts = {
    * secrets.ts), which is what keeps it from closing the wrapper early.
    */
   evalScrubbed: (src: string, form: "expression" | "statements") =>
-    `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}); })()`,
+    `(() => { ${preamble()} return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}); })()`,
   focusedIsPassword: () => call(pageFocusedIsPassword),
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),

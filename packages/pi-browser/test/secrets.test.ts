@@ -136,6 +136,14 @@ test("source that tries to break out of the wrapper is rejected on the host or s
   }
 });
 
+test("the marker is defined before any script runs, even on a page with no inputs, and cannot be pre-defined", async () => {
+  const page = fakePage([]);
+  const text = await evaluateScrubbed(driver(page), `(() => { try { Object.defineProperty(window, "__pistaSecretMarks", { value: {} }); return "defined"; } catch (e) { return "refused"; } })()`);
+  assert.equal(text, '"refused"');
+  const desc = JSON.parse(String(page.run(`JSON.stringify(Object.getOwnPropertyDescriptor(window, "__pistaSecretMarks") && { w: Object.getOwnPropertyDescriptor(window, "__pistaSecretMarks").writable, c: Object.getOwnPropertyDescriptor(window, "__pistaSecretMarks").configurable })`)));
+  assert.deepEqual(desc, { w: false, c: false });
+});
+
 test("a long result is cut", async () => {
   const text = await evaluateScrubbed({ evaluate: async () => ({ ok: true, text: "a".repeat(150_000) }) } as unknown as BrowserDriver, "x");
   assert.ok(text.length < 100_300 && text.includes("cut"));
