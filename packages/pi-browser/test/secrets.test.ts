@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
 import { test } from "node:test";
 import type { BrowserDriver } from "../src/driver.ts";
+import { scripts } from "../src/page-scripts.ts";
 import { evaluateScrubbed, screenshotMasked } from "../src/secrets.ts";
 import { registerBrowserTools } from "../src/tools.ts";
 
 /** A just-enough DOM: a flat list of inputs, no layout. The real injected page scripts run against it. */
-class FakeNodeList { [i: number]: unknown; constructor(private items: unknown[]) { items.forEach((x, i) => (this[i] = x)); } get length() { return this.items.length; } item(i: number) { return this.items[i]; } }
+class FakeNodeList { [i: number]: unknown; *[Symbol.iterator]() { yield* this.items; } constructor(private items: unknown[]) { items.forEach((x, i) => (this[i] = x)); } get length() { return this.items.length; } item(i: number) { return this.items[i]; } }
 class FakeInput {
   tagName = "INPUT"; id = ""; type: string; _v: string; attrs: Record<string, string>;
   constructor(type: string, value: string, attrs: Record<string, string> = {}) { this.type = type; this._v = value; this.attrs = { ...attrs }; }
@@ -142,6 +143,13 @@ test("the marker is defined before any script runs, even on a page with no input
   assert.equal(text, '"refused"');
   const desc = JSON.parse(String(page.run(`JSON.stringify(Object.getOwnPropertyDescriptor(window, "__pistaSecretMarks") && { w: Object.getOwnPropertyDescriptor(window, "__pistaSecretMarks").writable, c: Object.getOwnPropertyDescriptor(window, "__pistaSecretMarks").configurable })`)));
   assert.deepEqual(desc, { w: false, c: false });
+});
+
+test("the frame listing is reachable from page scripts and carries no field values", async () => {
+  const { page } = withPw("hunter2-secret");
+  const out = String(page.run(scripts.childFrames()));
+  assert.equal(out, "null"); // no iframes in the fake page; the helper is injected and does not throw
+  assert.ok(!out.includes("hunter2-secret"));
 });
 
 test("a long result is cut", async () => {

@@ -1,0 +1,6 @@
+{
+  "description": "solo with the 150-call loop-guard cap (same cap as the lead presets)",
+  "config": {
+    "maxToolCalls": 150
+  }
+}

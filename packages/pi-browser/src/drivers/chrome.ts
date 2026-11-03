@@ -313,9 +313,17 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
   }
 
   close() {
-    super.close();
+    void this.closeGracefully().catch(() => {});
+  }
+
+  /**
+   * Closes the browser the way a user would (Browser.close, then SIGTERM, then SIGKILL), so it flushes cookies and
+   * marks the profile as cleanly exited. The pipe must stay open until then, so the connection is not closed first.
+   */
+  async closeGracefully(): Promise<void> {
     const browser = this.browser;
     this.browser = undefined;
-    void browser?.close();
+    this.conn = undefined;
+    await browser?.close();
   }
 }

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { setupHome } from "./test-helpers.ts";
 
 setupHome("loop-guard-test", { cleanup: "exit" });
-const { loopGuardExtension } = await import("./extensions.ts");
+const { loopGuardExtension, normalizeNavigateUrl } = await import("./extensions.ts");
 
 type Handler = (event: any, ctx: any) => any;
 const LOCAL = { provider: "llama.cpp", baseUrl: "http://127.0.0.1:8080/v1" };
@@ -130,4 +130,31 @@ test("browser_scroll is exempt from every cap", () => {
   g.start();
   for (let i = 0; i < 100; i++) assert.equal(g.call("browser_scroll", { dy: 100 }), undefined);
   assert.equal(g.call("t", { i: 1 }), undefined);
+});
+
+test("normalizeNavigateUrl drops fragments and tracking params, keeps and sorts the rest", () => {
+  const same = "https://Example.com/billing?a=1&b=2";
+  assert.equal(normalizeNavigateUrl("https://example.com/billing?b=2&a=1#invoices"), normalizeNavigateUrl(same));
+  assert.equal(normalizeNavigateUrl("https://example.com/billing?a=1&b=2&UTM_source=x&gclid=9&fbclid=1"), normalizeNavigateUrl(same));
+  assert.notEqual(normalizeNavigateUrl("https://example.com/billing?a=1&b=3"), normalizeNavigateUrl(same));
+  assert.equal(normalizeNavigateUrl("https://example.com/billing/"), normalizeNavigateUrl("https://example.com/billing"));
+  assert.notEqual(normalizeNavigateUrl("https://example.com/a"), normalizeNavigateUrl("https://example.com/b"));
+});
+
+test("normalizeNavigateUrl falls back to the trimmed string when it cannot parse", () => {
+  assert.equal(normalizeNavigateUrl("  not a url "), "not a url");
+});
+
+test("browser_navigate to the same page: 1st and 2nd run, 3rd is blocked with the count; a new prompt resets", () => {
+  const g = guard(REMOTE);
+  g.start();
+  assert.equal(g.call("browser_navigate", { url: "https://example.com/billing" }), undefined);
+  assert.equal(g.call("browser_navigate", { url: "https://example.com/billing?utm_source=a#top" }), undefined);
+  const r = g.call("browser_navigate", { url: "https://example.com/billing/" });
+  assert.equal(r.block, true);
+  assert.equal(r.terminate, undefined);
+  assert.match(r.reason, /already visited this page 2 times.*iframe.*cannot be reached/);
+  assert.equal(g.call("browser_navigate", { url: "https://example.com/other" }), undefined);
+  g.start();
+  assert.equal(g.call("browser_navigate", { url: "https://example.com/billing" }), undefined);
 });

@@ -23,13 +23,21 @@ export class Hub {
   private pending = new Map<string, Pending<unknown>>();
   private viewers = new Set<WebSocket>();
   private viewerListeners: ((count: number) => void)[] = [];
+  private emptyListeners = new Set<() => void>();
 
   add(ws: WebSocket): void {
     this.clients.set(ws, { nativeBrowser: false, lastActive: Date.now() });
     ws.on("close", () => {
       this.clients.delete(ws);
       this.setViewer(ws, false);
+      if (this.clients.size === 0) for (const listener of [...this.emptyListeners]) listener();
     });
+  }
+
+  /** Calls `listener` whenever the last window disconnects; returns the unsubscribe. */
+  onNoClients(listener: () => void): () => void {
+    this.emptyListeners.add(listener);
+    return () => this.emptyListeners.delete(listener);
   }
 
   /** Windows that asked for the live view of the Chrome tab; only they receive frames. */

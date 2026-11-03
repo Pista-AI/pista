@@ -876,7 +876,7 @@ export type HostEvent =
   | { type: "thread.removed"; threadId: string }
   | { type: "browser.request"; requestId: string; threadId: string; request: BrowserAction }
   | ({ type: "browser.frame" } & BrowserFrame)
-  | { type: "approval.request"; approvalId: string; threadId: string; toolName: string; args: unknown; reason: string; action?: string }
+  | { type: "approval.request"; approvalId: string; threadId: string; toolName: string; args: unknown; reason: string; action?: string; toolLimit?: { used: number; more: number } }
   | { type: "approval.resolved"; approvalId: string }
   | { type: "auth.prompt"; promptId: string; provider: string; prompt: AuthPrompt }
   | {
