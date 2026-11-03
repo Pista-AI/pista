@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserDriver } from "../src/driver.ts";
-import { expectationMet, pollUntil, resolveLocator, runReplay } from "../src/replay.ts";
+import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay } from "../src/replay.ts";
 
 const els = [
   { ref: "e1", role: "link", name: "Billing" },
@@ -189,4 +189,26 @@ test("playbook values reach page script only as escaped argument literals", asyn
   const fakeDocument = { querySelectorAll: (s: string) => ((seen = s), []) };
   new Function("document", "window", `return ${script}`)(fakeDocument, {});
   assert.equal(seen, selector);
+});
+
+test("row selection: one match is chosen, none and several are handoffs that name the invoice but not the rows", () => {
+  const links = [1, 2, 3, 4].map((n) => ({ ref: `e${n}`, role: "link", name: "Download invoice", href: `https://x.test/${n}.pdf` }));
+  const refs = resolveAll(links, { role: "link", name: "Download invoice", row: { match: ["date"] } });
+  assert.deepEqual(refs, ["e1", "e2", "e3", "e4"]);
+  const texts = ["3 Sep 2026 49,00 EUR", "2026-10-03 49,00 EUR", "3 nov. 2026 12,00 EUR", "3 nov. 2026 99,00 EUR"];
+  assert.deepEqual(pickRow(refs, texts, { date: "2026-10-04" }, ["date"]), { target: "e2" });
+  assert.deepEqual(pickRow(refs, texts, { date: "2026-11-03", amount: 99, currency: "EUR" }, ["date", "amount"]), { target: "e4" });
+  const many = pickRow(refs, texts, { date: "2026-11-03", amount: 99 }, ["date"]) as { reason: string; detail: string };
+  assert.equal(many.reason, "row-ambiguous");
+  assert.ok(many.detail.startsWith("2 rows") && many.detail.includes("2026-11-03") && !many.detail.includes("nov."));
+  const none = pickRow(refs, texts, { date: "2026-12-20", amount: 5.5, currency: "SEK" }, ["date", "amount"]) as { reason: string; detail: string };
+  assert.equal(none.reason, "row-not-found");
+  assert.ok(none.detail.includes("2026-12-20") && none.detail.includes("5.5 SEK"));
+});
+
+test("a row step without an invoice hands off as needs-invoice", async () => {
+  const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate: async () => { throw new Error("no page"); } } as unknown as BrowserDriver;
+  const dir = mkdtempSync(join(tmpdir(), "row-"));
+  const r = await runReplay({ startUrl: "https://x.test/list", steps: [{ kind: "download", target: { role: "link", name: "Download", row: { match: ["date"] } } }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf" });
+  assert.equal(!r.ok && r.reason, "needs-invoice");
 });
