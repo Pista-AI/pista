@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { VaultCrypto } from "./logins.js";
 
@@ -33,8 +33,13 @@ export function hostChildEnv(base: NodeJS.ProcessEnv, extra: NodeJS.ProcessEnv):
 }
 
 /** Keeps the host's data key, wrapped by the OS keychain, in a small file in userData. */
-export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto }) {
-  const { file, crypto } = options;
+export function createAuthKeyVault(options: {
+  file: string;
+  crypto: VaultCrypto;
+  /** Test hook: runs after the temp file is written, before it is linked into place. */
+  beforeLink?: () => Promise<void>;
+}) {
+  const { file, crypto, beforeLink } = options;
 
   async function read(): Promise<Buffer | undefined> {
     let raw: string;
@@ -63,7 +68,8 @@ export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto 
     return Buffer.from(hex, "hex");
   }
 
-  async function store(blob: Buffer): Promise<void> {
+  /** Writes the key file only if none exists (hard link, so an existing file is never replaced). False when one already exists. */
+  async function createExclusive(blob: Buffer): Promise<boolean> {
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
     if (process.platform !== "win32" && ((await stat(dirname(file))).mode & 0o077) !== 0) await chmod(dirname(file), 0o700);
     const tmp = `${file}.${randomUUID()}.tmp`;
@@ -75,15 +81,21 @@ export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto 
       } finally {
         await fh.close();
       }
-      await rename(tmp, file);
+      await beforeLink?.();
+      try {
+        await link(tmp, file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw error;
+      }
       await syncDir(dirname(file));
-    } catch (error) {
+      return true;
+    } finally {
       try {
         await unlink(tmp);
       } catch {
         // The temp file may not exist.
       }
-      throw error;
     }
   }
 
@@ -100,8 +112,12 @@ export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto 
       const existing = await read();
       if (existing) return existing;
       const key = randomBytes(32);
-      await store(await crypto.encrypt(key.toString("hex")));
-      return key;
+      if (await createExclusive(await crypto.encrypt(key.toString("hex")))) return key;
+      // Another instance created the file first: its key is the only one, so use it.
+      key.fill(0);
+      const winner = await read();
+      if (!winner) throw new Error("The credential key file could not be read.");
+      return winner;
     },
   };
 }
