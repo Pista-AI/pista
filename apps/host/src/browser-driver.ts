@@ -103,6 +103,16 @@ const cdpDrivers = new Map<string, CdpDriver>();
 // One external browser per host, so the chrome driver is shared the same way.
 let chromeDriver: ChromeDriver | undefined;
 
+/** Closes the agent's Chrome gracefully (flushing its cookies) at host shutdown; bounded so a stuck browser cannot hold the host. */
+export async function closeChromeDriver(timeoutMs = 9000): Promise<void> {
+  const driver = chromeDriver;
+  chromeDriver = undefined;
+  if (!driver) return;
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([driver.closeGracefully().catch(() => undefined), new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))]);
+  clearTimeout(timer);
+}
+
 /** Brings the agent's Chrome to the front; a no-op for other drivers. */
 export async function bringChromeToFront(): Promise<void> {
   await chromeDriver?.bringToFront(); // never launches Chrome: a browser that is not running has nothing to show

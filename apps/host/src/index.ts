@@ -37,7 +37,8 @@ import { registerPolicyGateways } from "./policy-providers.ts";
 import { readMemory } from "./memory.ts";
 import { createLlama } from "./llama.ts";
 import { blockedReason, evaluateVersionGate, gateMessage, resolveAppVersion, updatesSummary } from "./version-gate.ts";
-import { activeBrowserDriverConfig, activeBrowserEngine, bringChromeToFront, describeBrowserDriver, setBrowserEngineSetting } from "./browser-driver.ts";
+import { currentParentPort } from "./auth-key.ts";
+import { activeBrowserDriverConfig, activeBrowserEngine, bringChromeToFront, closeChromeDriver, describeBrowserDriver, setBrowserEngineSetting } from "./browser-driver.ts";
 import { resetHarnessPackageCache } from "./harness/packages.ts";
 
 // Installed before any top-level await so an early stray error is logged; startup failures (not yet listening) still exit 1.
@@ -363,12 +364,16 @@ const shutdown = () => {
   llama.stop();
   stopHeartbeat();
   server.close();
-  // Give the final audit flush a moment; the exporter has its own timeout.
-  void audit.dispose().finally(() => process.exit(0));
-  setTimeout(() => process.exit(0), 6000).unref();
+  // Give the browser time to close cleanly and the final audit flush a moment; each has its own timeout.
+  void Promise.all([closeChromeDriver(), audit.dispose()]).finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 11_000).unref();
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+// The desktop shell asks for a clean stop over the utilityProcess channel (a plain kill would skip the browser close).
+currentParentPort()?.on("message", (m) => {
+  if ((m.data as { type?: unknown } | null)?.type === "shutdown") shutdown();
+});
 
 // When a desktop shell spawned us, exit if it goes away (crash or force quit).
 if (process.env.PISTA_PARENT_PID) {
