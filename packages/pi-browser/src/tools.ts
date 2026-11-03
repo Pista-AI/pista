@@ -242,7 +242,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
   );
   if (options.downloadRoot) {
     const root = options.downloadRoot;
-    pi.registerTool(
+    gatedPi.registerTool(
       defineTool({
         name: "browser_download",
         label: "Browser: download",
@@ -333,7 +333,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         },
       }),
     );
-    pi.registerTool(
+    gatedPi.registerTool(
       defineTool({
         name: "browser_login",
         label: "Browser: sign in",

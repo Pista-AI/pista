@@ -126,6 +126,13 @@ test("browser-internal pages cannot be opened or used", async () => {
   assert.ok(f.log.navigations.includes("https://a.test/"));
 });
 
+test("browser_download runs under the gate: a browser-internal page is off limits", async () => {
+  const driver = { probe: async () => ({ url: "chrome://settings/", documentId: "d1", secret: false }), state: async () => ({ url: "chrome://settings/", title: "", loading: false }), download: async () => ({ bytes: 1 }) } as unknown as BrowserDriver;
+  const tools = new Map<string, Tool>();
+  registerBrowserTools({ registerTool: (t: { name: string }) => tools.set(t.name, t as never), on: () => {} } as never, () => driver, { keepPageViews: 0, traceDir: "off", downloadRoot: () => "/tmp/pista-gate-test" });
+  await assert.rejects(tools.get("browser_download")!.execute("1", { url: "https://a.test/x.pdf", path: "x.pdf" }, undefined), /off limits/);
+});
+
 /** A scripted Chrome whose main world is "patched" to deny everything; only the isolated world tells the truth. */
 function chromeWith(frameTree: () => object) {
   const calls: { method: string; params: any }[] = [];
