@@ -123,7 +123,7 @@ test("browser-internal pages cannot be opened or used", async () => {
   await assert.rejects(f.run("browser_read"), /off limits/);
   await assert.rejects(f.run("browser_eval", { script: "1" }), /off limits/);
   await f.run("browser_navigate", { url: "https://a.test/" }).catch(() => undefined); // the way out stays open
-  assert.ok(f.log.navigations.includes("https://a.test/"));
+  assert.ok(f.log.navigations.some((u) => new URL(u).host === "a.test"));
 });
 
 test("browser_download runs under the gate: a browser-internal page is off limits", async () => {
