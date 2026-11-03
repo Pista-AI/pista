@@ -188,6 +188,35 @@ const STOP_AFTER = 5;
 const MAX_BLOCKED = 4;
 /** Tool calls in one prompt before a local model's tool calls are paused; small models loop where frontier ones converge. Reads on fresh pages are legitimate calls, so the cap leaves room for a long browsing session. */
 const MAX_TOOL_CALLS_LOCAL = 40;
+/** Visits to one page (after normalizing the URL) before browser_navigate is blocked with a change-strategy message. The 3rd visit is blocked, not run. */
+export const NAVIGATE_BLOCK_AT = 3;
+/** Query parameters that only track a visit or session; they do not change the page. Lowercase. */
+const VOLATILE_PARAMS = /^(utm_.*|gclid|fbclid|msclkid|mc_cid|mc_eid|_ga|_gl|sessionid|session_id|trk|timestamp|_|nonce)$/;
+
+/** A URL reduced to what identifies the page, so reloads that differ only in a fragment, tracking or param order count as one visit. Unparseable input falls back to the trimmed string. */
+export function normalizeNavigateUrl(raw: string): string {
+  const text = String(raw).trim();
+  try {
+    const u = new URL(text);
+    u.hash = "";
+    for (const name of [...u.searchParams.keys()]) if (VOLATILE_PARAMS.test(name.toLowerCase())) u.searchParams.delete(name);
+    u.searchParams.sort();
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+    return u.href; // scheme and host are lowercased by URL
+  } catch {
+    return text;
+  }
+}
+
+/** Counts a visit to `url` in `visits` and returns the change-strategy message once it reaches NAVIGATE_BLOCK_AT, otherwise undefined. */
+export function countNavigateVisit(visits: Map<string, number>, url: string): string | undefined {
+  const key = normalizeNavigateUrl(url);
+  const n = (visits.get(key) ?? 0) + 1;
+  visits.set(key, n);
+  if (n < NAVIGATE_BLOCK_AT) return undefined;
+  return `Blocked: you have already visited this page ${n - 1} times in this run and it did not help. Change strategy: check whether the content is in an iframe and open the frame address, follow a different link you have seen, or stop and report that this page cannot be reached.`;
+}
+
 /** Browser tools that can change what the page shows; the next read after one of them is a new observation, not a repeat. */
 const PAGE_CHANGING_TOOLS = new Set([
   "browser_navigate",
@@ -216,6 +245,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
     name: "loop-guard",
     factory: (pi: ExtensionAPI) => {
       const counts = new Map<string, number>();
+      const visits = new Map<string, number>();
       let blocked = 0;
       let calls = 0;
       let pageEpoch = 0;
@@ -227,6 +257,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
       // Each user prompt starts a fresh run.
       pi.on("agent_start", () => {
         counts.clear();
+        visits.clear();
         blocked = 0;
         calls = 0;
         pageEpoch = 0;
@@ -243,6 +274,13 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
         counts.set(key, n);
         calls++;
         if (n >= STOP_AFTER) return pause(`${event.toolName} was called ${n} times with identical arguments in this run`);
+        // Same page again and again, however the URL is spelled: its own message, since "identical arguments" would not describe it.
+        const url = event.toolName === "browser_navigate" ? (event.input as { url?: unknown }).url : undefined;
+        const revisit = typeof url === "string" ? countNavigateVisit(visits, url) : undefined;
+        if (revisit) {
+          if (++blocked >= MAX_BLOCKED) return pause("you keep repeating tool calls");
+          return { block: true, reason: revisit };
+        }
         if (n >= WARN_AFTER) {
           if (++blocked >= MAX_BLOCKED) return pause("you keep repeating tool calls");
           return {
