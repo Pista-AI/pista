@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { Playbook, PlaybookMeta } from "@pista/protocol";
 import { host } from "../lib/host.ts";
+import { useApp } from "../lib/store.ts";
 import { describeSteps } from "../lib/playbooks.ts";
+
+export const PLAYBOOKS_ANCHOR = "settings-playbooks";
+
+/** Opens Settings (General tab) scrolled to the Playbooks section. */
+export function openPlaybooksSettings() {
+  useApp.setState({ settingsOpen: "general" });
+  setTimeout(() => document.getElementById(PLAYBOOKS_ANCHOR)?.scrollIntoView({ block: "start" }), 50);
+}
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -19,14 +28,17 @@ export function Playbooks() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
+  const openRef = useRef<string | null>(null);
 
   const refresh = async () => {
     try {
       const list = await host.call("playbook.list", {});
-      if (alive.current) setItems(list);
+      if (alive.current) {
+        setItems(list);
+        setError(null);
+      }
     } catch (e) {
       if (alive.current) {
-        setItems((prev) => prev ?? []);
         setError(errText(e));
       }
     }
@@ -40,14 +52,18 @@ export function Playbooks() {
   }, []);
 
   const toggle = async (site: string) => {
-    if (open === site) return setOpen(null);
+    if (open === site) {
+      openRef.current = null;
+      return setOpen(null);
+    }
+    openRef.current = site;
     setOpen(site);
     setDetail(undefined);
     try {
       const pb = await host.call("playbook.get", { site });
-      if (alive.current) setDetail(pb);
+      if (alive.current && openRef.current === site) setDetail(pb);
     } catch (e) {
-      if (alive.current) {
+      if (alive.current && openRef.current === site) {
         setDetail(null);
         setError(errText(e));
       }
@@ -59,7 +75,10 @@ export function Playbooks() {
     setBusy(true);
     try {
       await host.call("playbook.delete", { site });
-      if (open === site) setOpen(null);
+      if (open === site) {
+        openRef.current = null;
+        setOpen(null);
+      }
       await refresh();
     } catch (e) {
       if (alive.current) setError(errText(e));
@@ -69,10 +88,10 @@ export function Playbooks() {
   };
 
   return (
-    <div className="field playbooks">
+    <div className="field playbooks" id={PLAYBOOKS_ANCHOR}>
       <label>Playbooks</label>
       <span className="help">Steps Pista learned for sites you use. It follows them next time and repairs them when a site changes.</span>
-      {items?.length === 0 && <span className="help">No playbooks yet. Pista saves one after a successful invoice download.</span>}
+      {!error && items?.length === 0 && <span className="help">No playbooks yet. Pista saves one after a successful invoice download.</span>}
       {error && <div role="alert" className="login-error">{error}</div>}
       {items?.map((p) => (
         <div key={p.site}>
