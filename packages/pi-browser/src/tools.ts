@@ -1,6 +1,7 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { confineToFolder } from "./download.ts";
+import { existsSync, renameSync, rmSync } from "node:fs";
+import { confineToFolder, looksLikeFailedDownload, tempDownloadPath } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
@@ -201,19 +202,26 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         name: "browser_download",
         label: "Browser: download",
         description:
-          "Save a file from the website straight to disk, using the browser's login session; the file contents never enter the conversation. Give `url` (a direct link, e.g. a PDF link) or `ref` (a snapshot ref of the download link or button to click), and `path` (relative to the project folder, e.g. invoices/2026-01/acme-2026-01-15-49.00.pdf). Returns the saved path and size.",
+          "Save a file from the website straight to disk, using the browser's login session; the file contents never enter the conversation. Give `url` (a direct link, e.g. a PDF link) or `ref` (a snapshot ref of the download link or button to click), and `path` (relative to the project folder, e.g. invoices/2026-01/acme-2026-01-15-49.00.pdf). Returns the saved path and size. If a file already exists there, a clearly broken one (empty, tiny, an HTML error page) is replaced; otherwise pass `overwrite: true` to replace it or choose another filename.",
         promptSnippet: "browser_download: save a file from the website to the project folder",
         parameters: Type.Object({
           url: Type.Optional(Type.String({ description: "Direct URL of the file" })),
           ref: Type.Optional(Type.String({ description: "Snapshot ref of the element that starts the download when clicked" })),
           path: Type.String({ description: "Where to save it, relative to the project folder" }),
+          overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
         }),
-        execute: async (_id, { url: rawUrl, ref, path }, signal) => {
+        execute: async (_id, { url: rawUrl, ref, path, overwrite }, signal) => {
           let url = rawUrl;
           if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
           const folder = root();
           if (!folder) throw new Error("browser_download: no project folder is known for this thread.");
           const target = confineToFolder(folder, path);
+          let replaced = "";
+          if (existsSync(target)) {
+            if (overwrite) replaced = " (replaced the existing file)";
+            else if (looksLikeFailedDownload(target)) replaced = " (replaced a broken file from an earlier failed download)";
+            else throw new Error(`browser_download: ${path} already exists. Pass overwrite: true to replace it, or choose another filename.`);
+          }
           const d = await driver();
           if (!d.download) throw new Error("browser_download is not supported with this browser driver (the cdp driver cannot save downloads).");
           d.setActivity?.(`Downloading ${path}`);
@@ -238,8 +246,17 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
                 if (result.note && /^Stopped|not found|error/i.test(result.note)) throw new Error(`download failed: ${result.note}`);
               }
             : undefined;
-          const saved = await d.download({ path: target, ...(url || href ? { url: url ?? href } : {}), ...(trigger ? { trigger } : {}) });
-          const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}) };
+          // When replacing, download beside the old file and rename over it, so a failed download never destroys it.
+          const dest = replaced ? tempDownloadPath(target) : target;
+          let saved: Awaited<ReturnType<NonNullable<typeof d.download>>>;
+          try {
+            saved = await d.download({ path: dest, ...(url || href ? { url: url ?? href } : {}), ...(trigger ? { trigger } : {}) });
+            if (replaced) renameSync(dest, target);
+          } catch (error) {
+            if (replaced) rmSync(dest, { force: true });
+            throw error;
+          }
+          const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },
       }),

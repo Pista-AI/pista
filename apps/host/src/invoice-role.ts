@@ -31,7 +31,7 @@ When a login page shows, first call browser_login with the vendor's name (the ow
 
 ### Step 3: each invoice
 Find the invoice that matches the date and amount. Save it as invoices/<YYYY-MM>/<vendor>-<date>-<amount>.pdf in the project folder (lowercase vendor, no spaces).
-Getting the file: call browser_download with the path above and either the url of the invoice's PDF link, or the ref (from browser_snapshot) of its download button or link. The file goes straight to disk using the owner's login in the browser pane; its contents never come back to you, so do not try to read or paste it. If a download fails, try once with the other form (url instead of ref, or the reverse). If the page has no downloadable invoice, set status not_supported and put the invoice page address in the note, so the owner can download it by hand.
+Getting the file: call browser_download with the path above and either the url of the invoice's PDF link, or the ref (from browser_snapshot) of its download button or link. The file goes straight to disk using the owner's login in the browser pane; its contents never come back to you, so do not try to read or paste it. If a download fails, try once with the other form (url instead of ref, or the reverse). If a file already exists at the path, pass overwrite: true to replace it, or pick another filename. If the page has no downloadable invoice, set status not_supported and put the invoice page address in the note, so the owner can download it by hand.
 Call it found only when browser_download reports a saved file with a size above zero.
 
 ### Step 4: manifest and summary
