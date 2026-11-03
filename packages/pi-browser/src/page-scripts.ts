@@ -136,13 +136,33 @@ export const SECRET_FIELD =
   "(?:^|[^a-z])(?:card|cc|cvc|cvv|otp|pin|iban|ssn|one-?time|credit.?card|card.?number|pin.?code|security.?code)(?:[^a-z]|$)|password|lösenord|personnummer";
 
 /**
+ * The sticky-marker set, defined on window once, read-only and non-configurable, with its WeakSet methods bound at creation, so page
+ * script cannot replace it or patch WeakSet to disable it. Whoever defines it first wins, so every injected script (see `preamble`)
+ * creates it before anything else, even on a page with no inputs yet.
+ */
+function secretMarks(): { add(e: Element): void; has(e: Element): boolean } {
+  const w = window as unknown as { __pistaSecretMarks?: { add(e: Element): void; has(e: Element): boolean } };
+  if (!w.__pistaSecretMarks) {
+    const set = new WeakSet<Element>();
+    const add = WeakSet.prototype.add;
+    const has = WeakSet.prototype.has;
+    Object.defineProperty(w, "__pistaSecretMarks", { value: Object.freeze({ add: (e: Element) => void add.call(set, e), has: (e: Element) => has.call(set, e) }) });
+  }
+  return w.__pistaSecretMarks!;
+}
+declare const __marks: ReturnType<typeof secretMarks>;
+
+/**
  * THE secret-field predicate, built once and used by every page script (it is injected into each one by `call`, which binds
  * `pattern` to SECRET_FIELD): the snapshot masks, browser_type and browser_press refuse, and the effect summary hides the value
  * for exactly the fields it says yes to. A field is secret when it is type=password, has a password autocomplete hint, or any of its
  * autocomplete, id, name, aria-label, placeholder, <label> text (also `<label for>`), aria-labelledby text or `accessibleName` matches the pattern.
+ * Sticky: a field seen as type=password stays secret for the life of the document, so a "show password" toggle (type=text) does not unmask it.
  */
 function isSecretField(el: Element, pattern: string, accessibleName?: string): boolean {
-  if ((el as HTMLInputElement).type === "password") return true;
+  const marks = __marks;
+  if ((el as HTMLInputElement).type === "password") return (marks.add(el), true);
+  if (marks.has(el)) return true;
   const labels = (el as HTMLInputElement).labels;
   const labelledBy = (el.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((id) => (id ? (document.getElementById(id)?.textContent ?? "") : ""));
   const text = [
@@ -722,6 +742,148 @@ function pageFocusedIsPassword(): boolean {
   return __isSecret(el, (window as unknown as { __pistaDescribe?: (e: Element) => { name: string } }).__pistaDescribe?.(el).name);
 }
 
+/**
+ * Draws secret fields (top document, same-origin iframes, open shadow roots) as dots for a screenshot the model receives:
+ * `mask` tags them and adds a style, `unmask` removes both. Values are never read.
+ */
+function pageSecrets(op: string): string {
+  const docs: Document[] = [];
+  const fields: HTMLInputElement[] = [];
+  const walk = (root: Document | ShadowRoot) => {
+    if (root.nodeType === 9) docs.push(root as Document);
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") fields.push(el as HTMLInputElement);
+      if (el.shadowRoot) walk(el.shadowRoot);
+      if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
+        // Cross-origin frames throw (or give null) and cannot be reached from here.
+        try {
+          const inner = (el as HTMLIFrameElement).contentDocument;
+          if (inner) walk(inner);
+        } catch {}
+      }
+    }
+  };
+  walk(document);
+  if (op === "mask") {
+    for (const f of fields) if (__isSecret(f)) f.setAttribute("data-pista-secret", "");
+    for (const d of docs) {
+      const style = d.createElement("style");
+      style.setAttribute("data-pista-mask", "");
+      style.textContent = "[data-pista-secret]{-webkit-text-security:disc !important;text-shadow:none !important}";
+      (d.head ?? d.documentElement).appendChild(style);
+    }
+  } else {
+    for (const f of fields) f.removeAttribute("data-pista-secret");
+    for (const d of docs) for (const style of Array.from(d.querySelectorAll("style[data-pista-mask]"))) style.remove();
+  }
+  return "";
+}
+
+/**
+ * browser_eval in one evaluation: awaits `run` (the model's source, inlined into this script's text by `scripts.evalScrubbed`, so no
+ * eval or Function is needed and page CSP cannot block it) and returns its JSON result, or the error text if it threw, with every secret field value (6+ chars, plain and JSON-escaped) replaced by [redacted].
+ * Secret fields are found and read, and every builtin used afterwards is captured, BEFORE the script runs, so a script that patches
+ * String, JSON, DOM prototypes or the marker cannot switch the scrub off. Values are read again at the end (the script may have set
+ * one). They never leave the page. Fields the script creates itself are not covered.
+ */
+async function pageEvalScrubbed(run: () => unknown): Promise<{ ok: boolean; text: string }> {
+  // Stops accidental exposure of autofilled values, not a hostile script: that can transform the value or tamper with builtins across calls.
+  const apply = Reflect.apply;
+  const getter = (proto: object, key: string) => Object.getOwnPropertyDescriptor(proto, key)!.get!;
+  const stringify = JSON.stringify;
+  const Str = String;
+  const indexOf = String.prototype.indexOf;
+  const slice = String.prototype.slice;
+  const docQsa = Document.prototype.querySelectorAll;
+  const fragQsa = DocumentFragment.prototype.querySelectorAll;
+  const listLength = getter(NodeList.prototype, "length");
+  const listItem = NodeList.prototype.item;
+  const shadowOf = getter(Element.prototype, "shadowRoot");
+  const frameDoc = getter(HTMLIFrameElement.prototype, "contentDocument");
+  const inputValue = getter(HTMLInputElement.prototype, "value");
+  const areaValue = getter(HTMLTextAreaElement.prototype, "value");
+
+  const secrets: { el: Element; read: Function }[] = [];
+  const walk = (root: Node) => {
+    const qsa = root.nodeType === 9 ? docQsa : fragQsa;
+    const find = (selector: string, read: Function | null) => {
+      const list = apply(qsa, root, [selector]);
+      const n = apply(listLength, list, []) as number;
+      for (let i = 0; i < n; i++) {
+        const el = apply(listItem, list, [i]) as Element;
+        if (read) {
+          if (__isSecret(el)) secrets[secrets.length] = { el, read };
+        } else if (selector === "*") {
+          const shadow = apply(shadowOf, el, []);
+          if (shadow) walk(shadow);
+        } else {
+          try {
+            const inner = apply(frameDoc, el, []);
+            if (inner) walk(inner);
+          } catch {}
+        }
+      }
+    };
+    find("input", inputValue);
+    find("textarea", areaValue);
+    find("*", null);
+    find("iframe", null);
+  };
+  walk(document);
+
+  const values: string[] = [];
+  const readAll = () => {
+    for (let i = 0; i < secrets.length; i++) {
+      try {
+        const v = apply(secrets[i]!.read, secrets[i]!.el, []) as string;
+        if (v.length >= 6) values[values.length] = v;
+      } catch {}
+    }
+  };
+  readAll();
+
+  let ok = true;
+  let text: string;
+  try {
+    const result = await run();
+    text = stringify(result === undefined ? null : result, null, 2) ?? "null";
+  } catch (e) {
+    ok = false;
+    try {
+      text = Str((e as Error)?.stack || e);
+    } catch {
+      text = "The script threw an error.";
+    }
+  }
+  readAll();
+
+  const forms: string[] = [];
+  for (let i = 0; i < values.length; i++) {
+    forms[forms.length] = values[i]!;
+    forms[forms.length] = apply(slice, stringify(values[i]), [1, -1]) as string;
+  }
+  // Longest first, so a secret that contains another is not left half-redacted.
+  for (let i = 1; i < forms.length; i++) {
+    const x = forms[i]!;
+    let j = i - 1;
+    while (j >= 0 && forms[j]!.length < x.length) (forms[j + 1] = forms[j]!, j--);
+    forms[j + 1] = x;
+  }
+  for (let i = 0; i < forms.length; i++) {
+    const form = forms[i]!;
+    if (!form.length) continue;
+    let out = "";
+    let from = 0;
+    let at: number;
+    while ((at = apply(indexOf, text, [form, from]) as number) >= 0) {
+      out += (apply(slice, text, [from, at]) as string) + "[redacted]";
+      from = at + form.length;
+    }
+    text = out + (apply(slice, text, [from]) as string);
+  }
+  return { ok, text };
+}
+
 function pageSyntheticKey(key: string): string {
   const el = (document.activeElement as HTMLElement | null) ?? document.body;
   for (const type of ["keydown", "keyup"]) el.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true }));
@@ -891,8 +1053,12 @@ function pageHref(target: string): string {
 export const jsLiteral = (value: unknown): string =>
   JSON.stringify(value ?? null).replace(/[<>/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
+/** The page-script prelude: the no-op `__name`, the marker set (created first) and the secret-field predicate. */
+const preamble = () =>
+  `const __name = (f) => f; const __marks = (${secretMarks.toString()})(); const __childFrames = ${pageChildFrames.toString()}; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name);`;
+
 export const call = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
-  `(() => { const __name = (f) => f; const __childFrames = ${pageChildFrames.toString()}; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
+  `(() => { ${preamble()} return (${fn.toString()})(${args.map(jsLiteral).join(", ")}); })()`;
 
 export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),
@@ -901,6 +1067,16 @@ export const scripts = {
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),
   selectActive: () => call(pageSelectActive),
+  /** Screenshot mask for secret fields: "mask" adds it, "unmask" removes it. */
+  secrets: (op: "mask" | "unmask") => call(pageSecrets, op),
+  /**
+   * browser_eval: the model's `src` runs inside the scrubbing wrapper and the result is { ok, text } with secret field values
+   * redacted (see pageEvalScrubbed). "expression" returns the value of `src` (a promise is awaited); "statements" treats `src` as a
+   * function body and returns what it `return`s. The caller must have checked that `src` compiles as such a body on its own (see
+   * secrets.ts), which is what keeps it from closing the wrapper early.
+   */
+  evalScrubbed: (src: string, form: "expression" | "statements") =>
+    `(() => { ${preamble()} return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}); })()`,
   focusedIsPassword: () => call(pageFocusedIsPassword),
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),

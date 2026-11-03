@@ -10,6 +10,7 @@ import { registerContextPruning } from "./context.ts";
 import { findLogin, guardDriver, type DomainRules } from "./domains.ts";
 import type { BrowserDriver, PageState } from "./driver.ts";
 import { fillEnabled, registerFillTool } from "./fill.ts";
+import { evaluateScrubbed, screenshotMasked } from "./secrets.ts";
 import { traceTools } from "./trace.ts";
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -349,7 +350,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       execute: async () => {
         const d = await driver();
         d.setActivity?.("Taking screenshot");
-        return respond(await d.state(), {}, await d.screenshot());
+        return respond(await d.state(), {}, await screenshotMasked(d));
       },
     }),
   );
@@ -362,8 +363,8 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       execute: async (_id, { script }) => {
         const d = await driver();
         d.setActivity?.("Running script");
-        const value = await d.evaluate(script);
-        return respond(await d.state(), { text: JSON.stringify(value ?? null, null, 2) });
+        const text = await evaluateScrubbed(d, script);
+        return respond(await d.state(), { text });
       },
     }),
   );
