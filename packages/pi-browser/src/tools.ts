@@ -325,7 +325,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const saved = await saveDownload(d, { root: folder, path, overwrite }, url ? { url } : fromRef!);
           const replaced = saved.replaced;
           const direct = url ?? (href && !rowContext ? href : undefined);
-          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : { locator: located, ...(rowContext ? { rowContext } : {}) }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
+          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : {}), ...(located ? { locator: located } : {}), ...(rowContext ? { rowContext } : {}), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },

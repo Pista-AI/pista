@@ -96,18 +96,24 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
   }
   // Text that looks like a token or hash is dropped, never stored.
   const clean = (v?: string) => (v && !isOpaque(v) ? v : undefined);
+  // Once a step depends on the invoice, nothing after it may be a fixed address: those are specific to one invoice.
+  let byInvoice = false;
   const steps: PlaybookStep[] = picked.slice(1).map((r, i): PlaybookStep => {
     const text = clean(waitFor[String(r.n)]?.slice(0, 200));
     const expect: PlaybookExpect = text ? { text } : {};
     switch (r.kind) {
-      case "navigate": return { kind: "navigate", url: r.url, ...(text ? { expect } : {}) };
+      case "navigate":
+        if (byInvoice) throw new Error(`entry ${r.n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`);
+        return { kind: "navigate", url: r.url, ...(text ? { expect } : {}) };
       case "signIn": return { kind: "signIn", origin: r.origin, ...(text ? { expect } : {}) };
       case "click": {
         // The page before this click on the replayed path (the previous chosen entry). A changed path is a stable thing to wait for.
         const before = urlOf(picked[i]!);
         const { name, text: lt, ...rest } = r.locator;
         const row = r.rowContext ? rowRule(r.rowContext, invoice) : undefined;
-        const period = !row && !!r.periodContext && isPeriodClick(r.periodContext, invoice);
+        if (!row && r.periodContext && !isPeriodClick(r.periodContext, invoice)) throw new Error(`entry ${r.n} clicks a month or period label; pass the invoice for the month you clicked`);
+        const period = !row && !!r.periodContext;
+        if (row || period) byInvoice = true;
         // A path that depends on the row or month is not stable across invoices.
         if (!row && !period) {
           try {
@@ -120,7 +126,11 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
       }
       case "download": {
         const fileType = r.contentType?.split(";")[0]?.split("/")[1];
-        return { kind: "download", ...(r.url ? { url: r.url } : { target: { ...r.locator, ...(r.rowContext ? { row: rowRule(r.rowContext, invoice) } : {}) } }), ...(fileType ? { fileType } : {}) };
+        const row = r.rowContext ? rowRule(r.rowContext, invoice) : undefined;
+        if (row) byInvoice = true;
+        if (byInvoice && !r.locator) throw new Error(`entry ${r.n}: this download address is specific to one invoice; download it by clicking`);
+        const asClick = row || (byInvoice && r.source === "ref");
+        return { kind: "download", ...(!asClick && r.url ? { url: r.url } : { target: { ...r.locator, ...(row ? { row } : {}) } }), ...(fileType ? { fileType } : {}) };
       }
     }
   });
@@ -166,7 +176,7 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
       parameters: Type.Object({
         steps: Type.Optional(Type.Array(Type.Number(), { description: "Entry numbers of the minimal path, in order" })),
         waitFor: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Entry number -> text expected on the page afterwards" })),
-        invoice: Type.Optional(Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }, { description: "The invoice the saved download was for. Needed when a step picks one row of a list or a month; the playbook then picks that row by the invoice's date (and amount) next time. Not stored." })),
+        invoice: Type.Optional(Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }, { description: "The invoice the saved download was for. Needed when a step picks one row of a list or a month; the playbook then picks that row by the invoice's date (and amount) next time. Used only to check the rule against the page; it is not stored in the playbook (it stays in this conversation)." })),
       }),
       execute: async (_id, { steps, waitFor, invoice }) => {
         const rows = trace.list();

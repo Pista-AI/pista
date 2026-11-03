@@ -182,7 +182,7 @@ describe("playbook_save with repeated rows and month selectors", () => {
   });
 
   it("refuses a step that picks a row when no invoice is given, or when the rule picks another row", () => {
-    assert.match(save(build(2)).message, /pass the invoice it was for/);
+    assert.match(save(build(2)).message, /pass the invoice for the month you clicked/);
     assert.match(save(build(1), { date: "2026-10-20" }).message, /not identify the row you clicked \(row 2 of 3\)/);
     assert.match(save(build(2, [texts[0]!, texts[1]!, null]), { date: "2026-10-20" }).message, /not identify/);
     assert.equal(getPlaybook("127.0.0.1"), null);
@@ -201,5 +201,34 @@ describe("playbook_save with repeated rows and month selectors", () => {
   it("saves nothing for an invoice whose date matches no row, even if the month click would stay literal", () => {
     assert.match(save(build(2), { date: "2026-12-20" }).message, /^Not saved/);
     assert.equal(getPlaybook("127.0.0.1"), null);
+  });
+
+  it("saves a click-download after a row step as a locator, and refuses fixed addresses once the invoice picked the path", () => {
+    const base = (extra: Parameters<PlaybookTrace["add"]>[0][]) => {
+      const t = new PlaybookTrace();
+      t.add({ kind: "navigate", url: `${B}list-months.html` }); // 1
+      t.add({ kind: "click", locator: { role: "link", name: "Details", text: "Details" }, urlAfter: `${B}detail-77.html`, rowContext: { texts, clickedIndex: 2 } }); // 2
+      for (const e of extra) t.add(e);
+      return t.list();
+    };
+    const inv = { date: "2026-10-20" };
+    const ok = base([{ kind: "download", source: "ref", url: `${B}inv-77.pdf`, locator: { role: "link", name: "Download" }, contentType: "application/pdf", path: "a.pdf" }]);
+    assert.equal(savePlaybookFromTrace(ok, [1, 2, 3], undefined, "t", inv).event?.type, "playbook.event");
+    const steps = getPlaybook("127.0.0.1")!.steps;
+    assert.deepEqual(steps[0], { kind: "click", target: { role: "link", name: "Details", text: "Details", row: { match: ["date"] } } });
+    assert.deepEqual(steps[1], { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" });
+    const byUrl = base([{ kind: "download", source: "url", url: `${B}inv-77.pdf`, path: "a.pdf" }]);
+    assert.match(savePlaybookFromTrace(byUrl, [1, 2, 3], undefined, "t", inv).message, /specific to one invoice; download it by clicking/);
+    const nav = base([{ kind: "navigate", url: `${B}detail-77.html` }, { kind: "download", source: "ref", locator: { role: "link", name: "Download" }, path: "a.pdf" }]);
+    assert.match(savePlaybookFromTrace(nav, [1, 2, 3, 4], undefined, "t", inv).message, /record the clicks that lead there/);
+  });
+
+  it("refuses a month label click without the invoice that selects it", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}months.html` });
+    t.add({ kind: "click", locator: { role: "link", name: "October 2026" }, urlAfter: `${B}m.html`, periodContext: { names: ["September 2026", "October 2026"], clickedIndex: 1 } });
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Get" }, path: "a.pdf" });
+    assert.match(savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t").message, /pass the invoice for the month you clicked/);
+    assert.match(savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t", { date: "2026-12-01" }).message, /pass the invoice for the month/);
   });
 });

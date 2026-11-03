@@ -84,7 +84,10 @@ function expectOf(v: unknown, site: string): PlaybookExpect | undefined {
   const urlIncludes = str(o.urlIncludes, MAX_TEXT), text = str(o.text, MAX_TEXT);
   if (urlIncludes && !isOpaque(urlIncludes)) out.urlIncludes = urlIncludes;
   if (text && !isOpaque(text)) out.text = text;
-  if (o.element !== undefined) out.element = locator(o.element, site);
+  if (o.element !== undefined) {
+    const { row: _row, period: _period, ...el } = locator(o.element, site); // waiting needs no invoice
+    out.element = el;
+  }
   return out;
 }
 
