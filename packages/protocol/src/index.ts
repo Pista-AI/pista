@@ -796,6 +796,8 @@ export interface PlaybookLocator {
   frameUrl?: string;
   /** The locator names the repeated element (e.g. each row's download link); the row is chosen at replay time from the job's invoice. No row content is stored. */
   row?: { match: ("date" | "amount")[] };
+  /** The locator is a period selector (a month tab or link) of this role: the one whose label covers the invoice's date is chosen at replay time. No name is stored. */
+  period?: boolean;
 }
 export interface PlaybookExpect { urlIncludes?: string; text?: string; element?: PlaybookLocator }
 export type PlaybookStep =

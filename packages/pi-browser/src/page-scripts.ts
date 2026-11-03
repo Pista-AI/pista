@@ -946,6 +946,26 @@ function pageRowTexts(refs: string[]): (string | null)[] {
 }
 
 /**
+ * The elements of the last snapshot that share the target's role, in page order: those with the same name too (the repeated
+ * controls of a list) as refs, and every one's name (the sibling labels of a month selector). Null for a selector or unknown ref.
+ */
+function pageSiblings(target: string): { refs: string[]; index: number; names: string[]; nameIndex: number } | null {
+  const w = window as unknown as { __pistaRefs?: Map<string, WeakRef<Element>>; __pistaDescribe?: (el: Element) => { role: string; name: string } };
+  const el = /^e\d+$/.test(target) ? w.__pistaRefs?.get(target)?.deref() : undefined;
+  const d = el && el.isConnected ? w.__pistaDescribe?.(el) : undefined;
+  if (!el || !d) return null;
+  const all: { ref: string; el: Element; name: string }[] = [];
+  for (const [ref, weak] of w.__pistaRefs ?? []) {
+    const e = weak.deref();
+    const x = e && e.isConnected ? w.__pistaDescribe?.(e) : undefined;
+    if (e && x && x.role === d.role) all.push({ ref, el: e, name: x.name });
+  }
+  all.sort((a, b) => (a.el.compareDocumentPosition(b.el) & 4 ? -1 : 1));
+  const same = all.filter((a) => a.name === d.name);
+  return { refs: same.map((a) => a.ref), index: same.findIndex((a) => a.ref === target), names: all.map((a) => a.name), nameIndex: all.findIndex((a) => a.ref === target) };
+}
+
+/**
  * Role, accessible name and a short visible text of the element behind a ref (or selector): what a later run needs to find the same control.
  * Text is only given for plain controls (buttons, links, tabs, options, ...), never for fields or editable content, which may hold typed secrets.
  * Clicks inside an iframe are not traced yet (snapshots do not enter frames), so playbooks navigate to the frame URL instead.
@@ -1135,6 +1155,7 @@ export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),
   href: (target: string) => call(pageHref, target),
   locate: (target: string) => call(pageLocate, target),
+  siblings: (target: string) => call(pageSiblings, target),
   prepare: (target: string, op: string, arg?: string) => call(pagePrepare, target, op, arg),
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),

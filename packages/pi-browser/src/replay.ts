@@ -10,10 +10,10 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { matchRows, parseDates } from "./row-match.ts";
+import { isPeriodLabel, matchPeriod, matchRows, parseDates } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
-export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string; row?: { match: ("date" | "amount")[] } }
+export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string; row?: { match: ("date" | "amount")[] }; period?: boolean }
 export interface ReplayExpect { urlIncludes?: string; text?: string; element?: ReplayLocator }
 export type ReplayStep =
   | { kind: "navigate"; url: string; expect?: ReplayExpect }
@@ -194,6 +194,15 @@ const countMatches = (selector: string): number => {
 
 /** Snapshots the page and resolves the locator to a ref (or a selector the page has). */
 async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], invoice?: ReplayOptions["invoice"]): Promise<Resolution> {
+  if (target.period && target.role) {
+    if (!invoice) throw new Handoff("needs-invoice", "This step picks a period (month) by the invoice, and the job gave no invoice date.");
+    const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
+    if (snap.omitted > 0) return { reason: "row-ambiguous", detail: `The page lists more controls than replay reads, so the period cannot be chosen; looking for ${describeInvoice(invoice)}.` };
+    const labels = snap.elements.filter((e) => e.role === target.role && isPeriodLabel(e.name));
+    const m = matchPeriod(labels.map((e, index) => ({ index, text: e.name })), invoice);
+    if (m.kind === "one") return { target: labels[m.index]!.ref };
+    return m.kind === "none" ? { reason: "row-not-found", detail: `No ${target.role} of ${labels.length} period labels covers ${describeInvoice(invoice)}.` } : { reason: "row-ambiguous", detail: `${m.candidates.length} period labels cover ${describeInvoice(invoice)}.` };
+  }
   if (target.row) {
     if (!invoice) throw new Handoff("needs-invoice", "This step picks a row by the invoice, and the job gave no invoice date.");
     const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);

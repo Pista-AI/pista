@@ -121,3 +121,39 @@ test("a lone link whose row is not an explicit row element is never matched on i
   const r = await runReplay({ startUrl: `${base}list-single.html`, steps: [rowStep()] }, { ...options("invoices/r6.pdf"), invoice: { date: "2026-09-03" } });
   assert.equal(!r.ok && r.reason, "row-ambiguous");
 });
+
+test("a path recorded for one month's invoice replays for an invoice in another month", { skip }, async () => {
+  // Record: pick a month, then download the second row, through the tools with onTrace, as a model would.
+  const { registerBrowserTools } = await import("../src/tools.ts");
+  const { pickRow } = await import("../src/replay.ts");
+  const { matchPeriod } = await import("../src/row-match.ts");
+  const trace: import("../src/tools.ts").BrowserTraceEntry[] = [];
+  const tools = new Map<string, { execute: (id: string, p: Record<string, unknown>) => Promise<{ content: { text?: string }[] }> }>();
+  registerBrowserTools({ registerTool: (t: { name: string }) => tools.set(t.name, t as never), on: () => {} } as never, () => driver!, { keepPageViews: 0, downloadRoot: () => dir, onTrace: (e) => trace.push(e) });
+  const call = async (name: string, params: Record<string, unknown> = {}) => (await tools.get(name)!.execute("t", params)).content.map((c) => c.text ?? "").join("\n");
+  const refsOf = (snap: string, label: string) => [...snap.matchAll(new RegExp(`\\[?(e\\d+)\\]?[^\\n]*${label}`, "g"))].map((m) => m[1]!);
+  await call("browser_navigate", { url: `${base}months.html` });
+  await call("browser_click", { ref: refsOf(await call("browser_snapshot"), "October 2026")[0] });
+  const list = await call("browser_snapshot");
+  const links = refsOf(list, "Download invoice");
+  assert.equal(links.length, 2);
+  await call("browser_download", { ref: links[1], path: "invoices/rec.pdf" });
+  const click = trace.find((t) => t.kind === "click") as Extract<typeof trace[number], { kind: "click" }>;
+  const dl = trace.find((t) => t.kind === "download") as Extract<typeof trace[number], { kind: "download" }>;
+  // The month click carries sibling labels; the download names its place in the list and no row-specific address.
+  assert.equal(click.periodContext?.names.filter(Boolean).length, 3);
+  assert.equal(dl.url, undefined);
+  assert.equal(dl.rowContext?.clickedIndex, 1);
+  // Save: the same checks the host makes for an invoice of 2026-10-20.
+  const invoice = { date: "2026-10-20" };
+  const labels = click.periodContext!.names.flatMap((text, index) => (text ? [{ index, text }] : []));
+  assert.deepEqual(matchPeriod(labels, invoice), { kind: "one", index: click.periodContext!.clickedIndex });
+  assert.deepEqual(pickRow(dl.rowContext!.texts.map((_, i) => String(i)), dl.rowContext!.texts, invoice, ["date"]), { target: "1" });
+  const steps: ReplayStep[] = [
+    { kind: "click", target: { role: click.locator.role, period: true } },
+    { kind: "download", target: { role: dl.locator!.role, name: dl.locator!.name, row: { match: ["date"] } }, fileType: "pdf" },
+  ];
+  const r = await runReplay({ startUrl: `${base}months.html`, steps }, { ...options("invoices/rep.pdf"), invoice: { date: "2026-11-17" } });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(readFileSync(join(dir, "invoices/rep.pdf"), "latin1").includes("inv-2026-11b"));
+});

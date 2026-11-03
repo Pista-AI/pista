@@ -133,3 +133,9 @@ describe("locator row", () => {
     assert.equal(withRow("date").target.row, undefined);
   });
 });
+
+it("expect.element locators lose row and period", async () => {
+  const { validatePlaybook } = await import("./playbooks.ts");
+  const pb = validatePlaybook({ startUrl: "https://x.test/", steps: [{ kind: "click", target: { role: "link", name: "A" }, expect: { element: { role: "link", name: "B", row: { match: ["date"] }, period: true } } }, { kind: "download", url: "https://x.test/a.pdf" }] }, "x.test");
+  assert.deepEqual((pb.steps[0] as { expect: { element: object } }).expect.element, { role: "link", name: "B" });
+});

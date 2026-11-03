@@ -155,6 +155,9 @@ export function matchRows(
   return hits.length === 1 && !doubtful ? { kind: "one", index: hits[0]!.index } : { kind: "many", candidates: hits.map((h) => h.index) };
 }
 
+/** True for a short label that is itself a date or month ("October 2026", "1 Oct - 31 Oct 2026"): what a month or period selector shows. */
+export const isPeriodLabel = (s: string): boolean => s.length <= 40 && parseDates(s).length > 0;
+
 /** Period labels the target falls in: a month label by its month, a label with two dates as a range. A numeric label still ambiguous is no match. */
 export function matchPeriod(labels: MatchRow[], target: { date: string }): RowMatch {
   const [ty, tm, td] = isoParts(target.date);
