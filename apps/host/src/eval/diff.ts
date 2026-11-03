@@ -6,7 +6,7 @@ import { DIFF_CHARS, type DiffStats } from "./presets.ts";
 const DIFF_TIMEOUT_MS = 30_000;
 export const TRUNCATED = "\n[diff truncated]\n";
 /** Harness and dependency dirs that are not the agent's work. */
-const IGNORED = /\/(\.pista|node_modules|\.git)\//;
+const IGNORED = /\/(\.pista|\.codegraph|node_modules|\.git)\//;
 
 function commonParent(a: string, b: string): string {
   let dir = dirname(a);

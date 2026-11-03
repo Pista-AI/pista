@@ -1,0 +1,1 @@
+{ "check": "node check.mjs", "sourceRepo": { "commit": "04c5b90", "exclude": ["evals","docs","AGENTS.md","CLAUDE.md","README.md","CHANGELOG.md","CONTRIBUTING.md",".github",".pista-screenshot-focused.png",".pista-shot-empty.png",".pista-shot-working.png"] } }

@@ -17,6 +17,11 @@ test("accepts a new file below the project folder, including missing subfolders"
   assert.equal(ok(path.join(proj, "out", "a.pdf")), path.join(proj, "out", "a.pdf"));
 });
 
+test("accepts the sibling temp name used when replacing an existing download", () => {
+  const temp = path.join(proj, "invoices", `a.pdf.${process.pid}.part`);
+  assert.equal(ok(temp), temp);
+});
+
 test("refuses the root itself, paths outside it and .. escapes", () => {
   assert.equal(ok(proj), undefined);
   assert.equal(ok(path.join(proj, "..", "escape.pdf")), undefined);

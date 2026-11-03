@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { scripts } from "../src/page-scripts.ts";
 import { guardDriver } from "../src/domains.ts";
-import { confineToFolder } from "../src/download.ts";
+import { confineToFolder, tempDownloadPath } from "../src/download.ts";
 import type { BrowserDriver } from "../src/driver.ts";
 import { registerBrowserTools } from "../src/tools.ts";
 
@@ -100,4 +100,37 @@ test("browser_download: a relative url resolves against the page url and the gua
   // The raw "/x.pdf" has no host, so only the resolved address can be judged: it is on a host outside the allowlist.
   await assert.rejects(run({ allowedDomains: ["other.test"] }, "/invoice-1042.pdf"), /policy|blocked|allow/i);
   assert.equal(seen.length, 1);
+});
+
+test("browser_download: overwrite replaces, a broken file is replaced, a valid file needs overwrite", async () => {
+  const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
+  const api = { registerTool: (t: { name: string; execute: never }) => tools.set(t.name, t), on: () => undefined } as never;
+  const driver = {
+    download: async (o: { path: string }) => (writeFileSync(o.path, "%PDF-1.7 new and good"), { bytes: 21 }),
+    setActivity: () => undefined,
+    state: async () => ({ url: "", title: "", loading: false }),
+  } as unknown as BrowserDriver;
+  registerBrowserTools(api, () => driver, { downloadRoot: () => folder, traceDir: "off" });
+  const run = (args: object) => tools.get("browser_download")!.execute("1", { url: "https://x.test/a.pdf", ...args }, undefined) as Promise<{ details: { note?: string } }>;
+  const file = join(folder, "ow.pdf");
+  writeFileSync(file, "<html>403 Forbidden</html>");
+  assert.match((await run({ path: "ow.pdf" })).details.note ?? "", /broken/);
+  assert.equal(readFileSync(file, "utf8"), "%PDF-1.7 new and good");
+  writeFileSync(file, "%PDF-1.7 valid old");
+  await assert.rejects(run({ path: "ow.pdf" }), /overwrite: true/);
+  assert.equal(readFileSync(file, "utf8"), "%PDF-1.7 valid old");
+  assert.match((await run({ path: "ow.pdf", overwrite: true })).details.note ?? "", /replaced/);
+  assert.equal(readFileSync(file, "utf8"), "%PDF-1.7 new and good");
+  assert.deepEqual(readdirSync(folder).filter((n) => n.endsWith(".part")), []);
+});
+
+test("download temp path has no dot-prefixed segment and a directory target gives a clear error", async () => {
+  const tmp = tempDownloadPath(join(folder, "inv/a.pdf"));
+  assert.ok(!tmp.slice(folder.length).split("/").some((seg) => seg.startsWith(".")), tmp);
+  mkdirSync(join(folder, "adir.pdf"));
+  const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
+  const api = { registerTool: (t: { name: string; execute: never }) => tools.set(t.name, t), on: () => undefined } as never;
+  const driver = { download: async () => ({ bytes: 1 }), setActivity: () => undefined, state: async () => ({ url: "", title: "", loading: false }) } as unknown as BrowserDriver;
+  registerBrowserTools(api, () => driver, { downloadRoot: () => folder, traceDir: "off" });
+  await assert.rejects(tools.get("browser_download")!.execute("1", { url: "https://x.test/a", path: "adir.pdf" }, undefined), /not a regular file/);
 });

@@ -2,6 +2,7 @@ import { type ExtensionAPI, type InlineExtension } from "@earendil-works/pi-codi
 import { registerBrowserTools, type DomainRules, type RiskApprover } from "@pista/pi-browser";
 import { activeBrowserDriverConfig, createBrowserDriver, type ThreadRef } from "./browser-driver.ts";
 import type { ConfigStore } from "./config.ts";
+import type { HostEvent } from "@pista/protocol";
 import type { Hub } from "./hub.ts";
 import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
 import { isLocalProvider } from "./local.ts";
@@ -56,6 +57,24 @@ export function systemPrompt(store: ConfigStore): string {
 /** How long the user has to answer a question about one held browser action; a click that waited longer is stale anyway. */
 export const BROWSER_ASK_TIMEOUT_MS = 120_000;
 
+/** `hub.ask`, but the card is withdrawn with `approval.resolved` when the ask rejects (timeout, abort), so a late yes finds nothing to answer. */
+async function askWithCard<T>(hub: Hub, build: (approvalId: string) => HostEvent, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  let approvalId: string | undefined;
+  try {
+    return await hub.ask<T>(
+      (id) => {
+        approvalId = id;
+        return build(id);
+      },
+      timeoutMs,
+      signal,
+    );
+  } catch (error) {
+    if (approvalId) hub.emit({ type: "approval.resolved", approvalId });
+    throw error;
+  }
+}
+
 /**
  * Asks the user about one exact action of a browser tool. The card shows `action` as its title and offers no "Always allow".
  * Rejects when no window is connected, on timeout and on abort; in the last two the card is withdrawn with `approval.resolved`,
@@ -63,29 +82,81 @@ export const BROWSER_ASK_TIMEOUT_MS = 120_000;
  */
 export function browserApprover(hub: Hub, ref: ThreadRef, timeoutMs = BROWSER_ASK_TIMEOUT_MS): RiskApprover {
   return async ({ toolName, action, signal }) => {
-    let approvalId: string | undefined;
-    try {
-      const answer = await hub.ask<{ allow: boolean }>(
-        (id) => {
-          approvalId = id;
-          return {
-            type: "approval.request",
-            approvalId: id,
-            threadId: ref.threadId,
-            toolName,
-            args: { action },
-            reason: `${action} looks like a consequential action (buying, paying, sending, deleting, signing in or out)`,
-            action,
-          };
-        },
-        timeoutMs,
-        signal,
-      );
-      return answer.allow === true;
-    } catch (error) {
-      if (approvalId) hub.emit({ type: "approval.resolved", approvalId });
-      throw error;
-    }
+    const answer = await askWithCard<{ allow: boolean }>(
+      hub,
+      (id) => ({
+        type: "approval.request",
+        approvalId: id,
+        threadId: ref.threadId,
+        toolName,
+        args: { action },
+        reason: `${action} looks like a consequential action (buying, paying, sending, deleting, signing in or out)`,
+        action,
+      }),
+      timeoutMs,
+      signal,
+    );
+    return answer.allow === true;
+  };
+}
+
+/** What the tool-limit pause needs from the thread layer. */
+export interface ToolLimitGate {
+  /** The run used up its budget and a window is there to ask. */
+  reached(): boolean;
+  used(): number;
+  more(): number;
+  /** The user allowed `more` further calls. */
+  extend(): void;
+  /** The user declined: stop the run as the limit always has. */
+  stop(): void;
+  /** Aborts when the thread is gone (archived, removed, host shutting down); withdraws a pending card. */
+  signal: AbortSignal;
+  close(): void;
+}
+
+/**
+ * Holds the first tool call past the per-run limit on an in-chat card. Continue raises the budget and the call proceeds (no context is lost);
+ * Stop, a timeout, an abort of the run or the last window closing ends the run. Parallel calls share one question.
+ */
+export function toolLimitExtension(hub: Hub, ref: ThreadRef, gate: ToolLimitGate, timeoutMs = 10 * 60_000): InlineExtension {
+  return {
+    name: "tool-limit",
+    factory: (pi: ExtensionAPI) => {
+      let asking: Promise<boolean> | undefined;
+      const ask = async (runSignal: AbortSignal | undefined): Promise<boolean> => {
+        const used = gate.used();
+        const more = gate.more();
+        const ctl = new AbortController();
+        const signal = AbortSignal.any([ctl.signal, gate.signal, ...(runSignal ? [runSignal] : [])]);
+        const off = hub.onNoClients(() => ctl.abort());
+        try {
+          const answer = await askWithCard<{ allow: boolean }>(
+            hub,
+            (id) => ({ type: "approval.request", approvalId: id, threadId: ref.threadId, toolName: "tool limit", args: {}, reason: `This run has used ${used} tool calls.`, toolLimit: { used, more } }),
+            timeoutMs,
+            signal,
+          );
+          return answer.allow === true && !signal.aborted;
+        } catch {
+          return false;
+        } finally {
+          off();
+        }
+      };
+      pi.on("tool_call", async (_event, ctx) => {
+        if (!gate.reached()) return undefined;
+        asking ??= ask(ctx?.signal).finally(() => {
+          asking = undefined;
+        });
+        if (await asking) {
+          if (gate.reached()) gate.extend();
+          return undefined;
+        }
+        gate.stop();
+        return { block: true, terminate: true, reason: "The user stopped the run at its tool-call limit." };
+      });
+    },
   };
 }
 
@@ -117,6 +188,35 @@ const STOP_AFTER = 5;
 const MAX_BLOCKED = 4;
 /** Tool calls in one prompt before a local model's tool calls are paused; small models loop where frontier ones converge. Reads on fresh pages are legitimate calls, so the cap leaves room for a long browsing session. */
 const MAX_TOOL_CALLS_LOCAL = 40;
+/** Visits to one page (after normalizing the URL) before browser_navigate is blocked with a change-strategy message. The 3rd visit is blocked, not run. */
+export const NAVIGATE_BLOCK_AT = 3;
+/** Query parameters that only track a visit or session; they do not change the page. Lowercase. */
+const VOLATILE_PARAMS = /^(utm_.*|gclid|fbclid|msclkid|mc_cid|mc_eid|_ga|_gl|sessionid|session_id|trk|timestamp|_|nonce)$/;
+
+/** A URL reduced to what identifies the page, so reloads that differ only in a fragment, tracking or param order count as one visit. Unparseable input falls back to the trimmed string. */
+export function normalizeNavigateUrl(raw: string): string {
+  const text = String(raw).trim();
+  try {
+    const u = new URL(text);
+    u.hash = "";
+    for (const name of [...u.searchParams.keys()]) if (VOLATILE_PARAMS.test(name.toLowerCase())) u.searchParams.delete(name);
+    u.searchParams.sort();
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+    return u.href; // scheme and host are lowercased by URL
+  } catch {
+    return text;
+  }
+}
+
+/** Counts a visit to `url` in `visits` and returns the change-strategy message once it reaches NAVIGATE_BLOCK_AT, otherwise undefined. */
+export function countNavigateVisit(visits: Map<string, number>, url: string): string | undefined {
+  const key = normalizeNavigateUrl(url);
+  const n = (visits.get(key) ?? 0) + 1;
+  visits.set(key, n);
+  if (n < NAVIGATE_BLOCK_AT) return undefined;
+  return `Blocked: you have already visited this page ${n - 1} times in this run and it did not help. Change strategy: check whether the content is in an iframe and open the frame address, follow a different link you have seen, or stop and report that this page cannot be reached.`;
+}
+
 /** Browser tools that can change what the page shows; the next read after one of them is a new observation, not a repeat. */
 const PAGE_CHANGING_TOOLS = new Set([
   "browser_navigate",
@@ -145,6 +245,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
     name: "loop-guard",
     factory: (pi: ExtensionAPI) => {
       const counts = new Map<string, number>();
+      const visits = new Map<string, number>();
       let blocked = 0;
       let calls = 0;
       let pageEpoch = 0;
@@ -156,6 +257,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
       // Each user prompt starts a fresh run.
       pi.on("agent_start", () => {
         counts.clear();
+        visits.clear();
         blocked = 0;
         calls = 0;
         pageEpoch = 0;
@@ -172,6 +274,13 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
         counts.set(key, n);
         calls++;
         if (n >= STOP_AFTER) return pause(`${event.toolName} was called ${n} times with identical arguments in this run`);
+        // Same page again and again, however the URL is spelled: its own message, since "identical arguments" would not describe it.
+        const url = event.toolName === "browser_navigate" ? (event.input as { url?: unknown }).url : undefined;
+        const revisit = typeof url === "string" ? countNavigateVisit(visits, url) : undefined;
+        if (revisit) {
+          if (++blocked >= MAX_BLOCKED) return pause("you keep repeating tool calls");
+          return { block: true, reason: revisit };
+        }
         if (n >= WARN_AFTER) {
           if (++blocked >= MAX_BLOCKED) return pause("you keep repeating tool calls");
           return {

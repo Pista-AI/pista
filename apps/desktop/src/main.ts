@@ -7,7 +7,7 @@
  * - Implements the UI's DesktopBrowserBridge with a WebContentsView (real Chromium),
  *   so the agent can read, script and screenshot any page.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, shell, systemPreferences, type UtilityProcess, utilityProcess, WebContentsView } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, safeStorage, session, shell, systemPreferences, type UtilityProcess, utilityProcess, WebContentsView } from "electron";
 import { execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -659,11 +659,40 @@ ipcMain.handle("dialog:pickFolder", async () => {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
+const within = (ms: number, work: Promise<unknown>) => {
+  let timer: NodeJS.Timeout;
+  return Promise.race([work.catch(() => undefined), new Promise<void>((r) => (timer = setTimeout(r, ms)))]).finally(() => clearTimeout(timer));
+};
+
+/** Lets the host close the agent's Chrome cleanly (it flushes its cookies) and writes the pane's cookies to disk before the app exits. */
+async function stopForQuit() {
+  const host = hostProcess;
+  const hostGone = host?.pid === undefined ? Promise.resolve() : new Promise<void>((resolve) => host.once("exit", () => resolve()));
+  try {
+    host?.postMessage({ type: "shutdown" });
+  } catch {}
+  try {
+    await within(3000, Promise.all([session.fromPartition("persist:pista-browser").cookies.flushStore(), session.defaultSession.cookies.flushStore()]));
+    await within(12_000, hostGone); // the host bounds its own browser close at about 9 s
+  } catch {} finally {
+    host?.kill();
+  }
+}
+
 let quitting = false;
-app.on("before-quit", () => {
+let quitStarted = false;
+let quitReady = false;
+app.on("before-quit", (event) => {
   quitting = true;
   clearTimeout(respawnTimer);
-  hostProcess?.kill();
+  if (quitReady) return;
+  event.preventDefault(); // quit again once the host and cookies are done
+  if (quitStarted) return;
+  quitStarted = true;
+  void stopForQuit().finally(() => {
+    quitReady = true;
+    app.quit();
+  });
 });
 
 // Every renderer runs in the OS sandbox, not only the two views that ask for it.
