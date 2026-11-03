@@ -100,11 +100,34 @@ test("a script that patches String, JSON and the marker before returning the sec
 });
 
 test("when the checking evaluation fails or reports nothing usable, nothing is returned", async () => {
-  for (const odd of [undefined, "raw", { ok: true }, { ok: true, text: 5 }]) await assert.rejects(evaluateScrubbed({ evaluate: async () => odd } as unknown as BrowserDriver, "x"), /not returned/);
+  for (const odd of [undefined, "raw", { ok: true }, { ok: true, text: 5 }, { ok: true, text: "leak", nonce: "guess" }]) await assert.rejects(evaluateScrubbed({ evaluate: async () => odd } as unknown as BrowserDriver, "x"), /not returned/);
+});
+
+test("statement-form scripts still run, and a compile error in both forms is reported", async () => {
+  const { page } = withPw("s3cret-value");
+  assert.equal(await evaluateScrubbed(driver(page), `const a = 20; return a + 1`), "21");
+  assert.equal(await evaluateScrubbed(driver(page), `await Promise.resolve(2)`), "2");
+  await assert.rejects(evaluateScrubbed(driver(page), `if (`), /Unexpected|SyntaxError/);
+});
+
+test("source that tries to break out of the wrapper cannot return anything unscrubbed", async () => {
+  const attempts = [
+    `1)}); leak(); (()=>{(`,
+    `1)}); (document.querySelectorAll("input")[0].value); (()=>{ return (0`,
+    `0)}); ({ok:true,text:document.querySelectorAll("input")[0].value,nonce:"x"}); (()=>{ return (0`,
+    `0)}, "n"); })(); ({ok:true,text:document.querySelectorAll("input")[0].value}); (() => { (async () => { return (0`,
+    `0); }); throw 1; /*`,
+  ];
+  for (const attempt of attempts) {
+    const { page } = withPw("s3cret-value");
+    let out: string | Error;
+    try { out = await evaluateScrubbed(driver(page), attempt); } catch (e) { out = e as Error; }
+    assert.ok(!String(out instanceof Error ? out.message : out).includes("s3cret-value"), attempt);
+  }
 });
 
 test("a long result is cut", async () => {
-  const text = await evaluateScrubbed({ evaluate: async () => ({ ok: true, text: "a".repeat(150_000) }) } as unknown as BrowserDriver, "x");
+  const text = await evaluateScrubbed({ evaluate: async (script: string) => ({ ok: true, text: "a".repeat(150_000), nonce: script.match(/"([0-9a-f-]{36})"\)/)?.[1] }) } as unknown as BrowserDriver, "x");
   assert.ok(text.length < 100_300 && text.includes("cut"));
 });
 

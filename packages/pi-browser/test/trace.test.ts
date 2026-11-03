@@ -55,7 +55,7 @@ test("browser tools write private, correctly shaped lines", async () => {
   let trips = 0;
   const driver = {
     state: async () => ({ url: "https://shop.example/cart?email=a@b.c#top", title: "Secret title", loading: false }),
-    evaluate: async (script: string) => (trips++, script.includes("fail") ? Promise.reject(new Error("Timed out waiting for SECRET")) : { ok: true, text: "\"secret value\"" }),
+    evaluate: async (script: string) => (trips++, script.includes("fail") ? Promise.reject(new Error("Timed out waiting for SECRET")) : { ok: true, text: "\"secret value\"", nonce: script.match(/"([0-9a-f-]{36})"\)/)?.[1] }),
     stats: () => ({ roundTrips: trips }),
   } as unknown as BrowserDriver;
   const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();

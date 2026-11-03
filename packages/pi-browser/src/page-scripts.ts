@@ -759,20 +759,19 @@ function pageSecrets(op: string): string {
 }
 
 /**
- * browser_eval in one evaluation: runs `script` (indirect eval, so expression and statement semantics are as before) and returns its
- * JSON result, or the error text if it threw, with every secret field value (6+ chars, plain and JSON-escaped) replaced by [redacted].
+ * browser_eval in one evaluation: awaits `run` (the model's source, inlined into this script's text by `scripts.evalScrubbed`, so no
+ * eval or Function is needed and page CSP cannot block it) and returns its JSON result, or the error text if it threw, with every secret field value (6+ chars, plain and JSON-escaped) replaced by [redacted].
  * Secret fields are found and read, and every builtin used afterwards is captured, BEFORE the script runs, so a script that patches
  * String, JSON, DOM prototypes or the marker cannot switch the scrub off. Values are read again at the end (the script may have set
  * one). They never leave the page. Fields the script creates itself are not covered.
  */
-async function pageEvalScrubbed(script: string): Promise<{ ok: boolean; text: string }> {
+async function pageEvalScrubbed(run: () => unknown, nonce: string): Promise<{ ok: boolean; text: string; nonce: string }> {
   const apply = Reflect.apply;
   const getter = (proto: object, key: string) => Object.getOwnPropertyDescriptor(proto, key)!.get!;
   const stringify = JSON.stringify;
   const Str = String;
   const indexOf = String.prototype.indexOf;
   const slice = String.prototype.slice;
-  const run = window.eval;
   const docQsa = Document.prototype.querySelectorAll;
   const fragQsa = DocumentFragment.prototype.querySelectorAll;
   const listLength = getter(NodeList.prototype, "length");
@@ -824,7 +823,7 @@ async function pageEvalScrubbed(script: string): Promise<{ ok: boolean; text: st
   let ok = true;
   let text: string;
   try {
-    const result = await apply(run, window, [script]);
+    const result = await run();
     text = stringify(result === undefined ? null : result, null, 2) ?? "null";
   } catch (e) {
     ok = false;
@@ -860,7 +859,7 @@ async function pageEvalScrubbed(script: string): Promise<{ ok: boolean; text: st
     }
     text = out + (apply(slice, text, [from]) as string);
   }
-  return { ok, text };
+  return { ok, text, nonce };
 }
 
 function pageSyntheticKey(key: string): string {
@@ -1024,8 +1023,15 @@ export const scripts = {
   selectActive: () => call(pageSelectActive),
   /** Screenshot mask for secret fields: "mask" adds it, "unmask" removes it. */
   secrets: (op: "mask" | "unmask") => call(pageSecrets, op),
-  /** browser_eval: runs `script` and returns { ok, text } with secret field values redacted (see pageEvalScrubbed). */
-  evalScrubbed: (script: string) => call(pageEvalScrubbed, script),
+  /**
+   * browser_eval: the model's `src` runs inside the scrubbing wrapper and the result is { ok, text, nonce } with secret field values
+   * redacted (see pageEvalScrubbed). "expression" form returns the value of `src`, as a bare expression (a promise is awaited);
+   * "statements" form is the fallback when that does not compile: `src` is a function body, and its value is whatever it `return`s.
+   * The wrapper is the only thing that can produce the per-call `nonce`; the caller must check it, so source that breaks out of the
+   * wrapper cannot return anything the caller accepts.
+   */
+  evalScrubbed: (src: string, form: "expression" | "statements", nonce: string) =>
+    `(() => { const __name = (f) => f; const __isSecret = (el, name) => (${isSecretField.toString()})(el, ${jsLiteral(SECRET_FIELD)}, name); return (${pageEvalScrubbed.toString()})(async () => {${form === "expression" ? `return (\n${src}\n);` : `\n${src}\n`}}, ${jsLiteral(nonce)}); })()`,
   focusedIsPassword: () => call(pageFocusedIsPassword),
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),
