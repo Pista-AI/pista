@@ -8,6 +8,7 @@ import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
+import { playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
 
 export type { ThreadRef };
 
@@ -161,14 +162,23 @@ export function toolLimitExtension(hub: Hub, ref: ThreadRef, gate: ToolLimitGate
   };
 }
 
-export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules): InlineExtension {
+/** `guardPlaybooks`: the thread's role lists playbook_run, so navigating to a site with a saved playbook waits until playbook_run was tried there. */
+export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules, opts: { guardPlaybooks?: boolean } = {}): InlineExtension {
   const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref, domainRules });
   const trace = new PlaybookTrace();
+  const attempted = new Set<string>();
   return {
     name: "browser",
     factory: (pi: ExtensionAPI) => {
       // Same condition as browser_download (downloadRoot): a playbook ends in a download.
       registerPlaybookSave(pi, trace, (e) => hub.emit(e), ref.threadId);
+      registerPlaybookRun(pi, { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId });
+      if (opts.guardPlaybooks) {
+        pi.on("tool_call", (event) => {
+          const refused = event.toolName === "browser_navigate" ? playbookGuardMessage(attempted, (event.input as { url?: unknown }).url) : undefined;
+          return refused ? { block: true, reason: refused } : undefined;
+        });
+      }
       return registerBrowserTools(pi, () => driver, {
         onTrace: (entry) => trace.add(entry),
         navigateHint: "The browser pane is visible to the user. Relative paths resolve against the home page.",
@@ -310,9 +320,9 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
 
 const WRITE_VERBS = /(mutation|create|update|delete|remove|save|apply|promote|release|publish|write|set_|select)/i;
 
-/** A saved-login sign-in is asked about every time (not covered by "Always allow" or a role exemption) unless the owner turned `confirmSignIns` off. */
-export function signInNeedsConfirmation(toolName: string, confirmSignIns: boolean | undefined): boolean {
-  return toolName === "browser_login" && confirmSignIns !== false;
+/** A saved-login sign-in is asked about every time (not covered by "Always allow" or a role exemption) unless the owner turned `confirmSignIns` off. A playbook run that signs in counts as one. */
+export function signInNeedsConfirmation(toolName: string, confirmSignIns: boolean | undefined, playbookSignsIn = false): boolean {
+  return (toolName === "browser_login" || (toolName === "playbook_run" && playbookSignsIn)) && confirmSignIns !== false;
 }
 
 /** `alwaysAllowed` is shared with the host so approvals it asks for itself (the goal check) honour "Always allow" too. */
@@ -329,6 +339,7 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
           // browser_login: the ask makes an injection-driven sign-in visible to the owner.
           return toolName === "browser_login" ? "signs in with a login the owner saved" : "interacts with the page in the browser";
         }
+        if (toolName === "playbook_run") return "follows a saved playbook in the browser (clicks and a download)";
         if (toolName.startsWith("mcp__")) {
           const info = pi.getAllTools().find((t) => t.name === toolName);
           if (info?.annotations?.readOnlyHint) return undefined;
@@ -351,7 +362,11 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
           return { block: true, terminate: true, reason: "Tools are paused because the user declined an action. Reply to the user instead." };
         }
         const mode = store.config.approvalMode;
-        const forced = signInNeedsConfirmation(event.toolName, store.config.confirmSignIns);
+        // A playbook run clicks and downloads like the browser tools, so it is asked about where they are: once per run, naming the playbook.
+        const playbook = event.toolName === "playbook_run" ? playbookFor((event.input as { site?: unknown }).site) : undefined;
+        if (event.toolName === "playbook_run" && !playbook) return undefined; // nothing to follow; the tool says so
+        const action = playbook ? `Follow the saved playbook for ${playbook.site}? (${playbook.steps.length} steps)` : undefined;
+        const forced = signInNeedsConfirmation(event.toolName, store.config.confirmSignIns, playbook?.steps.some((s) => s.kind === "signIn"));
         if (mode === "full-access" && !forced) return undefined;
         // The policy gate (last in line) refuses this call anyway; do not ask the user about it.
         if (store.toolRules && denyToolCall(store.toolRules, event.toolName, event.input)) return undefined;
@@ -371,10 +386,12 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
               toolName: event.toolName,
               args: event.input,
               reason,
+              ...(action ? { action } : {}),
             }),
             10 * 60_000,
           );
-          if (answer.always && !forced) alwaysAllowed.add(event.toolName);
+          // A card with an `action` title offers no "Always allow": each playbook run is asked about.
+          if (answer.always && !forced && !action) alwaysAllowed.add(event.toolName);
           if (answer.allow) {
             // This approval does not lift the browser tools' consequential-action stops: it showed only a ref, so the user never saw what would be clicked. The tool asks again, with the exact action.
             return undefined;
