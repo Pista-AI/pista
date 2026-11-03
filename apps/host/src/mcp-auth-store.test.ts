@@ -65,7 +65,7 @@ test("refuses a symlinked file", () => {
   assert.throws(() => readEncryptedFile(join(d, "x.enc.json"), key), /not a regular file/);
 });
 
-test("migrates plain mcp-auth.json; content round-trips; plain file removed", async () => {
+test("migrates plain mcp-auth.json; content round-trips; plain file kept as .bak until the next start", async () => {
   const d = dir();
   const plain = { "fake-server": { tokens: { access_token: "tok-fake-test" } } };
   writeFileSync(join(d, "mcp-auth.json"), JSON.stringify(plain));
@@ -73,10 +73,24 @@ test("migrates plain mcp-auth.json; content round-trips; plain file removed", as
   const res = await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, log, fakeLoad);
   assert.ok(res.credentials);
   assert.ok(!existsSync(join(d, "mcp-auth.json")));
+  const bak = join(d, "mcp-auth.json.migrated.bak");
+  assert.deepEqual(JSON.parse(readFileSync(bak, "utf-8")), plain);
+  if (process.platform !== "win32") assert.equal(statSync(bak).mode & 0o777, 0o600);
   assert.ok(!readFileSync(join(d, "mcp-auth.enc.json"), "utf-8").includes("tok-fake-test"));
   assert.deepEqual(JSON.parse(readEncryptedFile(join(d, "mcp-auth.enc.json"), key)!), plain);
   assert.match(out.join("\n"), /migrated 1 MCP server/);
   assert.ok(!out.join("\n").includes("tok-fake-test"));
+});
+
+test("the mcp .bak is removed on the next start with the right key, and kept when the key is wrong", async () => {
+  const d = dir();
+  writeFileSync(join(d, "mcp-auth.json"), JSON.stringify({ s: { tokens: { access_token: "t" } } }));
+  await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, () => {}, fakeLoad);
+  const bak = join(d, "mcp-auth.json.migrated.bak");
+  await assert.rejects(setupMcpAuth({ kind: "key", key: Buffer.alloc(32, 2) }, d, () => {}, fakeLoad), (e: Error) => /different key/.test(e.message) && /still at .*mcp-auth\.json\.migrated\.bak/.test(e.message));
+  assert.ok(existsSync(bak));
+  await setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, () => {}, fakeLoad);
+  assert.ok(!existsSync(bak));
 });
 
 test("unparseable plain file is kept at 0600 with one warning", async () => {
@@ -103,7 +117,7 @@ test("encrypted mode fails closed when the loader throws, and on a wrong key wit
   await assert.rejects(setupMcpAuth({ kind: "key", key: Buffer.from(key) }, d, () => {}, async () => { throw new Error("no class"); }), /no class/);
   createEncryptedAuthStorageBackend({ file: join(d, "mcp-auth.enc.json"), key }).withLock(() => ({ result: 0, next: "{}" }));
   const wrong = Buffer.alloc(32, 2);
-  await assert.rejects(setupMcpAuth({ kind: "key", key: wrong }, d, () => {}, fakeLoad), (e: Error) => /cannot be decrypted/.test(e.message) && !e.message.includes(Buffer.alloc(32, 2).toString("hex")));
+  await assert.rejects(setupMcpAuth({ kind: "key", key: wrong }, d, () => {}, fakeLoad), (e: Error) => /encrypted with a different key/.test(e.message) && /left untouched/.test(e.message) && !/[Dd]elete/.test(e.message) && !e.message.includes(Buffer.alloc(32, 2).toString("hex")));
 });
 
 test("release with the wrong owner token is a no-op; the right one removes the lock", () => {

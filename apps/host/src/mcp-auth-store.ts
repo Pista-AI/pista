@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AuthKeySource } from "./auth-key.ts";
-import { fsyncDir, readEncryptedFile, writeEncryptedFile } from "./auth-store.ts";
+import { DecryptError, describeDecryptFailure, dropBackupIfEncryptedOk, moveToBackup, readEncryptedFile, writeEncryptedFile } from "./auth-store.ts";
 import { type AuthStorageBackend, loadMcpOAuthCredentialStore, type LockResult, type McpOAuthCredentialStoreCtor, type McpOAuthCredentialStoreLike } from "./pi-mcp-oauth.ts";
 
 /** Pi holds the lock for milliseconds, so a lock older than this belongs to a crashed process. */
@@ -138,11 +138,10 @@ export async function setupMcpAuth(
     readEncryptedFile(encFile, key); // read-only check, no lock, so a read-only directory still starts
   } catch (e) {
     key.fill(0);
-    if (e instanceof Error && /cannot decrypt/.test(e.message)) {
-      throw new Error(`mcp-auth.enc.json cannot be decrypted with the current key (wrong key or corrupt file). Delete ${encFile} to start over; you will need to sign in to MCP servers again.`, { cause: e });
-    }
-    throw new Error(`mcp-auth.enc.json cannot be read: ${e instanceof Error ? e.message : "unknown error"}`, { cause: e });
+    if (e instanceof DecryptError) throw new Error(describeDecryptFailure("mcp-auth.enc.json", encFile, e, plainFile), { cause: e });
+    throw new Error(`mcp-auth.enc.json cannot be read: ${e instanceof Error ? e.message : "unknown error"}. The file has been left untouched at ${encFile}.`, { cause: e });
   }
+  dropBackupIfEncryptedOk(encFile, plainFile, log);
   const result = { credentials: new Store(backend, agentDir) };
 
   try {
@@ -198,20 +197,13 @@ export async function setupMcpAuth(
         }
         if (imported.length) writeEncryptedFile(encFile, key, JSON.stringify(merged, null, 2));
         if (skipped.length) return { result: "kept-skipped" };
-        // The encrypted copy is fsynced by now. Zero the plaintext before unlinking; best effort on SSDs and copy-on-write filesystems.
+        // The encrypted copy is fsynced by now. Keep the plaintext as a 0600 backup; the next start removes it once
+        // the encrypted file has decrypted with the current key.
         try {
-          const fd = openSync(plainFile, "r+");
-          try {
-            writeSync(fd, Buffer.alloc(statSync(plainFile).size));
-            fsyncSync(fd);
-          } finally {
-            closeSync(fd);
-          }
-        } catch {
-          // Unlink below still runs.
+          moveToBackup(plainFile);
+        } catch (e) {
+          return { result: { keep: `could not move it to a backup: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}` } };
         }
-        unlinkSync(plainFile);
-        fsyncDir(agentDir);
         return { result: "migrated" };
       });
     } catch (e) {
