@@ -2846,3 +2846,60 @@ select:focus-visible {
   width: auto;
   margin: 0;
 }
+
+/* Settings → Playbooks */
+.playbook-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.pb-chip {
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.pb-chip.ok {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: var(--green);
+}
+.pb-chip.bad {
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  color: var(--amber);
+}
+.playbook-steps {
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  background: var(--bg-code);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.playbook-steps ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: s;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.playbook-steps li {
+  counter-increment: s;
+  display: flex;
+  gap: 8px;
+}
+.playbook-steps li::before {
+  content: counter(s);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-size: 10px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-3);
+}
