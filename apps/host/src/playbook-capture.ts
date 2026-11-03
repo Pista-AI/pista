@@ -147,6 +147,24 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
   return { site, startUrl: first.url, steps };
 }
 
+const cap = (s: string, n = 120) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** The quoted name or text of a step's target, if any. Never the row rule, an address or a query string. */
+export function stepTargetName(s: PlaybookStep | { kind: string } | undefined): string | undefined {
+  const t = s && "target" in s ? s.target : undefined;
+  const n = t?.name || t?.text;
+  return n ? JSON.stringify(cap(n, 60)) : undefined;
+}
+
+/** A short human label for a step (`click link "Download invoice"`), capped at 120 characters. */
+export function stepLabel(s: PlaybookStep | undefined): string {
+  if (!s) return "(no step)";
+  const t = "target" in s ? s.target : undefined;
+  const what = [t?.role, stepTargetName(s)].filter(Boolean).join(" ");
+  const plain: Record<string, string> = { navigate: "open a page", download: "download a file", signIn: "sign in" };
+  return cap(what ? `${s.kind} ${what}` : (plain[s.kind] ?? s.kind));
+}
+
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
@@ -169,8 +187,8 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const now = new Date().toISOString();
     savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
     const first = startChanged ? 1 : changed[0]! + 1;
-    // TODO(chat-cards): add the before/after labels of the changed step to this event once the protocol's playbook.event has them.
-    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first } };
+    const [before, after] = startChanged ? ["Open the start page", "Open a different start page"] : [stepLabel(old.steps[first - 1]), stepLabel(fresh.steps[first - 1])];
+    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
   } catch (e) {
     return { message: `Not saved: ${e instanceof Error ? e.message : String(e)}` };
   }

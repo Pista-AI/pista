@@ -4,7 +4,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type ReplayReason, type ReplayResult, type RiskApprover } from "@pista/pi-browser";
 import { Type } from "typebox";
 import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
-import { checkInvoice, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
+import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
 import { getPlaybook, recordFailure, recordSuccess, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 
@@ -43,17 +43,41 @@ export function playbookGuardMessage(attempted: ReadonlySet<string>, toolName: s
 /** Handoffs that say the stored path is broken. Row and invoice misses, sign-in, blocked pages, declines and stops are not the playbook's fault. */
 const COUNTS: ReadonlySet<ReplayReason> = new Set(["not-found", "ambiguous", "error"]);
 
+/** A short human phrase for why a replay stopped, capped at 120 characters. */
+function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
+  const name = stepTargetName(r.step);
+  const phrase: Record<ReplayReason, string> = {
+    "not-found": name ? `Couldn't find ${name}` : "Couldn't find the next button or link",
+    ambiguous: name ? `More than one match for ${name}` : "More than one match for a button or link",
+    "expectation-timeout": "The page didn't show what was expected",
+    blocked: "The page was blocked",
+    declined: "Declined",
+    aborted: "Stopped",
+    "sign-in-needed": "Sign-in needed",
+    "row-not-found": "Couldn't find the invoice's row",
+    "row-ambiguous": "More than one row matched the invoice",
+    "needs-invoice": "The step needs the invoice's date",
+    error: "The step failed",
+  };
+  const t = phrase[r.reason];
+  return t.length > 120 ? `${t.slice(0, 119)}…` : t;
+}
+
 /** Records the outcome on the playbook and returns the event(s) to emit. */
-export function recordRun(site: string, r: ReplayResult, threadId: string): HostEvent[] {
+export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
+  const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
     recordSuccess(site);
-    return [{ type: "playbook.event", threadId, kind: "followed", site }];
+    return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
-  if (!COUNTS.has(r.reason)) return [];
-  const before = getPlaybook(site)?.status;
-  const after = recordFailure(site);
-  // TODO(chat-cards): emit kind "repairing" with stepCount, reason and invoice once the protocol's playbook.event has them.
-  return after?.status === "needs-attention" && before !== "needs-attention" ? [{ type: "playbook.event", threadId, kind: "needs-attention", site, step: r.failedIndex || undefined }] : [];
+  if (r.reason === "declined" || r.reason === "aborted") return [];
+  const events: HostEvent[] = [{ type: "playbook.event", threadId, kind: "repairing", site, step: r.failedIndex || undefined, reason: reasonText(r), ...extra }];
+  if (COUNTS.has(r.reason)) {
+    const before = getPlaybook(site)?.status;
+    const after = recordFailure(site);
+    if (after?.status === "needs-attention" && before !== "needs-attention") events.push({ type: "playbook.event", threadId, kind: "needs-attention", site, step: r.failedIndex || undefined, ...(stepCount !== undefined ? { stepCount } : {}) });
+  }
+  return events;
 }
 
 const describeStep = (s: PlaybookStep | { kind: string; url?: string }): string => {
@@ -163,7 +187,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
             onStep: (i, status) => status === "done" && done.push(i),
           });
         });
-        for (const e of recordRun(pb.site, r, deps.threadId)) deps.emit(e);
+        for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
         if (r.ok) return text(JSON.stringify({ path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), note: `Followed the saved playbook for ${pb.site} (${r.steps} steps).` }, null, 2));
         // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
         if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });

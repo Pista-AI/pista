@@ -36,6 +36,6 @@ export function playbookCardText(e: PlaybookEvent): CardText {
     case "learned":
       return { tone: "learn", title: `Learned a playbook for ${e.site}`, lines: [`${e.stepCount !== undefined ? plural(e.stepCount, "step") + " saved" : "Saved"} · used next time`] };
     case "needs-attention":
-      return { tone: "bad", title: `Playbook for ${e.site} needs attention`, lines: e.reason ? [e.reason] : [] };
+      return { tone: "bad", title: `Playbook for ${e.site} needs attention`, lines: e.reason ? [e.reason] : e.step !== undefined ? [`Step ${e.step} keeps failing`] : [] };
   }
 }
