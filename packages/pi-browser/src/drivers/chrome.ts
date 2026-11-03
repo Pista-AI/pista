@@ -4,6 +4,8 @@ import { findBrowser, type FoundBrowser } from "../chrome/find.ts";
 import { launchBrowser, pistaChromeProfileDir, type LaunchedBrowser } from "../chrome/launch.ts";
 import type { CdpEvent } from "../chrome/pipe.ts";
 import { checkUrl, type DomainRules } from "../domains.ts";
+import { internalPageReason } from "../eval-gate.ts";
+import { readLoginOrigins } from "../chrome/login-origins.ts";
 import type { BrowserDriver } from "../driver.ts";
 import { ScreencastFeed, type ScreencastFrame } from "../chrome/screencast.ts";
 import { CdpDriver } from "./cdp.ts";
@@ -56,6 +58,17 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
   private get rules(): DomainRules | undefined {
     const r = this.options.domainRules;
     return r && (r.allowedDomains || r.deniedDomains?.length) ? r : undefined;
+  }
+
+  async navigate(url: string) {
+    const reason = internalPageReason(url);
+    if (reason) throw new Error(`Not opened: ${reason}`);
+    return super.navigate(url);
+  }
+
+  /** Origins with a saved login in the dedicated profile's password manager (addresses only). */
+  savedLoginOrigins() {
+    return readLoginOrigins(pistaChromeProfileDir(this.options.pistaHome));
   }
 
   protected async openTransport() {

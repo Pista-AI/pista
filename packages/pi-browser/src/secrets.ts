@@ -13,7 +13,7 @@ const UNCHECKED = "The result was not returned: the page could not be checked fo
  * (no eval, so a CSP without unsafe-eval does not matter): as an expression if it is one, else as a function body. Fails closed: if that evaluation does not report
  * back, nothing is returned. A script that threw becomes an Error carrying the scrubbed text.
  */
-export async function evaluateScrubbed(d: BrowserDriver, script: string): Promise<string> {
+export async function evaluateScrubbed(d: BrowserDriver, script: string, token?: string): Promise<string> {
   // Compile (never call) the source here, on its own, as an expression and then as a function body. A source that compiles as a
   // function body cannot close the wrapper it is inlined into, so whatever it does stays inside the wrapper's try/catch and scrub.
   // One that compiles as neither is reported to the model and nothing is sent to the page.
@@ -27,7 +27,8 @@ export async function evaluateScrubbed(d: BrowserDriver, script: string): Promis
     throw new Error("The script was not run: it does not compile.");
   }
   // Driver errors (policy blocks, timeouts, a closed browser) carry no page data and pass through; page errors never get here.
-  const r = (await d.evaluate(scripts.evalScrubbed(script, form))) as { ok?: unknown; text?: unknown } | undefined;
+  const r = (await d.evaluate(scripts.evalScrubbed(script, form, token))) as { ok?: unknown; text?: unknown; navigated?: unknown } | undefined;
+  if (r?.navigated === true) throw new Error("The page navigated before the script could start, so nothing ran. Try again.");
   if (typeof r?.text !== "string") throw new Error(UNCHECKED);
   const text = r.text.length > MAX_EVAL_CHARS ? `${r.text.slice(0, MAX_EVAL_CHARS)}${cutMarker(r.text.length - MAX_EVAL_CHARS, "chars", "return less data")}` : r.text;
   if (r.ok !== true) throw new Error(text);
