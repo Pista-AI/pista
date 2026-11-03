@@ -1,6 +1,7 @@
 // Pure matcher: picks the invoice-list row a job is looking for. Output carries indices only (rows may hold personal data).
 
-export type CandidateDate = { y: number; m: number; d?: number; monthOnly?: boolean; raw: string };
+/** `amb` marks one reading of a numeric date that could be day-first or month-first; both readings are emitted. */
+export type CandidateDate = { y: number; m: number; d?: number; monthOnly?: boolean; amb?: "dmy" | "mdy"; raw: string };
 export type RowMatch = { kind: "one"; index: number } | { kind: "none" } | { kind: "many"; candidates: number[] };
 export type MatchRow = { index: number; text: string };
 export type Amount = { value: number; currency?: string };
@@ -55,7 +56,9 @@ export function parseDates(text: string, opts: { locales?: string[] } = {}): Can
   run(/(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/g, (m) => full(+m[1], +m[2], +m[3]));
   run(/(?<!\d)(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?!\d)/g, (m) => {
     const y = year(m[3]);
-    return dedupe([...full(y, +m[2], +m[1]), ...full(y, +m[1], +m[2])]);
+    const dmy = full(y, +m[2], +m[1]), mdy = full(y, +m[1], +m[2]);
+    if (!dmy.length || !mdy.length || (dmy[0]!.m === mdy[0]!.m && dmy[0]!.d === mdy[0]!.d)) return [...dmy, ...mdy].slice(0, 1);
+    return [{ ...dmy[0]!, amb: "dmy" as const }, { ...mdy[0]!, amb: "mdy" as const }];
   });
   run(new RegExp(`(?<!\\d)(\\d{1,2})(?:st|nd|rd|th|\\.)?\\s*${mon}\\.?,?\\s*(\\d{4})(?!\\d)`, "g"), (m) => full(+m[3], map.get(m[2])!, +m[1]));
   run(new RegExp(`${mon}\\.?\\s*(\\d{1,2})(?:st|nd|rd|th)?(?!\\d),?\\s*(\\d{4})(?!\\d)`, "g"), (m) => full(+m[3], map.get(m[1])!, +m[2]));
@@ -64,13 +67,16 @@ export function parseDates(text: string, opts: { locales?: string[] } = {}): Can
 }
 
 const CURRENCIES = new Set<string>((Intl as any).supportedValuesOf?.("currency") ?? ["EUR", "USD", "GBP", "SEK", "NOK", "DKK", "CHF"]);
-const SYM: Record<string, string> = { "€": "EUR", $: "USD", "£": "GBP" };
-const NUM = String.raw`\d{1,3}(?:[   ]\d{3})+(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?`;
+/** "kr" is a marker only: it does not say which krona, so it agrees with SEK, NOK, DKK and with no currency. */
+const SYM: Record<string, string> = { "€": "EUR", $: "USD", "£": "GBP", kr: "KR" };
+const KRONA = new Set(["KR", "SEK", "NOK", "DKK"]);
+const NUM = String.raw`\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?`;
 const CUR = String.raw`€|\$|£|\bkr\b|\b[A-Z]{3}\b`;
-const AMOUNT_RE = new RegExp(`(?:(${CUR})\\s*)?(?<![\\d.,/-])(${NUM})(?![\\d/-]|[.,]\\d)(?:\\s*(${CUR}))?`, "g");
+// groups: 1 currency, 2 "(", 3 leading "-", 4 number, 5 trailing "-", 6 ")", 7 currency after
+const AMOUNT_RE = new RegExp(`(?:(${CUR})\\s*)?(?:(\\()\\s*|(?<![\\w.,/])(-)\\s?|(?<![\\d.,/-]))(${NUM})(?![\\d/]|[.,]\\d|-\\w)(-(?!\\w))?(\\))?(?:\\s*(${CUR}))?`, "g");
 
 function toNumber(raw: string): number {
-  const s = raw.replace(/[   ]/g, "");
+  const s = raw.replace(/[ \u00a0\u202f]/g, "");
   const lastDot = s.lastIndexOf("."), lastComma = s.lastIndexOf(",");
   const last = Math.max(lastDot, lastComma);
   if (last < 0) return Number(s);
@@ -80,21 +86,51 @@ function toNumber(raw: string): number {
   return decimal ? Number(s.slice(0, last).replace(/[.,]/g, "") + "." + tail) : Number(s.replace(/[.,]/g, ""));
 }
 
-/** `strict` keeps only amounts that carry a currency or decimals, so day and year numbers in dates are not read as amounts. */
+/**
+ * Amounts in `text`. A leading or trailing "-" or parentheses make an amount negative. Times (14.30) without a currency are skipped.
+ * `strict` keeps only amounts that carry a currency or decimals, so day and year numbers in dates are not read as amounts.
+ */
 export function parseAmounts(text: string, opts: { strict?: boolean } = {}): Amount[] {
   const out: Amount[] = [];
   for (const m of text.matchAll(AMOUNT_RE)) {
-    const c = [m[1], m[3]].find((x) => x && (SYM[x] || CURRENCIES.has(x)));
-    if (opts.strict && !c && !/[.,]\d{1,2}$/.test(m[2])) continue;
-    const value = toNumber(m[2]);
+    const c = [m[1], m[7]].map((x) => x?.toLowerCase() === "kr" ? "kr" : x).find((x) => x && (SYM[x] || CURRENCIES.has(x)));
+    if (!c && /^([01]?\d|2[0-3])[.:]([0-5]\d)$/.test(m[4]!)) continue;
+    if (opts.strict && !c && !/[.,]\d{1,2}$/.test(m[4]!)) continue;
+    let value = toNumber(m[4]!);
+    if (m[3] || m[5] || (m[2] && m[6])) value = -value;
     if (Number.isFinite(value)) out.push(c ? { value, currency: SYM[c] ?? c } : { value });
   }
   return out;
 }
 
+const agrees = (a: string | undefined, t: string | undefined) => {
+  const x = a?.toUpperCase(), y = t?.toUpperCase();
+  return !x || !y || x === y || (KRONA.has(x) && KRONA.has(y));
+};
+
 const dayNum = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400000);
 const isoParts = (iso: string) => iso.split("-").map(Number) as [number, number, number];
 
+/** The numeric order the list uses, when any date there is only valid one way (a part above 12); otherwise null. */
+function listOrder(texts: string[]): "dmy" | "mdy" | null {
+  let dmy = false, mdy = false;
+  for (const t of texts) {
+    for (const m of t.matchAll(/(?<!\d)(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?!\d)/g)) {
+      if (+m[1]! > 12) dmy = true;
+      if (+m[2]! > 12) mdy = true;
+    }
+  }
+  return dmy === mdy ? null : dmy ? "dmy" : "mdy";
+}
+const readings = (text: string, order: "dmy" | "mdy" | null) =>
+  parseDates(text).filter((d) => d.d !== undefined && (!d.amb || !order || d.amb === order)).map((d) => (order && d.amb ? { ...d, amb: undefined } : d));
+
+/**
+ * Picks the one row for the invoice, or says it cannot. Every row with a date within the tolerance counts (the closest date does not
+ * win), so two rows, or two dates in one row near the target, give "many". A row matching only through a day-first/month-first guess
+ * counts only with an exactly matching amount; otherwise the answer is "many". Rows showing amounts that do not match are excluded;
+ * rows showing none stay candidates only when no row has an equal amount.
+ */
 export function matchRows(
   rows: MatchRow[],
   target: { date: string; amount?: number; currency?: string },
@@ -103,29 +139,33 @@ export function matchRows(
   const tol = opts.toleranceDays ?? 3;
   const [ty, tm, td] = isoParts(target.date);
   const t = dayNum(ty, tm, td);
-  const text = new Map(rows.map((r) => [r.index, r.text]));
-  // A row showing amounts, none equal to the target, is excluded; rows with no amount stay candidates.
-  const amountOk = (i: number) => {
-    if (target.amount === undefined) return true;
-    const amts = parseAmounts(text.get(i)!, { strict: true });
-    if (!amts.length) return true;
-    return amts.some((a) => Math.abs(a.value - target.amount!) <= 0.01 && (!a.currency || !target.currency || a.currency === target.currency.toUpperCase()));
-  };
-  const hits: { index: number; dist: number }[] = [];
+  const order = listOrder(rows.map((r) => r.text));
+  let hits: { index: number; sure: boolean; amounts: Amount[] }[] = [];
   for (const r of rows) {
-    const ds = parseDates(r.text).filter((d) => d.d !== undefined);
-    if (!ds.length || !amountOk(r.index)) continue;
-    const dist = Math.min(...ds.map((d) => Math.abs(dayNum(d.y, d.m, d.d!) - t)));
-    if (dist <= tol) hits.push({ index: r.index, dist });
+    const near = readings(r.text, order).filter((d) => Math.abs(dayNum(d.y, d.m, d.d!) - t) <= tol);
+    if (near.length) hits.push({ index: r.index, sure: near.some((d) => !d.amb), amounts: parseAmounts(r.text, { strict: true }) });
+  }
+  const equal = (h: { amounts: Amount[] }) => target.amount !== undefined && h.amounts.some((a) => Math.abs(a.value - target.amount!) <= 0.01 && agrees(a.currency, target.currency));
+  if (target.amount !== undefined) {
+    if (hits.some(equal)) hits = hits.filter(equal);
+    else hits = hits.filter((h) => !h.amounts.length);
   }
   if (!hits.length) return { kind: "none" };
-  const min = Math.min(...hits.map((h) => h.dist));
-  const pool = hits.filter((h) => h.dist === min);
-  return pool.length === 1 ? { kind: "one", index: pool[0].index } : { kind: "many", candidates: pool.map((p) => p.index) };
+  const doubtful = hits.some((h) => !h.sure && !equal(h));
+  return hits.length === 1 && !doubtful ? { kind: "one", index: hits[0]!.index } : { kind: "many", candidates: hits.map((h) => h.index) };
 }
 
+/** Period labels the target falls in: a month label by its month, a label with two dates as a range. A numeric label still ambiguous is no match. */
 export function matchPeriod(labels: MatchRow[], target: { date: string }): RowMatch {
-  const [ty, tm] = isoParts(target.date);
-  const hits = labels.filter((l) => parseDates(l.text).some((d) => d.y === ty && d.m === tm)).map((l) => l.index);
-  return hits.length === 0 ? { kind: "none" } : hits.length === 1 ? { kind: "one", index: hits[0] } : { kind: "many", candidates: hits };
+  const [ty, tm, td] = isoParts(target.date);
+  const t = dayNum(ty, tm, td);
+  const order = listOrder(labels.map((l) => l.text));
+  const hits = labels.filter((l) => {
+    const ds = parseDates(l.text).filter((d) => !d.amb || (order && d.amb === order));
+    if (!ds.length || parseDates(l.text).some((d) => d.amb && !order)) return false;
+    if (ds.length === 1) return ds[0]!.y === ty && ds[0]!.m === tm;
+    const lo = Math.min(...ds.map((d) => dayNum(d.y, d.m, d.d ?? 1))), hi = Math.max(...ds.map((d) => dayNum(d.y, d.m, d.d ?? dim(d.y, d.m))));
+    return t >= lo && t <= hi;
+  }).map((l) => l.index);
+  return hits.length === 0 ? { kind: "none" } : hits.length === 1 ? { kind: "one", index: hits[0]! } : { kind: "many", candidates: hits };
 }
