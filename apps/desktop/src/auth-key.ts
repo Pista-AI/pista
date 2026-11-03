@@ -33,8 +33,13 @@ export function hostChildEnv(base: NodeJS.ProcessEnv, extra: NodeJS.ProcessEnv):
 }
 
 /** Keeps the host's data key, wrapped by the OS keychain, in a small file in userData. */
-export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto }) {
-  const { file, crypto } = options;
+export function createAuthKeyVault(options: {
+  file: string;
+  crypto: VaultCrypto;
+  /** Test hook: runs after the temp file is written, before it is linked into place. */
+  beforeLink?: () => Promise<void>;
+}) {
+  const { file, crypto, beforeLink } = options;
 
   async function read(): Promise<Buffer | undefined> {
     let raw: string;
@@ -76,6 +81,7 @@ export function createAuthKeyVault(options: { file: string; crypto: VaultCrypto 
       } finally {
         await fh.close();
       }
+      await beforeLink?.();
       try {
         await link(tmp, file);
       } catch (error) {

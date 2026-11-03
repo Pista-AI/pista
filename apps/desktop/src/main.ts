@@ -15,6 +15,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createAuthKeyVault, hostChildEnv, sendKeyToHost } from "./auth-key.js";
+import { isDefaultHome } from "./home-policy.js";
 import { buildUiCsp } from "./csp.js";
 import { confineDownload, DOWNLOAD_REFUSED, protectedDirsFor, sealedDirsFor } from "./download-policy.js";
 import { createLoginFill, LOGIN_WORLD_ID } from "./login-fill.js";
@@ -30,13 +31,14 @@ import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike }
 
 // A packaged build never honours PISTA_DEV_URL: it always loads its own host and gets the packaged CSP.
 const DEV_URL = app.isPackaged ? undefined : process.env.PISTA_DEV_URL;
-const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
+const CLIENT_HOME = process.env.PISTA_HOME || path.join(homedir(), ".pista");
 
 // One instance per credential home. A dev instance with its own PISTA_HOME may run beside another and gets its own
 // userData (so its own auth key); setPath has to run before anything reads userData.
-const customHome = process.env.PISTA_HOME !== undefined && path.resolve(CLIENT_HOME) !== path.resolve(homedir(), ".pista");
+// The lock is per userData, so stacks with different homes run side by side and two instances on one home cannot.
+const customHome = !!process.env.PISTA_HOME && !isDefaultHome(CLIENT_HOME, path.join(homedir(), ".pista"));
 if (customHome) app.setPath("userData", path.join(CLIENT_HOME, "desktop-userdata"));
-const gotInstanceLock = customHome || app.requestSingleInstanceLock();
+const gotInstanceLock = app.requestSingleInstanceLock();
 if (!gotInstanceLock) app.quit();
 else {
   app.on("second-instance", () => {
@@ -716,6 +718,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("activate", () => {
+  if (!gotInstanceLock) return;
   if (BrowserWindow.getAllWindows().length === 0) void createWindow();
 });
 app.on("window-all-closed", () => {

@@ -139,3 +139,24 @@ test("an existing key file is never overwritten", async () => {
   assert.ok((await other.load()).equals(first));
   assert.equal(await readFile(file, "utf8"), before);
 });
+
+test("vaults with different wraps on one file agree on the key", async () => {
+  const { file } = await setup();
+  const wrap = (tag: string): VaultCrypto => ({
+    isAvailable: async () => true,
+    backend: () => tag,
+    encrypt: async (t: string) => Buffer.from(tag + t),
+    decrypt: async (b: Buffer) => b.toString().replace(/^[A-Z]+:/, ""),
+  });
+  const [a, b] = await Promise.all([createAuthKeyVault({ file, crypto: wrap("AAA:") }).load(), createAuthKeyVault({ file, crypto: wrap("BBB:") }).load()]);
+  assert.ok(a.equals(b));
+});
+
+test("losing the link race returns the winner's key and removes the temp file", async () => {
+  const { file } = await setup();
+  const winner = createAuthKeyVault({ file, crypto: fakeCrypto() });
+  const loser = createAuthKeyVault({ file, crypto: fakeCrypto(), beforeLink: async () => void (await winner.load()) });
+  const key = await loser.load();
+  assert.ok(key.equals(await winner.load()));
+  assert.deepEqual((await readdir(join(file, ".."))).filter((n) => n.endsWith(".tmp")), []);
+});
