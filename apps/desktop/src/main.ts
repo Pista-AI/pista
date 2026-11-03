@@ -32,6 +32,20 @@ import { parseHealth, resolveUpdaterConfig, UpdateController, type UpdaterLike }
 const DEV_URL = app.isPackaged ? undefined : process.env.PISTA_DEV_URL;
 const CLIENT_HOME = process.env.PISTA_HOME ?? path.join(homedir(), ".pista");
 
+// One instance per credential home. A dev instance with its own PISTA_HOME may run beside another and gets its own
+// userData (so its own auth key); setPath has to run before anything reads userData.
+const customHome = process.env.PISTA_HOME !== undefined && path.resolve(CLIENT_HOME) !== path.resolve(homedir(), ".pista");
+if (customHome) app.setPath("userData", path.join(CLIENT_HOME, "desktop-userdata"));
+const gotInstanceLock = customHome || app.requestSingleInstanceLock();
+if (!gotInstanceLock) app.quit();
+else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+}
+
 let mainWindow: BrowserWindow | null = null;
 let hostProcess: UtilityProcess | null = null;
 
@@ -670,6 +684,7 @@ app.on("before-quit", () => {
 app.enableSandbox();
 
 app.whenReady().then(async () => {
+  if (!gotInstanceLock) return;
   void sweepStaleChromeTemps();
   app.setName("Pista");
   Menu.setApplicationMenu(
