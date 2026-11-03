@@ -3,8 +3,12 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import type { ReplayStep } from "@pista/pi-browser";
 import type { Playbook } from "@pista/protocol";
 import { FAIL_THRESHOLD, deletePlaybook, getPlaybook, listPlaybooks, recordFailure, recordSuccess, sanitizeUrl, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+
+// Stored steps must stay replayable: the runner in pi-browser types them structurally (checked by pnpm typecheck).
+export const replayable: (steps: Playbook["steps"]) => ReplayStep[] = (steps) => steps;
 
 const base = (extra: Record<string, unknown> = {}) => ({ startUrl: "https://app.example.com/login", steps: [{ kind: "navigate", url: "https://example.com/invoices" }], ...extra });
 
