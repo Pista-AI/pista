@@ -900,6 +900,15 @@ function pageElementStillMatches(ref: string, role: string, name: string): boole
   return now.role === role && now.name === name;
 }
 
+/** Role, accessible name and visible text of the element behind a ref (or selector): what a later run needs to find the same control. */
+function pageLocate(target: string): { role: string; name: string; text: string } | null {
+  const w = window as unknown as { __pistaRefs?: Map<string, WeakRef<Element>>; __pistaDescribe?: (el: Element) => { role: string; name: string } };
+  const el = (/^e\d+$/.test(target) ? w.__pistaRefs?.get(target)?.deref() : document.querySelector(target)) as HTMLElement | null | undefined;
+  if (!el || !el.isConnected) return null;
+  const d = w.__pistaDescribe?.(el) ?? { role: el.getAttribute("role") || el.tagName.toLowerCase(), name: "" };
+  return { role: d.role, name: d.name.slice(0, 200), text: (el.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 200) };
+}
+
 /** Child frames of the top document, or undefined when there are none. Self-contained: it is also injected into every script as `__childFrames`. */
 function pageChildFrames(withText = true): FrameReport | undefined {
   const els = [...document.querySelectorAll("iframe, frame")] as HTMLIFrameElement[];
@@ -1063,6 +1072,7 @@ export const call = (fn: (...args: never[]) => unknown, ...args: unknown[]) =>
 export const scripts = {
   snapshot: (maxElements: number, includeText = false, stable = false) => call(pageSnapshot, maxElements, includeText, CUT_INLINE, stable),
   href: (target: string) => call(pageHref, target),
+  locate: (target: string) => call(pageLocate, target),
   prepare: (target: string, op: string, arg?: string) => call(pagePrepare, target, op, arg),
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),

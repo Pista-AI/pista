@@ -7,6 +7,7 @@ import type { Hub } from "./hub.ts";
 import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
+import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
 
 export type { ThreadRef };
 
@@ -162,10 +163,14 @@ export function toolLimitExtension(hub: Hub, ref: ThreadRef, gate: ToolLimitGate
 
 export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules): InlineExtension {
   const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref, domainRules });
+  const trace = new PlaybookTrace();
   return {
     name: "browser",
-    factory: (pi: ExtensionAPI) =>
-      registerBrowserTools(pi, () => driver, {
+    factory: (pi: ExtensionAPI) => {
+      // Same condition as browser_download (downloadRoot): a playbook ends in a download.
+      registerPlaybookSave(pi, trace, (e) => hub.emit(e), ref.threadId);
+      return registerBrowserTools(pi, () => driver, {
+        onTrace: (entry) => trace.add(entry),
         navigateHint: "The browser pane is visible to the user. Relative paths resolve against the home page.",
         // A consequential click, submit or Enter always asks the user here with the exact action, whatever the approval mode or an earlier generic approval of the call.
         // With no window connected, hub.ask rejects and the tool keeps the action stopped.
@@ -174,7 +179,8 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         threadId: ref.threadId,
         domainRules,
         downloadRoot: () => ref.cwd,
-      }),
+      });
+    },
   };
 }
 

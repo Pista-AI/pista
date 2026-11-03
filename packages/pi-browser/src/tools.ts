@@ -15,7 +15,16 @@ import { traceTools } from "./trace.ts";
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
+/** One successful, replayable browser action. Typed text, keys and selected options are never recorded (they may be secrets). */
+export type BrowserTraceEntry =
+  | { kind: "navigate"; url: string }
+  | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string }
+  | { kind: "download"; url?: string; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string }
+  | { kind: "signIn"; origin: string };
+
 export interface BrowserToolOptions {
+  /** Called after each successful navigate, click, download or sign-in, so a host can learn the path taken. */
+  onTrace?: (entry: BrowserTraceEntry) => void;
   /** Appended to browser_navigate's description, e.g. how relative paths resolve. */
   navigateHint?: string;
   /** How many of the most recent page views stay in the model's context in full (default 1; 0 disables pruning). */
@@ -65,6 +74,10 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     if (image) content.push({ type: "image", ...image });
     return { content, details: meta };
   };
+  const locateTarget = async (d: BrowserDriver, target: string) => {
+    const l = (await d.evaluate(scripts.locate(target)).catch(() => null)) as { role: string; name: string; text: string } | null;
+    return l ? { ...(l.role ? { role: l.role } : {}), ...(l.name ? { name: l.name } : {}), ...(l.text ? { text: l.text } : {}) } : undefined;
+  };
   const page = async (req: PageAction, signal?: AbortSignal) => {
     const d = await driver();
     // A yes that arrives after the run was stopped must not act, so the signal is checked again once the answer is in.
@@ -74,8 +87,12 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       const yes = (await askApproval?.({ toolName: `browser_${req.action}`, action, signal }).catch(() => false)) === true;
       return signal?.aborted ? "aborted" : yes;
     };
+    // Resolved before the click: the element may be gone afterwards, and the ref numbers change with the next snapshot.
+    const located = options.onTrace && req.action === "click" ? await locateTarget(d, req.target) : undefined;
     const result = await runPageAction(d, req, approve);
-    return respond(await d.state(), result);
+    const state = await d.state();
+    if (located && result.outcome?.startsWith("Clicked")) options.onTrace?.({ kind: "click", locator: located, urlAfter: state.url });
+    return respond(state, result);
   };
 
   if (fillEnabled()) registerFillTool(pi, { driver, askApproval }, respond);
@@ -95,6 +112,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         const d = await driver();
         d.setActivity?.(`Opening ${url}`);
         const opened = await d.navigate(url);
+        if (!opened.note) options.onTrace?.({ kind: "navigate", url: opened.url });
         const declined = await declineCookieBanner(d);
         if (!declined) return respond(opened);
         return respond(await d.state().catch(() => opened), { note: `Declined the cookie banner (clicked "${declined}").` });
@@ -237,6 +255,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           }
           // A link to a PDF would open in the inline viewer instead of downloading, so a link is downloaded by address with the pane's session.
           const href = ref ? String(await d.evaluate(scripts.href(ref)).catch(() => "")) : "";
+          const located = options.onTrace && ref && !href ? await locateTarget(d, ref) : undefined;
           const trigger = ref && !href
             ? async () => {
                 const result = await runPageAction(d, { action: "click", target: ref }, async (action) => {
@@ -257,6 +276,8 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
             if (replaced) rmSync(dest, { force: true });
             throw error;
           }
+          const direct = url ?? (href || undefined);
+          if (direct || located) options.onTrace?.({ kind: "download", ...(direct ? { url: direct } : { locator: located }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },
@@ -313,6 +334,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           if (here !== login.origin) return say({ ok: false, note: "Open the saved site's sign-in page first.", origin: login.origin });
           d.setActivity?.("Signing in");
           const r = await d.loginFill(site);
+          if (r.ok) options.onTrace?.({ kind: "signIn", origin: login.origin });
           return say({ ok: r.ok, note: r.note });
         },
       }),

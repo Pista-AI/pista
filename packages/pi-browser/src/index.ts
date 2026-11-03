@@ -3,7 +3,7 @@ export { runPageAction, type ActionResult, type Approve, type PageAction } from 
 export type { RiskApprover } from "./approval.ts";
 export { checkUrl, normalizeDomainPattern, guardDriver, DomainBlockedError, type DomainRules } from "./domains.ts";
 export { confineToFolder } from "./download.ts";
-export { registerBrowserTools, type BrowserToolOptions } from "./tools.ts";
+export { registerBrowserTools, type BrowserToolOptions, type BrowserTraceEntry } from "./tools.ts";
 export { CdpDriver } from "./drivers/cdp.ts";
 export { ScreencastFeed, MIN_FRAME_INTERVAL_MS, type ScreencastFrame } from "./chrome/screencast.ts";
 export { ChromeDriver, type ChromeDriverOptions, type ChromeDriverDeps } from "./drivers/chrome.ts";
