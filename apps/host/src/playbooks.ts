@@ -35,7 +35,11 @@ export function siteKey(url: string): string {
 
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
 const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;
-const OPAQUE_VALUE = /^[A-Za-z0-9_\-.~%+/=]{32,}$/;
+const OPAQUE_CHARS = /^[A-Za-z0-9_\-.~%+/=]{32,}$/;
+/** Long, mixed letters and digits, with a 20+ char run between separators: tokens, hashes, JWTs; not readable slugs. */
+function isOpaque(v: string): boolean {
+  return OPAQUE_CHARS.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v) && v.split(/[-_.]/).some((p) => p.length >= 20);
+}
 
 /** Same-site http(s) URL without userinfo, fragment, secret-looking query params or long opaque values. Throws otherwise. */
 export function sanitizeUrl(url: string, site: string): string {
@@ -43,10 +47,10 @@ export function sanitizeUrl(url: string, site: string): string {
   if (u.username || u.password) throw new Error("url must not contain credentials");
   if (siteKey(url) !== site) throw new Error("url is on a different site");
   // A secret in the path cannot be stripped without breaking replay, so the URL is rejected.
-  if (u.pathname.split("/").some((seg) => OPAQUE_VALUE.test(seg))) throw new Error("url path contains an opaque value");
+  if (u.pathname.split("/").some((seg) => isOpaque(seg))) throw new Error("url path contains an opaque value");
   u.hash = "";
   for (const [k, v] of [...u.searchParams.entries()]) {
-    if (SECRET_KEY.test(k) || OPAQUE_VALUE.test(v)) u.searchParams.delete(k);
+    if (SECRET_KEY.test(k) || isOpaque(v)) u.searchParams.delete(k);
   }
   return u.toString();
 }
@@ -75,13 +79,13 @@ function expectOf(v: unknown, site: string): PlaybookExpect | undefined {
   const o = obj(v);
   const out: PlaybookExpect = {};
   const urlIncludes = str(o.urlIncludes, MAX_TEXT), text = str(o.text, MAX_TEXT);
-  if (urlIncludes && !OPAQUE_VALUE.test(urlIncludes)) out.urlIncludes = urlIncludes;
-  if (text && !OPAQUE_VALUE.test(text)) out.text = text;
+  if (urlIncludes && !isOpaque(urlIncludes)) out.urlIncludes = urlIncludes;
+  if (text && !isOpaque(text)) out.text = text;
   if (o.element !== undefined) out.element = locator(o.element, site);
   return out;
 }
 
-function step(v: unknown, site: string): PlaybookStep {
+function step(v: unknown, site: string): PlaybookStep | null {
   const o = obj(v);
   const expect = expectOf(o.expect, site);
   const withExpect = expect ? { expect } : {};
@@ -100,7 +104,7 @@ function step(v: unknown, site: string): PlaybookStep {
       return { kind: "signIn", origin: origin.origin, ...withExpect };
     }
     case "wait":
-      if (!expect) throw new Error("wait step needs expect");
+      if (!expect || !Object.keys(expect).length) return null; // does nothing on replay
       return { kind: "wait", expect };
     case "download": {
       const out: Extract<PlaybookStep, { kind: "download" }> = { kind: "download" };
@@ -139,7 +143,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
     version: 1,
     site,
     startUrl: sanitizeUrl(String(o.startUrl), site),
-    steps: o.steps.map((s) => step(s, site)),
+    steps: o.steps.flatMap((s) => step(s, site) ?? []),
     createdAt: date(o.createdAt) ?? now,
     updatedAt: date(o.updatedAt) ?? now,
     ...(date(o.lastSucceeded) ? { lastSucceeded: date(o.lastSucceeded) } : {}),

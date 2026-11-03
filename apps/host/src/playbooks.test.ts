@@ -28,6 +28,11 @@ describe("sanitizeUrl", () => {
     assert.throws(() => sanitizeUrl("https://evil.com/", "example.com"));
     assert.throws(() => sanitizeUrl("https://u:p@example.com/", "example.com"));
   });
+  it("keeps readable slugs, rejects hex and JWT-like segments", () => {
+    assert.doesNotThrow(() => sanitizeUrl("https://example.com/invoices-and-payment-history-overview", "example.com"));
+    assert.throws(() => sanitizeUrl(`https://example.com/x/${"0123abcd".repeat(8)}`, "example.com"));
+    assert.throws(() => sanitizeUrl("https://example.com/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r", "example.com"));
+  });
   it("rejects opaque path segments", () => {
     assert.throws(() => sanitizeUrl(`https://example.com/reset/${"ab12".repeat(16)}`, "example.com"));
   });
@@ -36,7 +41,7 @@ describe("sanitizeUrl", () => {
     assert.deepEqual([...out.searchParams.keys()], ["monkey", "passenger", "accessible"]);
   });
   it("strips secrets, opaque values and fragments, keeps benign params", () => {
-    const out = new URL(sanitizeUrl(`https://x.example.com/p?token=1&Code=2&utm_source=a&page=2&blob=${"a".repeat(40)}#frag`, "example.com"));
+    const out = new URL(sanitizeUrl(`https://x.example.com/p?token=1&Code=2&utm_source=a&page=2&blob=${"a1".repeat(20)}#frag`, "example.com"));
     assert.equal(out.hash, "");
     assert.deepEqual([...out.searchParams.keys()], ["page"]);
   });
@@ -64,10 +69,10 @@ describe("validatePlaybook details", () => {
     assert.throws(() => validatePlaybook(base({ steps: [{ kind: "click", target: { frameUrl: "https://evil.com/" } }] }), "example.com"));
     assert.throws(() => validatePlaybook(base({ steps: [{ kind: "download", url: "https://evil.com/a.pdf" }] }), "example.com"));
     const pb = validatePlaybook(base({ steps: [
-      { kind: "wait", expect: { urlIncludes: "a".repeat(40), text: "b".repeat(40) } },
+      { kind: "wait", expect: { urlIncludes: "a1".repeat(20), text: "b2".repeat(20) } },
       { kind: "signIn", origin: "https://app.example.com./x" },
     ] }), "example.com");
-    assert.deepEqual(pb.steps[0], { kind: "wait", expect: {} });
+    assert.equal(pb.steps.length, 2); // the emptied wait is dropped
     assert.equal((pb.steps[1] as { origin: string }).origin, "https://app.example.com");
   });
 });
