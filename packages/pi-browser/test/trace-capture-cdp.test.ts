@@ -63,4 +63,20 @@ test("the trace records navigate, click locators resolved before the click, and 
   assert.equal(dl.url, `${base}inv-001.pdf`);
   assert.equal(dl.contentType, "application/pdf");
   assert.equal(dl.path, "invoices/a.pdf");
+  assert.equal(dl.source, "ref");
+});
+
+test("typing, pressing and selecting leave no entry, and editable content gets no text in a click locator", { skip }, async () => {
+  trace.length = 0;
+  const html = `<input aria-label="Search"><select aria-label="Pick"><option>One</option><option>Two</option></select><div role="textbox" contenteditable aria-label="Notes">secret words</div>`;
+  await call("browser_navigate", { url: `data:text/html,${encodeURIComponent(html)}` });
+  const snap = await call("browser_snapshot");
+  await call("browser_type", { ref: refOf(snap, "Search"), text: "hunter2" });
+  await call("browser_press", { key: "Escape" });
+  await call("browser_select", { ref: refOf(snap, "Pick"), option: "Two" });
+  assert.deepEqual(trace.map((t) => t.kind), ["navigate"]);
+  await call("browser_click", { ref: refOf(await call("browser_snapshot"), "Notes") });
+  const click = trace.find((t) => t.kind === "click") as Extract<BrowserTraceEntry, { kind: "click" }>;
+  assert.equal(click.locator.text, undefined);
+  assert.ok(!JSON.stringify(trace).includes("secret words") && !JSON.stringify(trace).includes("hunter2"));
 });

@@ -4,7 +4,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { BrowserTraceEntry } from "@pista/pi-browser";
 import { Type } from "typebox";
 import type { HostEvent, Playbook, PlaybookExpect, PlaybookLocator, PlaybookStep } from "@pista/protocol";
-import { getPlaybook, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { getPlaybook, isOpaque, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 export type TraceRow = { n: number } & BrowserTraceEntry;
@@ -32,7 +32,7 @@ export function describeTrace(rows: readonly TraceRow[]): string {
       switch (r.kind) {
         case "navigate": return `${r.n} navigate ${r.url}`;
         case "click": return `${r.n} click ${where(r.locator)} -> ${r.urlAfter}`;
-        case "download": return `${r.n} download ${r.url ?? where(r.locator ?? {})} (${r.contentType ?? "unknown type"})`;
+        case "download": return `${r.n} download ${r.url ?? where(r.locator ?? {})} (${r.contentType ?? "unknown type"}, ${r.source === "url" ? "address given by you" : "from the page"})`;
         case "signIn": return `${r.n} signIn ${r.origin}`;
       }
     })
@@ -59,20 +59,23 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
     const u = urlOf(r);
     if (u && siteKey(u) !== site) throw new Error(`entry ${r.n} is on a different site (${siteKey(u)}), not ${site}`);
   }
-  const steps: PlaybookStep[] = picked.slice(1).map((r): PlaybookStep => {
-    const text = waitFor[String(r.n)];
+  // Text that looks like a token or hash is dropped, never stored.
+  const clean = (v?: string) => (v && !isOpaque(v) ? v : undefined);
+  const steps: PlaybookStep[] = picked.slice(1).map((r, i): PlaybookStep => {
+    const text = clean(waitFor[String(r.n)]?.slice(0, 200));
     const expect: PlaybookExpect = text ? { text } : {};
     switch (r.kind) {
       case "navigate": return { kind: "navigate", url: r.url, ...(text ? { expect } : {}) };
       case "signIn": return { kind: "signIn", origin: r.origin, ...(text ? { expect } : {}) };
       case "click": {
-        // The URL before this click: the nearest earlier entry that had one. A changed path is a stable thing to wait for on replay.
-        const before = [...rows].reverse().find((x) => x.n < r.n && urlOf(x));
+        // The page before this click on the replayed path (the previous chosen entry). A changed path is a stable thing to wait for.
+        const before = urlOf(picked[i]!);
         try {
           const path = new URL(r.urlAfter).pathname;
-          if (before && path !== new URL(urlOf(before)!).pathname && path !== "/") expect.urlIncludes = path;
+          if (before && path !== new URL(before).pathname && path !== "/") expect.urlIncludes = path;
         } catch {}
-        const target: PlaybookLocator = { ...r.locator };
+        const { name, text: lt, ...rest } = r.locator;
+        const target: PlaybookLocator = { ...rest, ...(clean(name) ? { name } : {}), ...(clean(lt) ? { text: lt } : {}) };
         return { kind: "click", target, ...(Object.keys(expect).length ? { expect } : {}) };
       }
       case "download": {
@@ -98,11 +101,12 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
-    if (old.startUrl !== fresh.startUrl && !changed.includes(0)) changed.unshift(0);
-    if (!changed.length) return { message: `The playbook for ${built.site} already matches this path; nothing changed.` };
+    const startChanged = old.startUrl !== fresh.startUrl;
+    if (!changed.length && !startChanged) return { message: `The playbook for ${built.site} already matches this path; nothing changed.` };
     const now = new Date().toISOString();
-    savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, failCount: old.failCount, status: old.status, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}` }] });
-    return { message: `Updated the playbook for ${built.site}; first changed step is ${changed[0]! + 1}.`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: changed[0]! } };
+    savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    const first = startChanged ? 1 : changed[0]! + 1;
+    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first } };
   } catch (e) {
     return { message: `Not saved: ${e instanceof Error ? e.message : String(e)}` };
   }

@@ -19,7 +19,7 @@ type Content = { type: "text"; text: string } | { type: "image"; data: string; m
 export type BrowserTraceEntry =
   | { kind: "navigate"; url: string }
   | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string }
-  | { kind: "download"; url?: string; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string }
+  | { kind: "download"; url?: string; /** "url": the model supplied the address; "ref": it came from the page (the element's link or its click). */ source: "ref" | "url"; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string }
   | { kind: "signIn"; origin: string };
 
 export interface BrowserToolOptions {
@@ -277,7 +277,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
             throw error;
           }
           const direct = url ?? (href || undefined);
-          if (direct || located) options.onTrace?.({ kind: "download", ...(direct ? { url: direct } : { locator: located }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
+          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : { locator: located }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },
