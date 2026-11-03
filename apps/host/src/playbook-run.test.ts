@@ -38,6 +38,18 @@ test("only a role that lists playbook_run is guarded; a thread without it naviga
   assert.equal((await nav(plain))?.block, undefined);
 });
 
+test("a playbook_run the approval gate declines still opens the site for the thread and records no failure", async () => {
+  save();
+  const { manager, store, project } = await makeManager({ projectDir });
+  store.patchConfig({ approvalMode: "ask-writes" }); // no window is connected, so the ask is refused
+  type Live = { session: { extensionRunner: { emitToolCall(e: unknown): Promise<{ block?: boolean; reason?: string } | undefined> } } };
+  const id = (await manager.create(project.id, "invoice-fetch")).summary.id;
+  const emit = (toolName: string, input: unknown) => liveOf<Live>(manager).get(id)!.session.extensionRunner.emitToolCall({ type: "tool_call", toolName, toolCallId: "c1", input });
+  assert.equal((await emit("playbook_run", { site: B, invoice: { date: "2026-10-03" } }))?.block, true);
+  assert.equal((await emit("browser_navigate", { url: `${B}home.html` }))?.block, undefined);
+  assert.equal(getPlaybook("127.0.0.1")!.failCount, 0);
+});
+
 test("failures count towards needs-attention at three; declines and stops do not count; a success resets", () => {
   save();
   assert.deepEqual(recordRun("127.0.0.1", handoff("declined"), "t"), []);

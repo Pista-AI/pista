@@ -175,6 +175,12 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
       registerPlaybookRun(pi, { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId });
       if (opts.guardPlaybooks) {
         pi.on("tool_call", (event) => {
+          // A call counts as tried even when the user then declines it or the run stops: the site opens, but no failure is recorded.
+          if (event.toolName === "playbook_run") {
+            const pb = playbookFor((event.input as { site?: unknown }).site);
+            if (pb) attempted.add(pb.site);
+            return undefined;
+          }
           const refused = event.toolName === "browser_navigate" ? playbookGuardMessage(attempted, (event.input as { url?: unknown }).url) : undefined;
           return refused ? { block: true, reason: refused } : undefined;
         });
