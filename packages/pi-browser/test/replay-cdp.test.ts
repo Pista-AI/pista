@@ -56,7 +56,7 @@ const steps = (): ReplayStep[] => [
   { kind: "navigate", url: `${base}list.html` },
   { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" },
 ];
-const options = (path: string) => ({ driver: driver!, domainRules: { allowedDomains: ["127.0.0.1"] }, downloadRoot: dir, downloadPath: path, confirmRisk: async () => true, expectTimeoutMs: 5000 });
+const options = (path: string) => ({ driver: driver!, allowUrl: (u: string) => new URL(u).hostname === "127.0.0.1", domainRules: { allowedDomains: ["127.0.0.1"] }, downloadRoot: dir, downloadPath: path, confirmRisk: async () => true, expectTimeoutMs: 5000 });
 
 test("a hand-written playbook for the fixture replays to a downloaded PDF", { skip }, async () => {
   const seen: string[] = [];

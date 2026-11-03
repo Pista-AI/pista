@@ -7,6 +7,7 @@
  */
 import { declineCookieBanner, runPageAction, settle, waitForLoad, type Approve } from "./actions.ts";
 import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./domains.ts";
+import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
 import { formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
@@ -33,6 +34,11 @@ export type ReplayResult =
 export interface ReplayOptions {
   /** The raw driver; replay wraps it in the same domain guard the browser tools use. */
   driver: BrowserDriver;
+  /**
+   * Whether replay may open or download `url` (the host: same site as the playbook). Asked for the start page, every navigate and
+   * download address, resolved download links, and the page address after each navigation, click and sign-in. Only http(s) ever passes.
+   */
+  allowUrl: (url: string) => boolean;
   domainRules?: DomainRules;
   onDomainBlock?: (reason: string) => void;
   /** Folder the download is confined to, and the path under it (relative, like browser_download's `path`). */
@@ -45,14 +51,16 @@ export interface ReplayOptions {
   confirmRisk?: (action: string) => Promise<boolean>;
   signal?: AbortSignal;
   onStep?: (index: number, status: "start" | "done" | "failed") => void;
-  /** Expectation polling (defaults 10 s every 250 ms) and the clock it uses, injectable for tests. */
+  /** Expectation polling (defaults 10 s every 250 ms), the download deadline (default 60 s) and the clock, injectable for tests. */
   expectTimeoutMs?: number;
+  downloadTimeoutMs?: number;
   pollMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
 const DETAIL_MAX = 300;
+const URL_MAX = 500;
 const SNAPSHOT_MAX = 8000;
 const RESOLVE_MAX_ELEMENTS = 500;
 
@@ -65,42 +73,77 @@ class Handoff extends Error {
 const norm = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
 export type Resolution = { target: string } | { reason: "not-found" | "ambiguous"; detail: string };
+type Candidate = { ref: string; role: string; name: string; href?: string };
 
 /**
  * Finds the element for `target`, then each fallback in order. Per locator: exact role + name, then exact name, then name containing
- * `text` (same role when one is given), then `selector` when it is in `selectors` (the ones the page has). Several matches in a tier
- * are taken only when identical in role and name; otherwise the answer is "ambiguous" and nothing further is tried.
+ * `text` (same role when one is given), then `selector` when the page has exactly one match (`selectors`: match counts). Several
+ * matches in a tier are "ambiguous" and nothing further is tried, except identical links to the same address (the first is taken).
  * `frameUrl` is not used: snapshots do not enter frames, so playbooks open a frame's address with a navigate step.
  */
-export function resolveLocator(elements: readonly { ref: string; role: string; name: string }[], target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], selectors: ReadonlySet<string> = new Set()): Resolution {
+export function resolveLocator(elements: readonly Candidate[], target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], selectors: ReadonlyMap<string, number> = new Map()): Resolution {
   for (const l of [target, ...fallbacks]) {
-    const tiers: ((e: { role: string; name: string }) => boolean)[] = [];
+    const tiers: ((e: Candidate) => boolean)[] = [];
     if (l.role && l.name) tiers.push((e) => e.role === l.role && norm(e.name) === norm(l.name));
     if (l.name) tiers.push((e) => norm(e.name) === norm(l.name));
     if (l.text && norm(l.text)) tiers.push((e) => (!l.role || e.role === l.role) && norm(e.name).includes(norm(l.text)));
     for (const tier of tiers) {
       const hits = elements.filter(tier);
       if (!hits.length) continue;
-      if (hits.some((h) => h.role !== hits[0]!.role || norm(h.name) !== norm(hits[0]!.name))) {
-        return { reason: "ambiguous", detail: `${hits.length} different elements match ${describeLocator(l)}` };
-      }
-      return { target: hits[0]!.ref };
+      const first = hits[0]!;
+      const sameLink = (h: Candidate) => h.role === "link" && !!first.href && h.href === first.href && norm(h.name) === norm(first.name);
+      if (hits.length > 1 && !(first.role === "link" && hits.every(sameLink))) return { reason: "ambiguous", detail: `${hits.length} elements match ${describeLocator(l)}` };
+      return { target: first.ref };
     }
-    if (l.selector && selectors.has(l.selector)) return { target: l.selector };
+    // A selector that looks like a ref would be taken as one by the click action.
+    const count = l.selector && !/^e\d+$/.test(l.selector) ? (selectors.get(l.selector) ?? 0) : 0;
+    if (count > 1) return { reason: "ambiguous", detail: `${count} elements match ${describeLocator(l)}` };
+    if (count === 1) return { target: l.selector! };
   }
   return { reason: "not-found", detail: `nothing on the page matches ${describeLocator(target)}` };
 }
 
 const describeLocator = (l: ReplayLocator) => [l.role, l.name ? JSON.stringify(l.name) : l.text ? `~${JSON.stringify(l.text)}` : "", l.selector ?? ""].filter(Boolean).join(" ").slice(0, 120);
 
-/** Polls `check` until it is true or `timeoutMs` has passed (checked at least once). */
+const stopped = () => new Handoff("aborted", "The run was stopped.");
+
+/** `p`, unless `signal` fires (aborted) or `ms` passes (`onTimeout`) first. */
+async function within<T>(p: Promise<T>, ms: number, signal: AbortSignal | undefined, onTimeout: () => T | never): Promise<T> {
+  if (signal?.aborted) throw stopped();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((resolve, reject) => {
+        timer = setTimeout(() => {
+          try {
+            resolve(onTimeout());
+          } catch (e) {
+            reject(e);
+          }
+        }, Math.max(0, ms));
+        signal?.addEventListener("abort", (onAbort = () => reject(stopped())), { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Polls `check` until it is true or `timeoutMs` has passed (checked at least once). A blocked page and a stop end it at once. */
 export async function pollUntil(check: () => Promise<boolean>, timeoutMs: number, pollMs: number, now: () => number, sleep: (ms: number) => Promise<void>, signal?: AbortSignal): Promise<boolean> {
   const start = now();
   for (;;) {
-    if (signal?.aborted) throw new Handoff("aborted", "The run was stopped.");
-    if (await check().catch(() => false)) return true;
+    const left = timeoutMs - (now() - start);
+    const ok = await within(check(), left, signal, () => false).catch((e) => {
+      if (e instanceof DomainBlockedError || e instanceof Handoff) throw e;
+      return false;
+    });
+    if (ok) return true;
     if (now() - start >= timeoutMs) return false;
-    await sleep(pollMs);
+    await within(sleep(pollMs), pollMs + 1000, signal, () => undefined);
   }
 }
 
@@ -109,11 +152,13 @@ const snapshotOf = async (d: BrowserDriver, max: number) => (await d.evaluate(sc
 /** Snapshots the page and resolves the locator to a ref (or a selector the page has). */
 async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = []): Promise<Resolution> {
   const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
-  const selectors = new Set<string>();
+  // Link addresses by ref, from the refs this snapshot just set, so identical links can be told apart.
+  const hrefs = (await d.evaluate("Object.fromEntries([...(window.__pistaRefs ?? new Map())].map(([r, w]) => [r, w.deref()?.closest('a[href]')?.href ?? '']))").catch(() => ({}))) as Record<string, string>;
+  const selectors = new Map<string, number>();
   for (const l of [target, ...fallbacks]) {
-    if (l.selector && (await d.evaluate(`!!document.querySelector(${JSON.stringify(l.selector)})`).catch(() => false)) === true) selectors.add(l.selector);
+    if (l.selector) selectors.set(l.selector, Number(await d.evaluate(`(() => { try { return document.querySelectorAll(${JSON.stringify(l.selector)}).length; } catch { return 0; } })()`).catch(() => 0)));
   }
-  return resolveLocator(snap.elements, target, fallbacks, selectors);
+  return resolveLocator(snap.elements.map((e) => ({ ...e, href: hrefs?.[e.ref] || undefined })), target, fallbacks, selectors);
 }
 
 /** True once every set part of `expect` holds on the page. */
@@ -142,6 +187,18 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     return o.signal?.aborted ? "aborted" : yes;
   };
   const steps: ReplayStep[] = [{ kind: "navigate", url: playbook.startUrl }, ...playbook.steps];
+  const allowed = (url: string) => {
+    try {
+      if (!/^https?:$/.test(new URL(url).protocol)) return false;
+    } catch {
+      return false;
+    }
+    return o.allowUrl(url);
+  };
+  const guardUrl = (url: string, what: string) => {
+    if (!allowed(url)) throw new Handoff("blocked", `${what} ${url.slice(0, 200)} is outside this playbook's site or not an http(s) address.`);
+  };
+  const stillOnSite = async () => guardUrl((await d.state()).url, "The page moved to");
   let saved: { path: string; bytes: number; contentType?: string } | undefined;
 
   const click = async (target: string, what: string) => {
@@ -153,9 +210,11 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     if (step.kind !== "navigate" && step.kind !== "wait" && o.approve && !(await o.approve(step, index))) throw new Handoff("declined", "The user declined this step.");
     switch (step.kind) {
       case "navigate": {
+        guardUrl(step.url, "The address");
         const opened = await d.navigate(step.url);
         if (opened.note) throw new Handoff("error", opened.note);
         await waitForLoad(d);
+        await stillOnSite();
         await declineCookieBanner(d);
         break;
       }
@@ -163,6 +222,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         const r = await locate(d, step.target, step.fallbacks);
         if (!("target" in r)) throw new Handoff(r.reason, r.detail);
         await click(r.target, "click");
+        await stillOnSite();
         break;
       }
       case "signIn": {
@@ -177,6 +237,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         const filled = await d.loginFill(logins[0]!.id);
         if (!filled.ok) throw new Handoff("sign-in-needed", filled.note);
         await settle(d);
+        await stillOnSite();
         break;
       }
       case "wait":
@@ -190,12 +251,27 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");
-        const got = await saveDownload(d, { root: o.downloadRoot, path: o.downloadPath, overwrite: o.overwrite }, source);
-        const ct = got.contentType?.toLowerCase();
-        if (step.fileType && ct && !ct.includes(step.fileType.toLowerCase())) {
-          got.remove();
-          throw new Handoff("error", `Expected a ${step.fileType} file but got ${ct}.`);
-        }
+        if ("url" in source) guardUrl(source.url, "The download address");
+        const validate = (file: string, got: { contentType?: string; urlChain?: string[] }) => {
+          for (const u of got.urlChain ?? []) guardUrl(u, "The download came from");
+          const reject = (why: string) => {
+            throw new Handoff("error", `The downloaded file was not kept: ${why}.`);
+          };
+          const ct = got.contentType?.toLowerCase();
+          const type = step.fileType?.toLowerCase();
+          if (!type) return void (ct?.includes("text/html") && reject("it is a web page"));
+          if (ct) return void (!ct.includes(type) && reject(`expected ${type}, got ${ct}`));
+          if (type !== "pdf" || !readFileSync(file).subarray(0, 5).toString("latin1").startsWith("%PDF-")) reject(`its type is unknown and it is not a ${type}`);
+        };
+        // A download still running at the deadline is still validated if it lands later; only its result is ignored.
+        const got = await within(
+          saveDownload(d, { root: o.downloadRoot, path: o.downloadPath, overwrite: o.overwrite, validate }, { ...source, ...(o.signal ? { signal: o.signal } : {}) }),
+          o.downloadTimeoutMs ?? 60_000,
+          o.signal,
+          () => {
+            throw new Handoff("error", "The download did not finish in time.");
+          },
+        );
         saved = { path: o.downloadPath, bytes: got.bytes, ...(got.contentType ? { contentType: got.contentType } : {}) };
         break;
       }
@@ -215,10 +291,10 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       o.onStep?.(i, "failed");
       const reason: ReplayReason = error instanceof Handoff ? error.reason : o.signal?.aborted ? "aborted" : error instanceof DomainBlockedError ? "blocked" : "error";
       const detail = (error instanceof Error ? error.message : String(error)).slice(0, DETAIL_MAX);
-      // A blocked page was reset to about:blank by the guard; reading the raw driver would only show that.
+      // A page refused by the rules or off this playbook's site is not read into the handoff.
       const url = await d.state().then((s) => s.url, () => "");
-      const snapshot = checkUrl(url, rules ?? {}) ? "" : await snapshotOf(d, 150).then((s) => formatSnapshot(s).slice(0, SNAPSHOT_MAX), () => "");
-      return { ok: false, failedIndex: i, step, reason, detail, url, snapshot };
+      const snapshot = checkUrl(url, rules ?? {}) || !allowed(url) ? "" : await snapshotOf(d, 150).then((s) => formatSnapshot(s).slice(0, SNAPSHOT_MAX)).catch(() => "");
+      return { ok: false, failedIndex: i, step, reason, detail, url: url.slice(0, URL_MAX), snapshot };
     }
     o.onStep?.(i, "done");
   }
