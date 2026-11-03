@@ -168,3 +168,25 @@ test("a click that leads off the site hands off as blocked", async () => {
   assert.equal(reasonOf(r), "1:blocked");
   assert.equal(!r.ok && r.snapshot, "");
 });
+
+test("playbook values reach page script only as escaped argument literals", async () => {
+  const selector = "a[href=\"</script>\"] \\ 'x' `y` \u2028\u2029 > b/c";
+  const name = "Pay \"now\" `x` 'y' </script>";
+  const scripts: string[] = [];
+  const driver = {
+    evaluate: async (script: string) => {
+      if (script.includes("pageSnapshot")) return { lines: [], count: 0, omitted: 0, scroll: { y: 0, height: 1, viewport: 1 }, elements: [] };
+      scripts.push(script);
+      return 0;
+    },
+  } as unknown as BrowserDriver;
+  await expectationMet(driver, { element: { name, selector } });
+  const script = scripts.find((s) => s.includes("querySelectorAll"));
+  assert.ok(script);
+  assert.equal(script.includes("</script>"), false);
+  assert.equal(/[\u2028\u2029]/.test(script), false);
+  let seen: unknown;
+  const fakeDocument = { querySelectorAll: (s: string) => ((seen = s), []) };
+  new Function("document", "window", `return ${script}`)(fakeDocument, {});
+  assert.equal(seen, selector);
+});

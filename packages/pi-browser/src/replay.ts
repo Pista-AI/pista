@@ -10,7 +10,7 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
+import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string }
 export interface ReplayExpect { urlIncludes?: string; text?: string; element?: ReplayLocator }
@@ -149,6 +149,15 @@ export async function pollUntil(check: () => Promise<boolean>, timeoutMs: number
 
 const snapshotOf = async (d: BrowserDriver, max: number) => (await d.evaluate(scripts.snapshot(max))) as PageSnapshot;
 
+/** Runs in the page; the selector arrives as an argument literal built by `call`, never spliced into source by hand. */
+const countMatches = (selector: string): number => {
+  try {
+    return document.querySelectorAll(selector).length;
+  } catch {
+    return 0;
+  }
+};
+
 /** Snapshots the page and resolves the locator to a ref (or a selector the page has). */
 async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = []): Promise<Resolution> {
   const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
@@ -156,7 +165,7 @@ async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readon
   const hrefs = (await d.evaluate("Object.fromEntries([...(window.__pistaRefs ?? new Map())].map(([r, w]) => [r, w.deref()?.closest('a[href]')?.href ?? '']))").catch(() => ({}))) as Record<string, string>;
   const selectors = new Map<string, number>();
   for (const l of [target, ...fallbacks]) {
-    if (l.selector) selectors.set(l.selector, Number(await d.evaluate(`(() => { try { return document.querySelectorAll(${JSON.stringify(l.selector)}).length; } catch { return 0; } })()`).catch(() => 0)));
+    if (l.selector) selectors.set(l.selector, Number(await d.evaluate(call(countMatches, l.selector)).catch(() => 0)));
   }
   return resolveLocator(snap.elements.map((e) => ({ ...e, href: hrefs?.[e.ref] || undefined })), target, fallbacks, selectors);
 }
