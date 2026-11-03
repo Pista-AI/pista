@@ -57,7 +57,7 @@ export interface BrowserDriver {
    * downloaded with the browser's own session, or `trigger` runs (e.g. a click) while the browser waits for the download it causes.
    * Rejects with a plain-language message when none starts or it fails. Drivers without file access leave it out.
    */
-  download?(opts: { path: string; url?: string; trigger?: () => Promise<unknown> }): Promise<{ bytes: number; contentType?: string; urlChain?: string[] }>;
+  download?(opts: { path: string; url?: string; trigger?: () => Promise<unknown>; /** Drivers that can cancel a download honour it. */ signal?: AbortSignal }): Promise<{ bytes: number; contentType?: string; urlChain?: string[] }>;
   /** Optional: the owner's saved logins (names and sites only, never secrets). Drivers without a vault leave it out. */
   loginList?(): Promise<SavedLoginMeta[]>;
   /** Optional: signs in to the current page with the saved login `site` (id or label). The desktop app types the secret; it never passes through here. */

@@ -1,7 +1,6 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync, renameSync, rmSync } from "node:fs";
-import { confineToFolder, looksLikeFailedDownload, tempDownloadPath } from "./download.ts";
+import { refDownloadSource, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
@@ -278,15 +277,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
           const folder = root();
           if (!folder) throw new Error("browser_download: no project folder is known for this thread.");
-          const target = confineToFolder(folder, path);
-          let replaced = "";
-          if (existsSync(target)) {
-            if (overwrite) replaced = " (replaced the existing file)";
-            else if (looksLikeFailedDownload(target)) replaced = " (replaced a broken file from an earlier failed download)";
-            else throw new Error(`browser_download: ${path} already exists. Pass overwrite: true to replace it, or choose another filename.`);
-          }
           const d = await driver();
-          if (!d.download) throw new Error("browser_download is not supported with this browser driver (the cdp driver cannot save downloads).");
           d.setActivity?.(`Downloading ${path}`);
           // A relative link ("/invoice.pdf") only means something against the page the model is looking at; the guard must see the absolute address.
           if (url) {
@@ -297,29 +288,18 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
               throw new Error(`browser_download: "${url}" is not a valid address${base ? ` on ${base}` : ""}.`);
             }
           }
-          // A link to a PDF would open in the inline viewer instead of downloading, so a link is downloaded by address with the pane's session.
-          const href = ref ? String(await d.evaluate(scripts.href(ref)).catch(() => "")) : "";
-          const located = options.onTrace && ref && !href ? await locateTarget(d, ref) : undefined;
-          const trigger = ref && !href
-            ? async () => {
-                const result = await runPageAction(d, { action: "click", target: ref }, async (action) => {
-                  if (signal?.aborted) return "aborted";
-                  const yes = (await askApproval?.({ toolName: "browser_download", action, signal }).catch(() => false)) === true;
-                  return signal?.aborted ? "aborted" : yes;
-                });
-                if (result.note && /^Stopped|not found|error/i.test(result.note)) throw new Error(`download failed: ${result.note}`);
-              }
+          const fromRef = ref
+            ? await refDownloadSource(d, ref, async (action) => {
+                if (signal?.aborted) return "aborted";
+                const yes = (await askApproval?.({ toolName: "browser_download", action, signal }).catch(() => false)) === true;
+                return signal?.aborted ? "aborted" : yes;
+              })
             : undefined;
-          // When replacing, download beside the old file and rename over it, so a failed download never destroys it.
-          const dest = replaced ? tempDownloadPath(target) : target;
-          let saved: Awaited<ReturnType<NonNullable<typeof d.download>>>;
-          try {
-            saved = await d.download({ path: dest, ...(url || href ? { url: url ?? href } : {}), ...(trigger ? { trigger } : {}) });
-            if (replaced) renameSync(dest, target);
-          } catch (error) {
-            if (replaced) rmSync(dest, { force: true });
-            throw error;
-          }
+          const href = fromRef && "url" in fromRef ? fromRef.url : "";
+          // Resolved before the click: the element may be gone afterwards.
+          const located = options.onTrace && ref && !href ? await locateTarget(d, ref) : undefined;
+          const saved = await saveDownload(d, { root: folder, path, overwrite }, url ? { url } : fromRef!);
+          const replaced = saved.replaced;
           const direct = url ?? (href || undefined);
           if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : { locator: located }), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
