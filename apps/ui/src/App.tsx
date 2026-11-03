@@ -407,9 +407,11 @@ const goalCall = (p: Promise<unknown>) => p.catch((e: Error) => toast(e.message,
 
 function NavButtons() {
   const { nav, sidebarOpen } = useApp();
+  // With the sidebar out of the way, a thread waiting for the user elsewhere would go unnoticed: flag the toggle.
+  const waitingElsewhere = useApp((s) => !s.sidebarOpen && s.approvals.some((a) => a.threadId !== s.activeThreadId && s.threads.find((t) => t.id === a.threadId)?.parentId !== s.activeThreadId));
   return (
     <div className="nav-buttons no-drag">
-      <button className="icon-btn" title={sidebarOpen ? "Hide sidebar (⌘B)" : "Show sidebar (⌘B)"} onClick={() => actions.toggleSidebar()}>
+      <button className={`icon-btn ${waitingElsewhere ? "has-waiting" : ""}`} title={waitingElsewhere ? "Show sidebar (⌘B): a thread needs you" : sidebarOpen ? "Hide sidebar (⌘B)" : "Show sidebar (⌘B)"} onClick={() => actions.toggleSidebar()}>
         <PanelLeft size={16} />
       </button>
       <button className="icon-btn" title="Back (⌘[)" disabled={nav.index === 0} onClick={() => actions.navigate(-1)}>
