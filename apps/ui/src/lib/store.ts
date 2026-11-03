@@ -57,6 +57,11 @@ export interface ThreadView extends Omit<ThreadSnapshot, "summary" | "decisions"
 export type PlaybookCardEvent = Omit<Extract<HostEvent, { type: "playbook.event" }>, "type">;
 export interface PlaybookCardItem { id: number; anchor: number; event: PlaybookCardEvent }
 let playbookSeq = 0;
+const PLAYBOOK_EVENT_CAP = 20;
+const dropKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
+  const { [k]: _gone, ...rest } = o;
+  return rest;
+};
 
 export interface Approval {
   approvalId: string;
@@ -447,6 +452,7 @@ export const actions = {
 
   async archive(threadId: string) {
     await host.call("thread.archive", { threadId });
+    set((s) => ({ playbookEvents: dropKey(s.playbookEvents, threadId) }));
     if (get().activeThreadId === threadId) set({ activeThreadId: null });
   },
 
@@ -741,12 +747,14 @@ function onHostEvent(event: HostEvent) {
       set((s) => ({
         threads: s.threads.filter((t) => t.id !== event.threadId),
         activeThreadId: s.activeThreadId === event.threadId ? null : s.activeThreadId,
+        playbookEvents: dropKey(s.playbookEvents, event.threadId),
       }));
       break;
     case "playbook.event": {
       const { type: _t, ...ev } = event;
-      const anchor = get().views[event.threadId]?.messages.length ?? 0;
-      set((s) => ({ playbookEvents: { ...s.playbookEvents, [event.threadId]: [...(s.playbookEvents[event.threadId] ?? []), { id: ++playbookSeq, anchor, event: ev }] } }));
+      // No loaded view yet: the card trails the last turn instead of anchoring at 0.
+      const anchor = get().views[event.threadId]?.messages.length ?? Number.MAX_SAFE_INTEGER;
+      set((s) => ({ playbookEvents: { ...s.playbookEvents, [event.threadId]: [...(s.playbookEvents[event.threadId] ?? []), { id: ++playbookSeq, anchor, event: ev }].slice(-PLAYBOOK_EVENT_CAP) } }));
       break;
     }
     case "approval.request":

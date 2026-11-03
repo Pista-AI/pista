@@ -10,6 +10,7 @@ import { useConfigField } from "../lib/useConfigField.ts";
 import { ManagedBadge } from "./ManagedBadge.tsx";
 import { host } from "../lib/host.ts";
 import { SavedLogins } from "./SavedLogins.tsx";
+import { Playbooks } from "./Playbooks.tsx";
 
 type Tab = Exclude<ReturnType<typeof useApp.getState>["settingsOpen"], false>;
 
@@ -238,6 +239,7 @@ function General() {
         </span>
       </div>
       {info?.browserEngine !== "chrome" && <SavedLogins />}
+      <Playbooks />
       <div className="field">
         <label>
           Permissions <ManagedBadge field={approval} />
