@@ -20,3 +20,4 @@ export { findBrowser, type BrowserKind, type FoundBrowser, type FindEnv } from "
 export { launchBrowser, ProfileInUseError, pistaChromeProfileDir, type LaunchedBrowser, type LaunchDeps } from "./chrome/launch.ts";
 export { PipeTransport, type CdpTransport, type CdpEvent } from "./chrome/pipe.ts";
 export { runReplay, resolveLocator, type ReplayOptions, type ReplayResult, type ReplayStep, type ReplayLocator, type ReplayExpect, type ReplayReason } from "./replay.ts";
+export { parseDates, parseAmounts, matchRows, matchPeriod, type CandidateDate, type RowMatch, type MatchRow, type Amount } from "./row-match.ts";
