@@ -58,7 +58,8 @@ function fakeDriver(landing: string) {
     state: async () => ({ url, title: "", loading: false }),
     back: async () => {},
     reload: async () => {},
-    evaluate: async () => ({ ok: true, text: "secret page text" }),
+    // The eval gate asks the page about password fields first (a boolean); every other script gets the page text.
+    evaluate: async (script: string) => (script.includes('getAttribute("type")') ? false : { ok: true, text: "secret page text" }),
     input: async () => true,
     screenshot: async () => ({ data: "", mimeType: "image/png" }),
   } as BrowserDriver;

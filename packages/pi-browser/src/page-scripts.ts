@@ -730,6 +730,24 @@ function pageFocusedIsPassword(): boolean {
 }
 
 /**
+ * Whether this document (and open shadow roots) holds a password field: type=password, a password autocomplete hint, or a field
+ * already marked secret. Run in an isolated world by the eval gate, so page code cannot patch what it uses. Values are never read.
+ */
+function pageHasPassword(): boolean {
+  const walk = (root: Document | ShadowRoot): boolean => {
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+        if ((el.getAttribute("type") ?? "").toLowerCase() === "password" || (el as HTMLInputElement).type === "password") return (__marks.add(el), true);
+        if (__marks.has(el) || /password/i.test(el.getAttribute("autocomplete") ?? "")) return true;
+      }
+      if (el.shadowRoot && walk(el.shadowRoot)) return true;
+    }
+    return false;
+  };
+  return walk(document);
+}
+
+/**
  * Draws secret fields (top document, same-origin iframes, open shadow roots) as dots for a screenshot the model receives:
  * `mask` tags them and adds a style, `unmask` removes both. Values are never read.
  */
@@ -1034,6 +1052,8 @@ export const scripts = {
   syntheticInput: (target: string, op: string, text?: string, submit?: boolean) => call(pageSyntheticInput, target, op, text, submit),
   syntheticKey: (key: string) => call(pageSyntheticKey, key),
   selectActive: () => call(pageSelectActive),
+  /** Whether the document holds a password field (see pageHasPassword). */
+  hasPassword: () => call(pageHasPassword),
   /** Screenshot mask for secret fields: "mask" adds it, "unmask" removes it. */
   secrets: (op: "mask" | "unmask") => call(pageSecrets, op),
   /**

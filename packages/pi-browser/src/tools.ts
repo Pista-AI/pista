@@ -8,6 +8,7 @@ import { registerChooseTool } from "./choose.ts";
 import { registerContextPruning } from "./context.ts";
 import { findLogin, guardDriver, type DomainRules } from "./domains.ts";
 import type { BrowserDriver, PageState } from "./driver.ts";
+import { gateFor, internalPageReason } from "./eval-gate.ts";
 import { fillEnabled, registerFillTool } from "./fill.ts";
 import { evaluateScrubbed, screenshotMasked } from "./secrets.ts";
 import { traceTools } from "./trace.ts";
@@ -64,7 +65,26 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     if (image) content.push({ type: "image", ...image });
     return { content, details: meta };
   };
-  const page = async (req: PageAction, signal?: AbortSignal) => {
+  /**
+   * Runs one tool under the eval gate (eval-gate.ts): refuses browser-internal pages first, and after the work drops the result
+   * when the page had to be replaced. `leaving` tools (navigate, back) may run on an internal page, as the way out of it.
+   */
+  // Drivers that can make an isolated world are probed directly; others through the guarded driver, so the domain rules still come first.
+  const gateTarget = async () => {
+    const raw = await rawDriver();
+    return raw.probe ? raw : await driver();
+  };
+  const gated = async <R>(run: (d: BrowserDriver) => Promise<R>, opts: { leaving?: boolean; before?: (gate: ReturnType<typeof gateFor>, raw: BrowserDriver) => Promise<void> } = {}) => {
+    const gate = gateFor(await rawDriver());
+    const target = await gateTarget();
+    if (!opts.leaving) await gate.beforeAction(target);
+    await opts.before?.(gate, target);
+    const out = await run(await driver());
+    const note = await gate.afterAction(target);
+    return note ? respond(await (await driver()).state(), { note }) : out;
+  };
+  const page = (req: PageAction, signal?: AbortSignal) => gated(() => pageRun(req, signal));
+  const pageRun = async (req: PageAction, signal?: AbortSignal) => {
     const d = await driver();
     // A yes that arrives after the run was stopped must not act, so the signal is checked again once the answer is in.
     // A stopped run is "aborted", not "denied": the action does nothing at all, where a no may still do the harmless part.
@@ -91,12 +111,18 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       promptSnippet: "browser_navigate: open a page in the browser",
       parameters: Type.Object({ url: Type.String({ description: "Full URL, e.g. https://www.google.com/search?q=..." }) }),
       execute: async (_id, { url }) => {
-        const d = await driver();
-        d.setActivity?.(`Opening ${url}`);
-        const opened = await d.navigate(url);
-        const declined = await declineCookieBanner(d);
-        if (!declined) return respond(opened);
-        return respond(await d.state().catch(() => opened), { note: `Declined the cookie banner (clicked "${declined}").` });
+        const blocked = internalPageReason(url);
+        if (blocked) throw new Error(`Not opened: ${blocked}`);
+        return gated(
+          async (d) => {
+            d.setActivity?.(`Opening ${url}`);
+            const opened = await d.navigate(url);
+            const declined = await declineCookieBanner(d);
+            if (!declined) return respond(opened);
+            return respond(await d.state().catch(() => opened), { note: `Declined the cookie banner (clicked "${declined}").` });
+          },
+          { leaving: true },
+        );
       },
     }),
   );
@@ -186,13 +212,16 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: back",
       description: "Go back to the previous page in the browser history. Takes no arguments.",
       parameters: Type.Object({}),
-      execute: async () => {
-        const d = await driver();
-        d.setActivity?.("Going back");
-        await d.back();
-        await new Promise((r) => setTimeout(r, 400));
-        return respond(await d.state());
-      },
+      execute: () =>
+        gated(
+          async (d) => {
+            d.setActivity?.("Going back");
+            await d.back();
+            await new Promise((r) => setTimeout(r, 400));
+            return respond(await d.state());
+          },
+          { leaving: true },
+        ),
     }),
   );
   if (options.downloadRoot) {
@@ -314,11 +343,12 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         execute: async () => {
           const d = await driver();
           if (!d.bringToFront) throw new Error("browser_show_user is not supported with this browser driver.");
+          const reloaded = await gateFor(await rawDriver()).beforeHandoff(await gateTarget());
           if ((await d.bringToFront()) === false) {
             const none = { ok: false, note: "No browser window is open yet. Open a page with browser_navigate first." };
             return { content: [{ type: "text" as const, text: JSON.stringify(none, null, 2) }], details: none };
           }
-          const r = { ok: true, note: "The browser is in front of the user. Tell them what to do, then wait for them to say they are done before you continue." };
+          const r = { ok: true, note: `${reloaded ? `${reloaded} ` : ""}The browser is in front of the user. Tell them what to do, then wait for them to say they are done before you continue.` };
           return { content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r };
         },
       }),
@@ -330,11 +360,11 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: screenshot",
       description: "Capture a screenshot of the page open in the browser. Takes no arguments.",
       parameters: Type.Object({}),
-      execute: async () => {
-        const d = await driver();
-        d.setActivity?.("Taking screenshot");
-        return respond(await d.state(), {}, await screenshotMasked(d));
-      },
+      execute: () =>
+        gated(async (d) => {
+          d.setActivity?.("Taking screenshot");
+          return respond(await d.state(), {}, await screenshotMasked(d));
+        }),
     }),
   );
   pi.registerTool(
@@ -343,12 +373,15 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
       label: "Browser: run script",
       description: "Run a JavaScript expression in the current page and return its value. Prefer browser_snapshot and browser_read; not for entering passwords or completing purchases.",
       parameters: Type.Object({ script: Type.String({ description: "JavaScript expression" }) }),
-      execute: async (_id, { script }) => {
-        const d = await driver();
-        d.setActivity?.("Running script");
-        const text = await evaluateScrubbed(d, script);
-        return respond(await d.state(), { text });
-      },
+      execute: (_id, { script }) =>
+        gated(
+          async (d) => {
+            d.setActivity?.("Running script");
+            const text = await evaluateScrubbed(d, script);
+            return respond(await d.state(), { text });
+          },
+          { before: (gate, raw) => gate.beforeEval(raw) },
+        ),
     }),
   );
 }

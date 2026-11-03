@@ -1,5 +1,6 @@
 import type { CdpEvent, CdpTransport } from "../chrome/pipe.ts";
-import type { BrowserDriver, NativeInput, PageState } from "../driver.ts";
+import type { BrowserDriver, DocumentProbe, NativeInput, PageState } from "../driver.ts";
+import { scripts } from "../page-scripts.ts";
 
 /** The existing DevTools-over-WebSocket connection to one page target, as a transport. */
 class WebSocketTransport implements CdpTransport {
@@ -58,6 +59,8 @@ export class CdpDriver implements BrowserDriver {
   private loading = false;
   private loadError: string | undefined;
   private loadWaiters: (() => void)[] = [];
+  /** One isolated world per frame, valid for one document (loaderId) of it. */
+  private guardWorlds = new Map<string, { loaderId: string; contextId: number }>();
 
   constructor(private endpoint = "http://127.0.0.1:9222") {}
 
@@ -101,6 +104,7 @@ export class CdpDriver implements BrowserDriver {
       if (event.sessionId === sessionId) this.onEvent(event);
     });
     this.conn = conn;
+    this.guardWorlds.clear();
     await this.sendRaw("Page.enable");
     const { frameTree } = await this.sendRaw("Page.getFrameTree");
     this.mainFrameId = frameTree.frame.id;
@@ -182,6 +186,46 @@ export class CdpDriver implements BrowserDriver {
     const { result, exceptionDetails } = await this.send("Runtime.evaluate", { expression: script, awaitPromise: true, returnByValue: true });
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
     return result.value;
+  }
+
+  /**
+   * Looks for password fields in every frame the page session can reach, in an isolated world: it has its own builtins, so
+   * code the page planted or patched cannot change the answer. Fails closed: the top frame not answering throws.
+   */
+  async probe(): Promise<DocumentProbe> {
+    const { frameTree } = await this.send("Page.getFrameTree");
+    const frames: { id: string; loaderId: string; url: string; urlFragment?: string }[] = [];
+    const collect = (t: { frame: (typeof frames)[number]; childFrames?: any[] }) => (frames.push(t.frame), t.childFrames?.forEach(collect));
+    collect(frameTree);
+    for (const id of this.guardWorlds.keys()) if (!frames.some((f) => f.id === id)) this.guardWorlds.delete(id);
+    let secret = false;
+    for (const frame of frames) {
+      try {
+        if (await this.frameHasPassword(frame)) secret = true;
+      } catch (error) {
+        if (frame.id === frameTree.frame.id) throw error; // frames in other processes cannot be reached by page script either
+      }
+    }
+    const top = frameTree.frame;
+    return { url: top.url + (top.urlFragment ?? ""), documentId: `${top.id}:${top.loaderId}`, secret };
+  }
+
+  private async frameHasPassword(frame: { id: string; loaderId: string }): Promise<boolean> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        let world = this.guardWorlds.get(frame.id);
+        if (world?.loaderId !== frame.loaderId) {
+          const { executionContextId } = await this.send("Page.createIsolatedWorld", { frameId: frame.id, worldName: "pista-guard" });
+          this.guardWorlds.set(frame.id, (world = { loaderId: frame.loaderId, contextId: executionContextId }));
+        }
+        const { result, exceptionDetails } = await this.send("Runtime.evaluate", { expression: scripts.hasPassword(), contextId: world.contextId, returnByValue: true });
+        if (exceptionDetails || typeof result?.value !== "boolean") throw new Error("The page could not be checked for password fields.");
+        return result.value;
+      } catch (error) {
+        this.guardWorlds.delete(frame.id); // the world went away with its document: make a new one once
+        if (attempt >= 1) throw error;
+      }
+    }
   }
 
   async input(event: NativeInput): Promise<boolean> {
