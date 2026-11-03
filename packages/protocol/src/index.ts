@@ -946,7 +946,7 @@ export type HostEvent =
   /** The full router model list, after any load, unload or download. */
   | { type: "llama.models"; models: LlamaModel[] }
   | ({ type: "llama.download" } & LlamaDownload)
-  | { type: "playbook.event"; threadId: string; kind: "learned" | "updated" | "followed" | "needs-attention"; site: string; step?: number };
+  | { type: "playbook.event"; threadId: string; kind: "learned" | "updated" | "followed" | "needs-attention"; site: string; /** 1-based step number; for "updated" the first changed step (a changed start URL counts as step 1). */ step?: number };
 
 export type ClientFrame = { kind: "req"; id: string; method: MethodName; params: unknown };
 export type HostFrame =

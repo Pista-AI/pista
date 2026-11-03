@@ -37,7 +37,7 @@ export function siteKey(url: string): string {
 const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;
 const OPAQUE_CHARS = /^[A-Za-z0-9_\-.~%+/=]{32,}$/;
 /** Long, mixed letters and digits, with a 20+ char run between separators: tokens, hashes, JWTs; not readable slugs. */
-function isOpaque(v: string): boolean {
+export function isOpaque(v: string): boolean {
   return OPAQUE_CHARS.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v) && v.split(/[-_.]/).some((p) => p.length >= 20);
 }
 
