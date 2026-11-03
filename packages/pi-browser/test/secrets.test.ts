@@ -100,8 +100,6 @@ test("a script that patches String, JSON and the marker before returning the sec
 });
 
 test("when the checking evaluation fails or reports nothing usable, nothing is returned", async () => {
-  const throwing = { evaluate: async () => { throw new Error("page gone SECRET"); } } as unknown as BrowserDriver;
-  await assert.rejects(evaluateScrubbed(throwing, "x"), (e: Error) => /not returned/.test(e.message) && !/SECRET/.test(e.message));
   for (const odd of [undefined, "raw", { ok: true }, { ok: true, text: 5 }]) await assert.rejects(evaluateScrubbed({ evaluate: async () => odd } as unknown as BrowserDriver, "x"), /not returned/);
 });
 

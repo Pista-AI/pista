@@ -12,12 +12,8 @@ const UNCHECKED = "The result was not returned: the page could not be checked fo
  * back, nothing is returned. A script that threw becomes an Error carrying the scrubbed text.
  */
 export async function evaluateScrubbed(d: BrowserDriver, script: string): Promise<string> {
-  let r: { ok?: unknown; text?: unknown } | undefined;
-  try {
-    r = (await d.evaluate(scripts.evalScrubbed(script))) as typeof r;
-  } catch {
-    throw new Error(UNCHECKED);
-  }
+  // Driver errors (policy blocks, timeouts, a closed browser) carry no page data and pass through; page errors never get here.
+  const r = (await d.evaluate(scripts.evalScrubbed(script))) as { ok?: unknown; text?: unknown } | undefined;
   if (typeof r?.text !== "string") throw new Error(UNCHECKED);
   const text = r.text.length > MAX_EVAL_CHARS ? `${r.text.slice(0, MAX_EVAL_CHARS)}${cutMarker(r.text.length - MAX_EVAL_CHARS, "chars", "return less data")}` : r.text;
   if (r.ok !== true) throw new Error(text);
