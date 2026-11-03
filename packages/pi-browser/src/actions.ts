@@ -1,7 +1,7 @@
 import { deltaEnabled, presentSnapshot } from "./delta.ts";
 import type { BrowserDriver } from "./driver.ts";
 import { describeEffect, effectFeedbackEnabled, type EffectOp } from "./effect.ts";
-import { cutMarker, formatSnapshot, scripts, type PageObservation, type PageSnapshot, type PreparedTarget } from "./page-scripts.ts";
+import { cutMarker, formatSnapshot, frameNotes, scripts, type FrameReport, type PageObservation, type PageSnapshot, type PreparedTarget } from "./page-scripts.ts";
 import { abortedNote, consequentialClick, consequentialPress, consequentialSubmit, normalizeKey, passwordNote, stopNote } from "./safety.ts";
 
 /** `target` is a ref from the latest snapshot (e.g. "e12") or, as a fallback, a CSS selector. */
@@ -114,7 +114,10 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
     case "read": {
       const text = String(await driver.evaluate("document.body ? document.body.innerText : ''"));
       const max = req.maxChars ?? 20000;
-      return { text: text.length > max ? `${text.slice(0, max)}\n${cutMarker(text.length - max, "chars", "call again with a larger maxChars")}` : text };
+      const body = text.length > max ? `${text.slice(0, max)}\n${cutMarker(text.length - max, "chars", "call again with a larger maxChars")}` : text;
+      const report = (await driver.evaluate(scripts.childFrames()).catch(() => null)) as FrameReport | null;
+      const fr = frameNotes(report ?? undefined, 0, text.trim().length);
+      return { text: fr.section.length ? [...(fr.hint ? [fr.hint] : []), body, "", ...fr.section].join("\n") : body };
     }
     case "click": {
       const before = await observe(req.target);
