@@ -922,20 +922,23 @@ function pageElementStillMatches(ref: string, role: string, name: string): boole
 }
 
 /**
- * The visible text of the row each ref sits in (capped at 500 chars; null when the ref is gone): the nearest tr, [role=row] or li,
- * else the nearest ancestor whose parent has two or more children that each hold an element with the same role and name.
+ * The visible text of the row each ref sits in (capped at 2000 chars, cut at a word end; null when the ref is gone or has no row): the nearest tr,
+ * [role=row] or li, else (only with two or more refs) the nearest ancestor whose parent has two or more children holding an element with the same role and name.
  * Only ever read by the replay row matcher, which keeps it out of every result.
  */
 function pageRowTexts(refs: string[]): (string | null)[] {
   const w = window as unknown as { __pistaRefs?: Map<string, WeakRef<Element>>; __pistaDescribe?: (el: Element) => { role: string; name: string } };
-  const text = (el: Element) => ((el as HTMLElement).innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+  const text = (el: Element) => {
+    const t = ((el as HTMLElement).innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+    return t.length > 2000 ? t.slice(0, 2000).replace(/\s*\S*$/, "") : t;
+  };
   return refs.map((ref) => {
     const el = w.__pistaRefs?.get(ref)?.deref();
     if (!el || !el.isConnected) return null;
     const row = el.closest("tr,[role=row],li");
     if (row) return text(row);
     const d = w.__pistaDescribe?.(el);
-    if (!d) return null;
+    if (!d || refs.length < 2) return null;
     const same = (parent: Element) => [...parent.children].filter((c) => [c, ...c.querySelectorAll("a,button,[role]")].some((x) => { const e = w.__pistaDescribe?.(x); return !!e && e.role === d.role && e.name === d.name; })).length;
     for (let a: Element | null = el; a && a.parentElement && a !== document.body; a = a.parentElement) if (same(a.parentElement) >= 2) return text(a);
     return null;

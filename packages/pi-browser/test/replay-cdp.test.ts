@@ -116,3 +116,8 @@ test("a date with no row hands off as row-not-found, and a missing invoice as ne
   const n = await runReplay({ startUrl: `${base}list-months.html`, steps: [rowStep()] }, options("invoices/r5.pdf"));
   assert.equal(!n.ok && n.reason, "needs-invoice");
 });
+
+test("a lone link whose row is not an explicit row element is never matched on its page text", { skip }, async () => {
+  const r = await runReplay({ startUrl: `${base}list-single.html`, steps: [rowStep()] }, { ...options("invoices/r6.pdf"), invoice: { date: "2026-09-03" } });
+  assert.equal(!r.ok && r.reason, "row-ambiguous");
+});

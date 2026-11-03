@@ -10,7 +10,7 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { matchRows } from "./row-match.ts";
+import { matchRows, parseDates } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 export interface ReplayLocator { role?: string; name?: string; text?: string; selector?: string; frameUrl?: string; row?: { match: ("date" | "amount")[] } }
@@ -102,8 +102,12 @@ const describeInvoice = (i: { date: string; amount?: number; currency?: string }
 
 /** Chooses one of `refs` by the text of its row. Exactly one match gives its ref; none or several is a handoff, never a guess. */
 export function pickRow(refs: readonly string[], rowTexts: readonly (string | null)[], invoice: NonNullable<ReplayOptions["invoice"]>, by: readonly ("date" | "amount")[]): Resolution {
-  const m = matchRows(refs.map((_, i) => ({ index: i, text: rowTexts[i] ?? "" })), { date: invoice.date, ...(by.includes("amount") && invoice.amount !== undefined ? { amount: invoice.amount, currency: invoice.currency } : {}) });
   const looking = describeInvoice(invoice);
+  const ambiguous = (why: string): Resolution => ({ reason: "row-ambiguous", detail: `${why}; looking for ${looking}.` });
+  if (rowTexts.length < refs.length || rowTexts.slice(0, refs.length).some((t) => t === null || t === undefined)) return ambiguous("A candidate's row could not be read");
+  if (new Set(rowTexts).size < refs.length) return ambiguous("Several candidates have identical rows");
+  if (rowTexts.some((t) => new Set(parseDates(t!).filter((d) => d.d).map((d) => d.raw)).size > 3)) return ambiguous("A row holds too many dates to be one invoice");
+  const m = matchRows(refs.map((_, i) => ({ index: i, text: rowTexts[i] ?? "" })), { date: invoice.date, ...(by.includes("amount") && invoice.amount !== undefined ? { amount: invoice.amount, currency: invoice.currency } : {}) });
   if (m.kind === "one") return { target: refs[m.index]! };
   if (m.kind === "none") return { reason: "row-not-found", detail: `No row of ${refs.length} matches ${looking}.` };
   return { reason: "row-ambiguous", detail: `${m.candidates.length} rows match ${looking}.` };
@@ -193,6 +197,7 @@ async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readon
   if (target.row) {
     if (!invoice) throw new Handoff("needs-invoice", "This step picks a row by the invoice, and the job gave no invoice date.");
     const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
+    if (snap.omitted > 0) return { reason: "row-ambiguous", detail: `The page lists more controls than replay reads, so the rows cannot be told apart; looking for ${describeInvoice(invoice)}.` };
     const refs = resolveAll(snap.elements, target, fallbacks);
     if (!refs.length) return { reason: "not-found", detail: `nothing on the page matches ${describeLocator(target)}` };
     const texts = (await d.evaluate(scripts.rowTexts(refs))) as (string | null)[];

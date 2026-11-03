@@ -212,3 +212,21 @@ test("a row step without an invoice hands off as needs-invoice", async () => {
   const r = await runReplay({ startUrl: "https://x.test/list", steps: [{ kind: "download", target: { role: "link", name: "Download", row: { match: ["date"] } } }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf" });
   assert.equal(!r.ok && r.reason, "needs-invoice");
 });
+
+test("pickRow hands off when a row is unreadable, identical to another, or holds many dates", () => {
+  const refs = ["e1", "e2"];
+  const inv = { date: "2026-10-04" };
+  assert.equal((pickRow(refs, ["2026-10-03", null], inv, ["date"]) as { reason: string }).reason, "row-ambiguous");
+  assert.equal((pickRow(refs, ["2026-10-03", "2026-10-03"], inv, ["date"]) as { reason: string }).reason, "row-ambiguous");
+  assert.equal((pickRow(refs, ["1 Jan 2026 1 Feb 2026 1 Mar 2026 2026-10-03", "x"], inv, ["date"]) as { reason: string }).reason, "row-ambiguous");
+  assert.deepEqual(pickRow(refs, ["2026-10-03", "2026-09-01"], inv, ["date"]), { target: "e1" });
+});
+
+test("a truncated snapshot hands off as row-ambiguous instead of choosing among a partial list", async () => {
+  const snap = { lines: [], count: 1, omitted: 40, scroll: { y: 0, height: 0, viewport: 0 }, elements: [{ ref: "e1", role: "link", name: "Download" }] };
+  const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate: async () => snap } as unknown as BrowserDriver;
+  const dir = mkdtempSync(join(tmpdir(), "row-"));
+  const r = await runReplay({ startUrl: "https://x.test/list", steps: [{ kind: "download", target: { role: "link", name: "Download", row: { match: ["date"] } } }] }, { driver, allowUrl: () => true, downloadRoot: dir, downloadPath: "a.pdf", invoice: { date: "2026-10-04" } });
+  assert.equal(!r.ok && r.reason, "row-ambiguous");
+  assert.ok(!r.ok && r.detail.includes("2026-10-04"));
+});
