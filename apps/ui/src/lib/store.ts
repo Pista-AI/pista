@@ -55,7 +55,9 @@ export interface ThreadView extends Omit<ThreadSnapshot, "summary" | "decisions"
 }
 
 export type PlaybookCardEvent = Omit<Extract<HostEvent, { type: "playbook.event" }>, "type">;
-export interface PlaybookCardItem { id: number; anchor: number; event: PlaybookCardEvent }
+export type FirstPassCardEvent = Omit<Extract<HostEvent, { type: "playbook.firstPass" }>, "type">;
+/** One in-chat card: a playbook event or the first-pass summary. */
+export interface PlaybookCardItem { id: number; anchor: number; event?: PlaybookCardEvent; firstPass?: FirstPassCardEvent }
 let playbookSeq = 0;
 const PLAYBOOK_EVENT_CAP = 20;
 const dropKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
@@ -755,6 +757,12 @@ function onHostEvent(event: HostEvent) {
       // No loaded view yet: the card trails the last turn instead of anchoring at 0.
       const anchor = get().views[event.threadId]?.messages.length ?? Number.MAX_SAFE_INTEGER;
       set((s) => ({ playbookEvents: { ...s.playbookEvents, [event.threadId]: [...(s.playbookEvents[event.threadId] ?? []), { id: ++playbookSeq, anchor, event: ev }].slice(-PLAYBOOK_EVENT_CAP) } }));
+      break;
+    }
+    case "playbook.firstPass": {
+      const { type: _t, ...ev } = event;
+      const anchor = get().views[event.threadId]?.messages.length ?? Number.MAX_SAFE_INTEGER;
+      set((s) => ({ playbookEvents: { ...s.playbookEvents, [event.threadId]: [...(s.playbookEvents[event.threadId] ?? []), { id: ++playbookSeq, anchor, firstPass: ev }].slice(-PLAYBOOK_EVENT_CAP) } }));
       break;
     }
     case "approval.request":
