@@ -6,7 +6,7 @@ import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fauxModels, makeManager, setupHome } from "./test-helpers.ts";
+import { fauxModels, makeManager, serialiseChromeEval, setupHome } from "./test-helpers.ts";
 
 const CDP = process.env.PI_BROWSER_CDP_URL ?? "http://127.0.0.1:9223";
 const skip: string | false = await fetch(`${CDP}/json/version`, { signal: AbortSignal.timeout(1000) }).then(() => false as const, () => `no Chrome answers at ${CDP}`);
@@ -96,6 +96,7 @@ hub.add({ readyState: 1, OPEN: 1, on: () => {}, send: (frame: string) => {
 const { piAi, faux, models, ref } = await fauxModels();
 const { manager, store, project } = await makeManager({ projectDir, models, hub });
 store.patchConfig({ defaultModel: ref });
+if (!skip) serialiseChromeEval();
 
 type Ctx = { messages: { role: string; content: string | { type: string; text?: string }[] }[] };
 const lastText = (ctx: Ctx) => {
