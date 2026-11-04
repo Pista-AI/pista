@@ -124,16 +124,23 @@ function finish(base: Omit<ParsedLine, "ok" | "reason">, nDates: number, nAmount
 const knownCurrency = (c?: string) => (c && KNOWN_CUR.has(c.toUpperCase()) ? c.toUpperCase() : undefined);
 
 /**
- * Sign convention of the paste: the majority sign is an expense, the other sign is a refund or credit and is not ok.
- * Expenses written as negatives are returned as positive amounts. A tie counts as positive expenses.
+ * Sign convention of the paste. A lone line is a purchase when positive. Otherwise a convention is inferred only from a clear
+ * majority (at least 3 lines, at least 2/3 one sign): the majority sign is an expense (returned positive), the other sign is a
+ * refund or credit. With fewer lines, a tie or a weak mix nothing is inferred and every line is "unclear sign".
  */
 function applySigns(lines: ParsedLine[]): void {
   const ok = lines.filter((l) => l.ok);
-  const neg = ok.filter((l) => l.amount! < 0).length;
-  const expensesNegative = neg > ok.length - neg;
+  const neg = ok.filter((l) => l.amount! < 0).length, pos = ok.length - neg;
+  const reject = (l: ParsedLine, reason: string) => Object.assign(l, { ok: false, reason });
+  if (ok.length === 1) {
+    if (neg) reject(ok[0]!, "refund or credit (negative amount)");
+    return;
+  }
+  const expensesNegative = ok.length >= 3 && neg * 3 >= ok.length * 2 ? true : ok.length >= 3 && pos * 3 >= ok.length * 2 ? false : undefined;
   for (const l of ok) {
-    if (l.amount! < 0 === expensesNegative) l.amount = Math.abs(l.amount!);
-    else Object.assign(l, { ok: false, reason: "refund or credit (amount sign differs from the other lines)" });
+    if (expensesNegative === undefined) reject(l, "unclear sign");
+    else if (l.amount! < 0 === expensesNegative) l.amount = Math.abs(l.amount!);
+    else reject(l, "refund or credit (amount sign differs from the other lines)");
   }
 }
 

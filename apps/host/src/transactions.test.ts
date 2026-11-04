@@ -9,9 +9,8 @@ describe("parseTransactions", () => {
     const { lines } = parseTransactions("Account statement\n2026-10-03\tTELNYX LLC\t-25.00 USD\n2026-10-04\tACME AB\t12.50 EUR\n");
     assert.equal(lines.length, 3);
     assert.deepEqual([lines[0]!.ok, lines[0]!.reason], [false, "no date or amount"]);
-    assert.equal(lines[1]!.ok, false);
-    assert.match(lines[1]!.reason!, /refund/);
-    assert.deepEqual({ ...lines[2]! }, { lineNo: 3, raw: "2026-10-04\tACME AB\t12.50 EUR", date: "2026-10-04", amount: 12.5, currency: "EUR", merchant: "ACME AB", ok: true });
+    // two lines of mixed sign: no convention can be inferred
+    assert.deepEqual([lines[1]!.reason, lines[2]!.reason], ["unclear sign", "unclear sign"]);
   });
 
   it("uses the columns of a semicolon CSV with a Swedish header", () => {
@@ -60,6 +59,19 @@ describe("parseTransactions", () => {
     assert.deepEqual([a!.ok, b!.ok, refund!.ok], [true, true, false]);
     assert.equal(refund!.amount, -25);
     assert.match(refund!.reason!, /refund/);
+  });
+
+  it("accepts a lone positive line and rejects a lone negative one", () => {
+    assert.equal(one("2026-10-03 ACME 25.00 USD").ok, true);
+    assert.deepEqual([one("2026-10-03 ACME -25.00 USD").ok, one("2026-10-03 ACME -25.00 USD").reason], [false, "refund or credit (negative amount)"]);
+  });
+
+  it("infers nothing from two lines or a tie", () => {
+    for (const t of ["2026-10-03 A 5.00 USD\n2026-10-04 B 6.00 USD", "2026-10-03 A 5.00 USD\n2026-10-04 B -6.00 USD"]) {
+      assert.deepEqual(parseTransactions(t).lines.map((l) => l.reason), ["unclear sign", "unclear sign"]);
+    }
+    const four = parseTransactions("2026-10-03 A 5.00 USD\n2026-10-04 B 6.00 USD\n2026-10-05 C -7.00 USD\n2026-10-06 D -8.00 USD");
+    assert.ok(four.lines.every((l) => l.reason === "unclear sign"));
   });
 
   it("treats the majority sign as expenses and returns them positive", () => {
