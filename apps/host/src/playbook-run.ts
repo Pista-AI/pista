@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
 import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
+import type { BroadContext } from "./merchants.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
@@ -241,6 +242,8 @@ export interface PlaybookRunRequest {
   invoice: unknown;
   /** The transaction's merchant text when the run was routed by a keyword. Only compared against the site's keywords, never stored. */
   merchant?: string;
+  /** What else is known about the keyword (see `broadReason`), for the proof a hit gives it. */
+  broad?: BroadContext;
   path?: string;
   overwrite?: boolean;
 }
@@ -304,8 +307,8 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
   for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
   // A replay that passed the row check proves the keyword; a missing or unverified row counts against it.
   if (req.merchant) {
-    if (r.ok) noteMerchantOutcome(pb.site, req.merchant, "hit");
-    else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss");
+    if (r.ok) noteMerchantOutcome(pb.site, req.merchant, "hit", req.broad);
+    else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", req.broad);
   }
   if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
