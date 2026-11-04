@@ -6,7 +6,7 @@ import type { Playbook } from "@pista/protocol";
 import { setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("first-pass", { cleanup: "exit" });
-const { batchGate, routeLines, runFirstPass, summarise, writeManifestRows } = await import("./first-pass.ts");
+const { abortFirstPass, batchGate, endFirstPass, routeLines, runFirstPass, startFirstPass, summarise, writeManifestRows } = await import("./first-pass.ts");
 const { hostConsent } = await import("./playbook-run.ts");
 const { parseTransactions } = await import("./transactions.ts");
 const { getPlaybook, listPlaybooks, savePlaybook, validatePlaybook, noteMerchantOutcome } = await import("./playbooks.ts");
@@ -22,7 +22,7 @@ const broadSite = make("gamma.test", { merchantsPending: ["GAMMA CLOUD"], mercha
 const all = () => listPlaybooks().map((m) => getPlaybook(m.site)!);
 
 const PASTE = ["2026-01-15 ACME ROBOTICS LLC*1234 -49.00 USD", "2026-01-16 SOMEBODY ELSE -12.00 USD", "2026-01-17 ACME ROBOTICS -20.00 USD", "2026-01-18 BETA WORKS -9.00 USD", "2026-01-19 GAMMA CLOUD -5.00 USD"].join("\n");
-const downloaded = (site: string, i: number) => ({ status: "downloaded" as const, site, path: `invoices/2026-01/${site}-${i}.pdf`, bytes: 10, steps: 1 });
+const downloaded = (site: string, i: number, amountVerified = true) => ({ status: "downloaded" as const, site, path: `invoices/2026-01/${site}-${i}.pdf`, bytes: 10, steps: 1, amountVerified });
 
 test("routing: a confirmed keyword and a plain pending keyword route, a pending keyword with a reason and unknown lines do not", () => {
   const { routed, rest } = routeLines(parseTransactions(PASTE).lines, all());
@@ -88,37 +88,80 @@ test("a thrown run and a stop send the line back to the model", async () => {
   assert.deepEqual(out!.rest.filter((r) => [1, 4].includes(r.line.lineNo)).map((r) => r.line.lineNo).sort(), [1, 4]);
 });
 
-test("trial: a successful run promotes a pending keyword without a reason; a failed one sends the line to the model", async () => {
-  const hit = await runFirstPass("2026-01-18 BETA WORKS 9.00 USD", {
-    playbooks: all, allow: async () => true,
-    run: async (req) => (noteMerchantOutcome(req.site, req.merchant!, "hit", req.broad), downloaded(req.site, 1)),
-  });
-  assert.equal(hit!.fetched.length, 1);
-  assert.deepEqual(getPlaybook("beta.test")!.merchants, ["BETA WORKS"]);
-  assert.equal(getPlaybook("beta.test")!.merchantsPending, undefined);
-  make("delta.test", { merchantsPending: ["DELTA WORKS"] });
-  const miss = await runFirstPass("2026-01-18 DELTA WORKS 9.00 USD", { playbooks: all, allow: async () => true, run: async (r) => ({ status: "handoff", site: r.site, reason: "row-not-found", text: "" }) });
-  assert.equal(getPlaybook("delta.test")!.merchants, undefined);
-  assert.equal(miss!.handedOff.length, 1);
+const ZETA = ["2026-03-01 ZETA WORKS -9.00 USD", "2026-03-02 ZETA WORKS -10.00 USD", "2026-03-03 PLAIN SHOP -5.00 USD"].join("\n");
+/** Stands in for runPlaybookForInvoice: records the keyword outcome like it does, deferProof included. */
+const asRun = (ok: (n: number) => boolean, amountVerified = true) => {
+  let n = 0;
+  const states: (string[] | undefined)[] = [];
+  const run = async (req: { site: string; merchant?: string; deferProof?: boolean }) => {
+    const hit = ok(n++);
+    if (hit) noteMerchantOutcome(req.site, req.merchant!, "hit", { amountVerified: amountVerified && !req.deferProof });
+    states.push(getPlaybook(req.site)!.merchants);
+    return hit ? downloaded(req.site, n, amountVerified) : { status: "handoff" as const, site: req.site, reason: "row-not-found" as const, text: "" };
+  };
+  return { run, states };
+};
+
+test("trial: a pending keyword is promoted only at the end, when every trial line of it verified and one compared the amount", async () => {
+  make("zeta.test", { merchantsPending: ["ZETA WORKS"] });
+  const { run, states } = asRun(() => true);
+  await runFirstPass(ZETA, { playbooks: all, allow: async () => true, run });
+  assert.deepEqual(states, [undefined, undefined], "not promoted while the batch runs");
+  assert.deepEqual(getPlaybook("zeta.test")!.merchants, ["ZETA WORKS"]);
 });
 
-test("unverifiedElsewhere: after a row miss, the same keyword's later lines are passed on and do not promote", async () => {
-  make("eps.test", { merchantsPending: ["EPSILON LABS"] });
+test("trial: one failed line, or no amount compared, leaves the keyword pending", async () => {
+  make("eta.test", { merchantsPending: ["ETA WORKS"] });
+  const paste = ZETA.replaceAll("ZETA", "ETA");
+  await runFirstPass(paste, { playbooks: all, allow: async () => true, run: asRun((n) => n === 0).run });
+  assert.equal(getPlaybook("eta.test")!.merchants, undefined);
+  await runFirstPass(paste, { playbooks: all, allow: async () => true, run: asRun(() => true, false).run });
+  assert.equal(getPlaybook("eta.test")!.merchants, undefined, "date only");
+  assert.deepEqual(getPlaybook("eta.test")!.merchantsPending, ["ETA WORKS"]);
+});
+
+test("a confirmed keyword's lines are not deferred", async () => {
   const seen: (boolean | undefined)[] = [];
-  const paste = "2026-02-01 EPSILON LABS 10.00 USD\n2026-02-02 EPSILON LABS 11.00 USD\n2026-02-03 PLAIN SHOP 5.00 USD";
-  let n = 0;
-  await runFirstPass(paste, {
+  await runFirstPass("2026-01-15 ACME ROBOTICS -49.00 USD\n2026-01-16 PLAIN SHOP -3.00 USD\n2026-01-17 PLAIN SHOP -2.00 USD", { playbooks: all, allow: async () => true, run: async (r) => (seen.push(r.deferProof), downloaded(r.site, 1)) });
+  assert.deepEqual(seen, [undefined]);
+});
+
+test("Stop: the signal reaches the run, later lines go back to the model, and nothing is promoted", async () => {
+  make("theta.test", { merchantsPending: ["THETA WORKS"] });
+  const ac = new AbortController();
+  const signals: (AbortSignal | undefined)[] = [];
+  const out = await runFirstPass(ZETA.replaceAll("ZETA", "THETA"), {
     playbooks: all, allow: async () => true,
-    run: async (req) => {
-      seen.push(req.broad?.unverifiedElsewhere);
-      if (n++ === 0) return { status: "handoff", site: req.site, reason: "row-not-verified", text: "" };
-      noteMerchantOutcome(req.site, req.merchant!, "hit", req.broad);
-      return downloaded(req.site, 2);
-    },
-  });
-  assert.deepEqual(seen, [undefined, true]);
-  assert.equal(getPlaybook("eps.test")!.merchants, undefined, "not promoted");
-  assert.equal(getPlaybook("eps.test")!.merchantsPendingWhy?.["EPSILON LABS"], "unverified-elsewhere");
+    run: async (req, signal) => (signals.push(signal), ac.abort(), downloaded(req.site, 1)),
+  }, ac.signal);
+  assert.deepEqual(signals, [ac.signal], "one run, with the signal; the next is not started");
+  assert.deepEqual(out!.rest.filter((r) => r.why === "stopped").map((r) => r.line.lineNo), [2]);
+  assert.equal(getPlaybook("theta.test")!.merchants, undefined);
+});
+
+test("Stop: abortFirstPass cancels the running first pass of that thread only", () => {
+  const a = startFirstPass("t1"), b = startFirstPass("t2");
+  abortFirstPass("t1");
+  assert.equal(a.signal.aborted, true);
+  assert.equal(b.signal.aborted, false);
+  endFirstPass("t1", a);
+  endFirstPass("t2", b);
+  abortFirstPass("t2");
+  assert.equal(b.signal.aborted, false, "finished passes are forgotten");
+});
+
+test("sign-ins: the card names the sites that ask again; full access asks nothing up front; a user who turned confirmSignIns off is not told", async () => {
+  make("iota.test", { merchants: ["IOTA CLOUD"], steps: [{ kind: "signIn", origin: "https://iota.test" }, { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" }] as Playbook["steps"] });
+  const { routed } = routeLines(parseTransactions("2026-03-01 IOTA CLOUD -9.00 USD\n2026-03-02 ACME ROBOTICS -4.00 USD\n2026-03-03 PLAIN SHOP -1.00 USD").lines, all());
+  const consent = (approvalMode: "ask-writes" | "full-access", confirmSignIns?: boolean) => hostConsent({ store: { config: { approvalMode, confirmSignIns }, toolRules: undefined }, approve: async () => true });
+  const asked: string[] = [];
+  const ask = async (text: string) => (asked.push(text), true);
+  assert.equal(await batchGate(consent("ask-writes"), routed, all(), ask), true);
+  assert.match(asked[0]!, /asked again before signing in to iota\.test/);
+  assert.equal(await batchGate(consent("full-access"), routed, all(), ask), true);
+  assert.equal(asked.length, 1);
+  await batchGate(consent("ask-writes", false), routed, all(), ask);
+  assert.doesNotMatch(asked[1]!, /signing in/);
 });
 
 test("the batch gate: asks once in ask mode, refuses read-only, policy and pause, lets full access through", async () => {

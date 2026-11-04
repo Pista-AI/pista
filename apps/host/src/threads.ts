@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { abortFirstPass } from "./first-pass.ts";
 import { join } from "node:path";
 import {
   type AgentSession,
@@ -718,6 +719,7 @@ export class ThreadManager {
     const live = this.live.get(threadId);
     // Also covers a stop during the judge call or prepareModel, when nothing is streaming.
     this.goals.pauseIfRunning(threadId, "Stopped by the user");
+    abortFirstPass(threadId); // an invoice first pass runs before the agent streams, so the session has nothing to abort yet
     await live?.session.abort();
   }
 

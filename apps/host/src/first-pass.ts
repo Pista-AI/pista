@@ -2,8 +2,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Playbook } from "@pista/protocol";
-import { keywordMatches, type BroadContext } from "./merchants.ts";
+import { keywordMatches } from "./merchants.ts";
 import { mergeManifest } from "./manifest.ts";
+import { confirmByProof } from "./playbooks.ts";
 import { playbookConsent, type PlaybookRunConsent, type PlaybookRunRequest, type PlaybookRunResult } from "./playbook-run.ts";
 import { matchVendor, parseTransactions, type ParsedLine } from "./transactions.ts";
 
@@ -37,54 +38,73 @@ export function routeLines(lines: ParsedLine[], playbooks: Pb[]): { routed: Rout
 }
 
 /**
- * One decision for the batch, from the same rules a single playbook_run follows: policy, a pause and read-only refuse; full access runs; ask mode asks once
- * (a yes covers every run in the batch, sign-in ones included, since the card names the sites). `ask` shows the card and resolves to the user's answer.
+ * One decision for the batch, from the same rules a single playbook_run follows: policy, a pause and read-only refuse; full access runs; ask mode asks once.
+ * A site whose playbook signs in is not covered by that yes while `confirmSignIns` is on: its run asks again (see `approve` in extensions.ts), and the card names it.
+ * `ask` shows the card and resolves to the user's answer.
  */
 export async function batchGate(consent: PlaybookRunConsent, routed: Routed[], playbooks: Pb[], ask: (text: string, sites: string[]) => Promise<boolean>): Promise<boolean> {
   if (!routed.length || consent.paused?.() || consent.policy()) return false;
   const sites = [...new Set(routed.map((r) => r.site))];
-  const decisions = sites.map((s) => playbookConsent(consent.approvalMode(), consent.confirmSignIns(), (playbooks.find((p) => p.site === s)?.steps ?? []).some((st) => st.kind === "signIn")).decision);
-  if (decisions.includes("refuse")) return false;
-  if (decisions.every((d) => d === "allow")) return true;
-  const n = routed.length;
-  return ask(`Fetch ${n} invoice${n === 1 ? "" : "s"} from known vendors?`, sites);
+  const signIn = (s: string) => (playbooks.find((p) => p.site === s)?.steps ?? []).some((st) => st.kind === "signIn");
+  if (sites.some((s) => playbookConsent(consent.approvalMode(), consent.confirmSignIns(), signIn(s)).decision === "refuse")) return false;
+  // Full access: only forced sign-in asks are left, and they are asked per site.
+  if (consent.approvalMode() === "full-access") return true;
+  const n = routed.length, signIns = consent.confirmSignIns() === false ? [] : sites.filter(signIn);
+  return ask(`Fetch ${n} invoice${n === 1 ? "" : "s"} from known vendors?${signIns.length ? ` You will be asked again before signing in to ${signIns.join(", ")}.` : ""}`, sites);
 }
 
-const keywordsOf = (p: Pb | undefined, merchant: string) => [...(p?.merchants ?? []), ...(p?.merchantsPending ?? [])].filter((k) => keywordMatches(k, merchant));
+/** Stop for a running first pass, by thread (the Stop button calls `abortFirstPass`). */
+const running = new Map<string, AbortController>();
+export function startFirstPass(threadId: string, outer?: AbortSignal): AbortController {
+  const c = new AbortController();
+  running.set(threadId, c);
+  outer?.addEventListener("abort", () => c.abort(), { once: true });
+  return c;
+}
+export function endFirstPass(threadId: string, c: AbortController): void {
+  if (running.get(threadId) === c) running.delete(threadId);
+}
+export function abortFirstPass(threadId: string): void {
+  running.get(threadId)?.abort();
+}
+
+const pendingKeywords = (p: Pb | undefined, merchant: string) => (p?.merchantsPending ?? []).filter((k) => !p?.merchantsPendingWhy?.[k] && keywordMatches(k, merchant));
 
 /**
  * Parses the paste and runs the routed lines one after another. Undefined when nothing is routed or the batch is not allowed: the model then gets the paste as it is.
- * A line without a verified download goes back to the model. `run` records keyword outcomes itself (noteMerchantOutcome).
+ * A line without a verified download goes back to the model. `run` records keyword outcomes itself (noteMerchantOutcome), except that trial lines
+ * run with promotion deferred: a pending keyword is confirmed at the end, only when every trial line of it on that site verified and one compared the amount.
+ * A stop (`signal`) ends the loop between runs and is passed into each run.
  */
 export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: AbortSignal): Promise<FirstPassOutcome | undefined> {
   const playbooks = deps.playbooks();
   const { routed, rest } = routeLines(parseTransactions(text).lines, playbooks);
   if (!routed.length || !(await deps.allow(routed))) return undefined;
   const out: FirstPassOutcome = { fetched: [], handedOff: [], rest };
-  const missed = new Set<string>();
   const rows: ManifestRow[] = [];
-  for (const { line, site } of routed) {
+  const trials = new Map<string, { site: string; merchant: string; all: boolean; amount: boolean }>();
+  for (const { line, site, trial } of routed) {
     if (signal?.aborted) { out.rest.push({ line, why: "stopped" }); continue; }
     const pb = playbooks.find((p) => p.site === site);
     const merchant = line.merchant!;
-    // A keyword whose replay on an earlier line ended without the invoice's row is not proof for the next line.
-    const unverifiedElsewhere = keywordsOf(pb, merchant).some((k) => missed.has(k));
     let r: PlaybookRunResult;
     try {
-      r = await deps.run({ site, merchant, invoice: { date: line.date, amount: line.amount, currency: line.currency }, ...(unverifiedElsewhere ? { broad: { unverifiedElsewhere } } : {}) }, signal);
+      r = await deps.run({ site, merchant, invoice: { date: line.date, amount: line.amount, currency: line.currency }, ...(trial ? { deferProof: true } : {}) }, signal);
     } catch (error) {
-      out.rest.push({ line, why: `${site}: ${error instanceof Error ? error.message.slice(0, 80) : "failed"}` });
-      continue;
+      r = { status: "error", text: error instanceof Error ? error.message.slice(0, 80) : "failed" };
+    }
+    if (trial) for (const k of pendingKeywords(pb, merchant)) {
+      const t = trials.get(`${site}|${k}`) ?? { site, merchant, all: true, amount: false };
+      trials.set(`${site}|${k}`, { ...t, all: t.all && r.status === "downloaded", amount: t.amount || (r.status === "downloaded" && r.amountVerified) });
     }
     if (r.status === "downloaded") {
       out.fetched.push({ line, file: r.path });
       rows.push({ vendor: site, date: line.date!, amount: Math.abs(line.amount!), currency: line.currency ?? "", status: "found", file: r.path, note: "fetched by a saved playbook" });
     } else if (r.status === "exists") out.fetched.push({ line, file: "already saved, not fetched again" });
-    else if (r.status === "handoff") {
-      out.handedOff.push({ line, site, why: r.reason });
-      if (r.reason === "row-not-found" || r.reason === "row-not-verified") for (const k of keywordsOf(pb, merchant)) missed.add(k);
-    } else out.rest.push({ line, why: `${site}: ${r.status}` });
+    else if (r.status === "handoff") out.handedOff.push({ line, site, why: r.reason });
+    else out.rest.push({ line, why: `${site}: ${r.status}` });
   }
+  if (!signal?.aborted) for (const t of trials.values()) if (t.all && t.amount) confirmByProof(t.site, t.merchant);
   if (rows.length) try { deps.writeManifest?.(rows); } catch { /* the model's own manifest write still happens */ }
   return out;
 }

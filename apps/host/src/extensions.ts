@@ -10,7 +10,7 @@ import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
 import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
-import { batchGate, runFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
+import { batchGate, endFirstPass, runFirstPass, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
 export { hostConsent } from "./playbook-run.ts";
 
@@ -187,26 +187,44 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         // Before the model's first turn: a paste that parses as transactions is routed to saved playbooks by the host; anything else passes through untouched.
         pi.on("input", async (event, ctx) => {
           if (event.streamingBehavior || event.source === "extension") return { action: "continue" as const };
-          let declined = false;
-          // One ask covers the batch (batchGate); a run only checks that the user did not decline it.
-          const consent = hostConsent({ store: firstPass.store, approve: async () => !declined });
-          const known = () => listPlaybooks().flatMap((m) => getPlaybook(m.site) ?? []);
-          const ask = async (action: string, sites: string[]) => {
-            try {
-              const answer = await askWithCard<{ allow: boolean }>(hub, (id) => ({ type: "approval.request", approvalId: id, threadId: ref.threadId, toolName: "playbook_run", args: { sites }, reason: "follows saved playbooks in the browser (clicks and downloads)", action }), 10 * 60_000, ctx?.signal);
-              declined = answer.allow !== true;
-            } catch {
-              declined = true; // no window connected, timeout or stop: the model gets the paste instead
+          const stop = startFirstPass(ref.threadId, ctx?.signal);
+          try {
+            let declined = false;
+            const signInAnswers = new Map<string, boolean>();
+            const ask = async (action: string, sites: string[]) => {
+              try {
+                const answer = await askWithCard<{ allow: boolean }>(hub, (id) => ({ type: "approval.request", approvalId: id, threadId: ref.threadId, toolName: "playbook_run", args: { sites }, reason: "follows saved playbooks in the browser (clicks and downloads)", action }), 10 * 60_000, stop.signal);
+                return answer.allow === true;
+              } catch {
+                return false; // no window connected, timeout or stop
+              }
+            };
+            // One ask covers the batch (batchGate). A run that signs in asks again for its own site, as a single playbook_run would.
+            const consent = hostConsent({
+              store: firstPass.store,
+              approve: async ({ site, hasSignIn }) => {
+                if (declined) return false;
+                if (!hasSignIn || firstPass.store.config.confirmSignIns === false) return true;
+                if (!signInAnswers.has(site)) signInAnswers.set(site, await ask(`Sign in to ${site} and fetch its invoice?`, [site]));
+                return signInAnswers.get(site)!;
+              },
+            });
+            const known = () => listPlaybooks().flatMap((m) => getPlaybook(m.site) ?? []);
+            const out = await runFirstPass(event.text, {
+              playbooks: known,
+              allow: async (routed) => !(declined = !(await batchGate(consent, routed, known(), ask))),
+              run: (req, signal) => runPlaybookForInvoice(runDeps, consent, req, signal),
+              writeManifest: (rows) => ref.cwd && writeManifestRows(ref.cwd, rows),
+            }, stop.signal);
+            if (stop.signal.aborted) {
+              // The user pressed Stop: the model does not start. Files already fetched stay in the manifest.
+              hub.emit({ type: "thread.event", threadId: ref.threadId, event: { type: "agent_settled" } });
+              return { action: "handled" as const };
             }
-            return !declined;
-          };
-          const out = await runFirstPass(event.text, {
-            playbooks: known,
-            allow: (routed) => batchGate(consent, routed, known(), ask),
-            run: (req, signal) => runPlaybookForInvoice(runDeps, consent, req, signal),
-            writeManifest: (rows) => ref.cwd && writeManifestRows(ref.cwd, rows),
-          }, ctx?.signal);
-          return out ? { action: "transform" as const, text: summarise(out), images: event.images } : { action: "continue" as const };
+            return out ? { action: "transform" as const, text: summarise(out), images: event.images } : { action: "continue" as const };
+          } finally {
+            endFirstPass(ref.threadId, stop);
+          }
         });
       }
       if (opts.guardPlaybooks) {
