@@ -367,6 +367,57 @@ export function dismissMerchant(site: string, merchant: unknown): void {
   if (!pb) throw new Error("no playbook for this site");
 }
 
+/** Takes one confirmed keyword away (the user undoing a learned one). Returns false when it was not confirmed. Throws when the site has no playbook. */
+export function removeMerchant(site: string, merchant: unknown): boolean {
+  // stored keywords may hold `*`, so clean the same way the editor does
+  const key = cleanMerchant(merchant, true);
+  let found = false;
+  const pb = mutate(site, (p) => {
+    const have = p.merchants ?? [];
+    found = key !== undefined && have.includes(key);
+    if (!found) return;
+    const rest = have.filter((m) => m !== key);
+    if (rest.length) p.merchants = rest;
+    else delete p.merchants;
+    pruneMerchantNotes(p);
+  });
+  if (!pb) throw new Error("no playbook for this site");
+  return found;
+}
+
+class Refused extends Error {
+  constructor(readonly reason: MerchantRefusal) {
+    super(reason);
+  }
+}
+
+/** Moves one pending keyword to the confirmed ones, all or nothing. Refuses when it is no longer pending (a stale card), fails the keyword checks, or the list is full. Throws when the site has no playbook. */
+export function confirmMerchant(site: string, merchant: unknown): { ok: true; refused?: MerchantRefusal } {
+  try {
+    const pb = mutate(site, (p) => {
+      const pending = p.merchantsPending ?? [];
+      const key = pending.find((k) => k === merchant || k === cleanMerchant(merchant));
+      if (key === undefined) throw new Refused("not-pending");
+      const r = checkMerchant(key, true);
+      if ("refused" in r) throw new Refused(r.refused);
+      const have = p.merchants ?? [];
+      if (!have.includes(r.keyword) && have.length >= MAX_MERCHANTS) throw new Refused("too-many");
+      p.merchants = [...new Set([...have, r.keyword])];
+      const rest = pending.filter((k) => k !== key);
+      if (rest.length) p.merchantsPending = rest;
+      else delete p.merchantsPending;
+      delete p.merchantMisses?.[r.keyword];
+      delete p.merchantLastMiss?.[r.keyword];
+      pruneMerchantNotes(p);
+    });
+    if (!pb) throw new Error("no playbook for this site");
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof Refused) return { ok: true, refused: e.reason };
+    throw e;
+  }
+}
+
 /** Consecutive routed misses after which a confirmed keyword is dropped. */
 export const KEYWORD_MISS_LIMIT = 2;
 
@@ -467,17 +518,18 @@ export function recordKeywordMiss(site: string, keyword: string, txKey?: string)
 
 /**
  * A routed run's outcome for a transaction's merchant text. A hit resets the matching confirmed keywords and, only when `amountVerified`
- * (the row check compared the amount as well as the date), confirms matching pending ones. A miss counts once, against the single most
+ * (the row check compared the amount as well as the date), confirms matching pending ones (returned). A miss counts once, against the single most
  * specific matching confirmed keyword; `txKey` (from `transactionKey`) keeps a retry of the same transaction from counting twice.
  */
-export function noteMerchantOutcome(site: string, merchantText: string, outcome: "hit" | "miss", opts: BroadContext & { amountVerified?: boolean; txKey?: string } = {}): void {
+export function noteMerchantOutcome(site: string, merchantText: string, outcome: "hit" | "miss", opts: BroadContext & { amountVerified?: boolean; txKey?: string } = {}): string[] {
   const { amountVerified, txKey, ...ctx } = opts;
   const confirmed = getPlaybook(site)?.merchants ?? [];
   if (outcome === "miss") {
     const k = mostSpecificKeyword(confirmed, merchantText);
     if (k) recordKeywordMiss(site, k, txKey);
-    return;
+    return [];
   }
-  if (amountVerified) confirmByProof(site, merchantText, ctx);
+  const promoted = amountVerified ? confirmByProof(site, merchantText, ctx) : [];
   for (const k of confirmed) if (keywordMatches(k, merchantText)) recordKeywordHit(site, k);
+  return promoted;
 }

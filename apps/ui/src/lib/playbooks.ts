@@ -24,6 +24,7 @@ const REFUSALS: Record<MerchantRefusal, string> = {
   "too-many-wildcards": "has too many *. Use at most two.",
   "too-general": "is too general. Add a word that names the vendor.",
   "too-many": "does not fit. Remove a keyword first.",
+  "not-pending": "is no longer waiting for a decision.",
 };
 
 /** The host's reason a typed keyword was refused, in plain words. */
