@@ -171,6 +171,10 @@ describe("shortcut", () => {
     for (const first of [{ kind: "signIn", origin: "https://example.com" }, { kind: "click", target: { role: "menuitem", name: "Acme" } }, { kind: "click", target: { role: "button", name: "Switch workspace" } }, { kind: "click", target: { role: "link", text: "Company profile" } }, { kind: "click", target: { role: "button", name: "Go" }, fallbacks: [{ role: "radio", name: "A" }] }]) {
       assert.equal(pb(ok, [first, { kind: "click", target: { role: "tab", name: "Invoices" }, ...exp }, steps[3]]).shortcut, undefined, JSON.stringify(first));
     }
+    const menu = [{ kind: "click", target: { role: "button", name: "Account menu" } }, { kind: "click", target: { role: "tab", name: "Invoices" }, ...exp }, steps[3]];
+    assert.deepEqual(pb(ok, menu).shortcut, ok, "a button that only opens a menu is fine");
+    assert.equal(pb(ok, [{ kind: "click", target: { role: "menuitem", name: "Acme Corp" } }, menu[1], steps[3]]).shortcut, undefined);
+    assert.equal(pb(ok, [{ kind: "click", target: { role: "button", name: "Switch account" } }, menu[1], steps[3]]).shortcut, undefined);
     assert.deepEqual(pb(ok, [{ kind: "click", target: { role: "button", name: "Menu" } }, { kind: "click", target: { role: "tab", name: "Invoices" }, ...exp }, steps[3]]).shortcut, ok);
   });
   it("a candidate is validated the same way, and a shortcut wins over it", () => {

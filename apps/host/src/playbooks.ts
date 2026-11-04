@@ -131,11 +131,17 @@ function step(v: unknown, site: string): PlaybookStep | null {
 /** A step whose target depends on the invoice, or the download itself: nothing at or after it may be skipped. */
 const byInvoice = (s: PlaybookStep): boolean => s.kind === "download" || ("target" in s && !!(s.target?.row || s.target?.period));
 
-const CHOOSER_ROLES = new Set(["menuitem", "option", "radio"]);
+const CHOOSER_ROLES = new Set(["menuitem", "menuitemradio", "option", "radio", "combobox", "listbox", "treeitem"]);
 const CHOOSER_NAME = /account|workspace|organi[sz]ation|company|profile/i;
+/** Names of buttons and links that only open a menu or lead to a page, even when they mention an account. */
+const OPENER_NAME = /\b(menu|settings|billing|invoices?)\b|menu$/i;
 const locators = (s: PlaybookStep): PlaybookLocator[] => (s.kind === "click" ? [s.target, ...(s.fallbacks ?? [])] : []);
 /** A step that picks which account, workspace or company the session works in: skipping it could land on the wrong one. */
-const choosesContext = (s: PlaybookStep): boolean => locators(s).some((l) => (l.role && CHOOSER_ROLES.has(l.role)) || CHOOSER_NAME.test(`${l.name ?? ""} ${l.text ?? ""}`));
+const choosesContext = (s: PlaybookStep): boolean => locators(s).some((l) => {
+  if (l.role && CHOOSER_ROLES.has(l.role)) return true;
+  const name = `${l.name ?? ""} ${l.text ?? ""}`;
+  return (l.role === "button" || l.role === "link") && CHOOSER_NAME.test(name) && !OPENER_NAME.test(name.trim());
+});
 const hasExpect = (s: PlaybookStep | undefined): boolean => !!s && "expect" in s && !!s.expect && !!(s.expect.urlIncludes || s.expect.text || s.expect.element);
 
 /**
