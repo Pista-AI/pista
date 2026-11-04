@@ -1,5 +1,7 @@
 // Pure parsing of pasted transactions (bank site, spreadsheet, CSV) and matching of a merchant to saved playbooks. No I/O.
 import { parseAmounts, parseDates, type CandidateDate } from "@pista/pi-browser";
+import type { Playbook } from "@pista/protocol";
+import { normaliseMerchant } from "./merchants.ts";
 
 export type ParsedLine = { lineNo: number; raw: string; date?: string; amount?: number; currency?: string; merchant?: string; ok: boolean; reason?: string };
 export type VendorMatch = { kind: "one"; site: string } | { kind: "none" } | { kind: "many"; sites: string[] };
@@ -172,17 +174,15 @@ export function parseTransactions(text: string): { lines: ParsedLine[] } {
   return { lines };
 }
 
-// TODO: temporary copy; replace with normaliseMerchant from ./merchants.ts once that module lands.
-const TEMP_PROCESSOR_PREFIX = /^(?:SQ|TST|PAYPAL|PP|SP|IZ)\s*\*\s*/;
-const tempNormMerchant = (s: string) => strip(s).toUpperCase().replace(/\s+/g, " ").trim().replace(TEMP_PROCESSOR_PREFIX, "");
+const norm = (s: string) => normaliseMerchant(s).replace(/\s+/g, " ").trim();
 
-/** Whole-word keyword match against the merchant; several sites never resolve to a guess. */
-export function matchVendor(merchant: string, playbooks: { site: string; merchants?: string[] }[]): VendorMatch {
-  const m = tempNormMerchant(merchant);
+/** Whole-word match of confirmed merchant keywords (never merchantsPending) against the merchant; several sites never resolve to a guess. */
+export function matchVendor(merchant: string, playbooks: Pick<Playbook, "site" | "merchants">[]): VendorMatch {
+  const m = norm(merchant);
   const sites = new Set<string>();
   for (const p of playbooks) {
     for (const k of p.merchants ?? []) {
-      const kw = tempNormMerchant(k);
+      const kw = norm(k);
       if (kw && new RegExp(`(?<![\\p{L}\\p{N}])${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "u").test(m)) sites.add(p.site);
     }
   }

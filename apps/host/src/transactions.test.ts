@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { Playbook } from "@pista/protocol";
 import { matchVendor, parseTransactions } from "./transactions.ts";
 
 const one = (text: string) => parseTransactions(text).lines[0]!;
@@ -147,6 +148,10 @@ describe("matchVendor", () => {
   it("uses Unicode word boundaries", () => {
     assert.deepEqual(matchVendor("BARØ AB", [{ site: "bar.com", merchants: ["BAR"] }]), { kind: "none" });
     assert.deepEqual(matchVendor("BAR AB", [{ site: "bar.com", merchants: ["BAR"] }]), { kind: "one", site: "bar.com" });
+  });
+  it("counts only confirmed merchants, never pending ones", () => {
+    const pending = { site: "p.com", merchants: [], merchantsPending: ["TELNYX"] } as unknown as Pick<Playbook, "site" | "merchants">;
+    assert.deepEqual(matchVendor("TELNYX LLC", [pending]), { kind: "none" });
   });
   it("counts one site once", () => {
     assert.deepEqual(matchVendor("ACME PAY", [{ site: "x", merchants: ["ACME", "ACME PAY"] }]), { kind: "one", site: "x" });
