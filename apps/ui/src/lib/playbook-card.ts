@@ -1,6 +1,6 @@
-import type { HostEvent } from "@pista/protocol";
+import type { PlaybookCardEvent } from "./store.ts";
 
-type PlaybookEvent = Omit<Extract<HostEvent, { type: "playbook.event" }>, "type">;
+type PlaybookEvent = PlaybookCardEvent;
 export type CardTone = "ok" | "learn" | "warn" | "bad";
 
 export interface CardText {
@@ -29,7 +29,7 @@ export function playbookCardText(e: PlaybookEvent): CardText {
       return {
         tone: "warn",
         title: `Playbook ${step} failed — the assistant is repairing it`,
-        lines: [[e.step !== undefined ? `Step ${e.step}` : "", e.reason ?? ""].filter(Boolean).join(" · "), e.invoice ? `Looking for invoice ${e.invoice.date}` : ""].filter(Boolean),
+        lines: [[e.step !== undefined ? `Step ${e.step}` : "", e.reason ?? ""].filter(Boolean).join(" · "), e.invoice ? `Looking for invoice ${e.invoice.date}${money(e.invoice)}` : ""].filter(Boolean),
       };
     case "updated":
       return { tone: "ok", title: `Updated playbook for ${e.site}${e.step !== undefined ? ` (step ${e.step} changed)` : ""}`, lines: e.before && e.after ? [`${e.before} → ${e.after}`] : [] };

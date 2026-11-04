@@ -2857,6 +2857,8 @@ select:focus-visible {
 .pb-t { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; min-width: 0; }
 .pb-t svg { flex: none; color: var(--tone); }
 .pb-s { color: var(--text-2); font-size: 12.5px; padding-left: 24px; }
+.pb-s.flush { padding: 0; }
+.pb-s.danger { color: var(--red); }
 .pb-row { display: flex; align-items: center; gap: 12px; padding-left: 24px; margin-top: 2px; }
 .pb .link { font-size: 12.5px; font-weight: 500; color: var(--accent); display: inline-flex; align-items: center; gap: 2px; }
 .pb .link:hover { text-decoration: underline; }
@@ -2864,8 +2866,7 @@ select:focus-visible {
 .pb .link.danger { color: var(--red); }
 .pb-chev { transition: transform 0.15s; }
 .pb-chev.open { transform: rotate(90deg); }
-.pb-steps { margin: 4px 0 2px 24px; padding: 0; list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--text-2); }
-.pb-steps li { counter-increment: s; display: flex; gap: 8px; }
+.pb-steps { margin: 4px 0 2px 24px; font-size: 12.5px; color: var(--text-2); }
 .pb-diff { margin: 2px 0 0 24px; display: flex; flex-direction: column; gap: 2px; font-family: var(--font-mono); font-size: 12px; }
 .pb-diff div { padding: 2px 8px; border-radius: 6px; overflow-wrap: anywhere; }
 .pb-diff .del { background: var(--diff-del); text-decoration: line-through; text-decoration-color: var(--text-3); }
@@ -2878,17 +2879,17 @@ select:focus-visible {
   gap: 8px;
   flex: none;
 }
-.pb-chip {
+.playbook-chip {
   font-size: 11.5px;
   font-weight: 500;
   border-radius: 999px;
   padding: 1px 8px;
 }
-.pb-chip.ok {
+.playbook-chip.ok {
   background: color-mix(in srgb, var(--green) 14%, transparent);
   color: var(--green);
 }
-.pb-chip.bad {
+.playbook-chip.bad {
   background: color-mix(in srgb, var(--amber) 16%, transparent);
   color: var(--amber);
 }
@@ -2900,8 +2901,8 @@ select:focus-visible {
   font-size: 12.5px;
   color: var(--text-2);
 }
+.pb-steps,
 .playbook-steps ol {
-  margin: 0;
   padding: 0;
   list-style: none;
   counter-reset: s;
@@ -2909,6 +2910,10 @@ select:focus-visible {
   flex-direction: column;
   gap: 2px;
 }
+.playbook-steps ol {
+  margin: 0;
+}
+.pb-steps li,
 .playbook-steps li {
   counter-increment: s;
   display: flex;

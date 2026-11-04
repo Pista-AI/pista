@@ -50,10 +50,10 @@ export function PlaybookCard({ event }: { event: PlaybookCardEvent }) {
           {event.kind === "needs-attention" && <button className="link" onClick={openPlaybooksSettings}>Review playbook</button>}
           {event.kind === "learned" && (confirm ? (
             <>
-              <span className="pb-s" style={{ padding: 0 }}>Forget this playbook?</span>
+              <span className="pb-s flush">Forget this playbook?</span>
               <button className="link danger" onClick={() => void forget()}>Forget</button>
               <button className="link mute" onClick={() => { setConfirm(false); setError(null); }}>Cancel</button>
-              {error && <span className="pb-s" style={{ padding: 0, color: "var(--red)" }}>Couldn't forget: {error}</span>}
+              {error && <span className="pb-s flush danger">Couldn't forget: {error}</span>}
             </>
           ) : <button className="link mute" onClick={() => setConfirm(true)}>Forget</button>)}
         </div>

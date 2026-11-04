@@ -788,6 +788,9 @@ export type AuthPrompt =
 // Playbooks: a learned path through a site, replayed by the host (credentials are never stored)
 // ---------------------------------------------------------------------------
 
+/** What a repeated element's row is matched on at replay time. */
+export type PlaybookRowMatch = ("date" | "amount")[];
+
 export interface PlaybookLocator {
   role?: string;
   name?: string;
@@ -795,7 +798,7 @@ export interface PlaybookLocator {
   selector?: string;
   frameUrl?: string;
   /** The locator names the repeated element (e.g. each row's download link); the row is chosen at replay time from the job's invoice. No row content is stored. */
-  row?: { match: ("date" | "amount")[] };
+  row?: { match: PlaybookRowMatch };
   /** The locator is a period selector (a month tab or link) of this role: the one whose label covers the invoice's date is chosen at replay time. No name is stored. */
   period?: boolean;
 }
@@ -807,6 +810,38 @@ export type PlaybookStep =
   | { kind: "signIn"; origin: string; expect?: PlaybookExpect }
   | { kind: "wait"; expect: PlaybookExpect }
   | { kind: "download"; target?: PlaybookLocator; url?: string; fileType?: string };
+
+function pathOf(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.pathname + u.search || "/";
+  } catch {
+    return url;
+  }
+}
+
+/** One plain, readable line for a playbook step. Playbooks are untrusted: the result is rendered as text only. */
+export function describeStep(step: PlaybookStep): string {
+  switch (step.kind) {
+    case "navigate":
+      return `Open ${pathOf(step.url)}`;
+    case "signIn":
+      return "Sign in with saved login";
+    case "click": {
+      const t = step.target;
+      if (t?.period) return "Pick the invoice's month";
+      if (t?.row) return "Pick the row matching the invoice date";
+      const noun = t?.role === "link" ? " link" : t?.role === "button" ? " button" : "";
+      return `Click${noun} '${t?.name || t?.text || t?.selector || t?.role || "element"}'`;
+    }
+    case "wait":
+      return step.expect?.text ? `Wait for '${step.expect.text}'` : step.expect?.urlIncludes ? `Wait for page '${step.expect.urlIncludes}'` : "Wait for the page";
+    case "download":
+      return `Download${step.fileType ? ` (${step.fileType.toUpperCase()})` : ""}`;
+    default:
+      return `Step: ${String((step as { kind?: unknown }).kind)}`;
+  }
+}
 
 export interface Playbook {
   version: 1;
@@ -965,7 +1000,7 @@ export type HostEvent =
       threadId: string;
       kind: "learned" | "updated" | "followed" | "needs-attention" | "repairing";
       site: string;
-      /** 1-based step number; for "updated" the first changed step (a changed start URL counts as step 1). */
+      /** Step 0 is the start page; stored steps count from 1, so step 1 is `steps[0]`. For "updated" the first changed step (a changed start URL counts as step 1). */
       step?: number;
       stepCount?: number;
       /** Short failure reason, capped by the host. */

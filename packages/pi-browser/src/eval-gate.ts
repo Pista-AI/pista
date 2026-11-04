@@ -22,7 +22,7 @@ const EVAL_REFUSED = "browser_eval is disabled on this page";
 const OTHER_TOOLS = "Use browser_snapshot, browser_read, browser_click and browser_type instead.";
 
 /** Scheme and port do not matter for a login; hosts do. Without a public-suffix list: the last two labels, three under country-code second levels like co.uk. */
-export function siteOf(url: string): string {
+export function registrableSite(url: string): string {
   let host: string;
   try {
     const origin = new URL(url).origin; // blob: and filesystem: URLs carry their creator's origin
@@ -72,7 +72,7 @@ export class EvalGate {
   private async savedSites(d: BrowserDriver): Promise<Set<string>> {
     if (this.saved && this.now() - this.saved.at < SAVED_LOGIN_TTL_MS) return this.saved.sites;
     const origins = [...((await d.savedLoginOrigins?.()) ?? []), ...((await d.loginList?.()) ?? []).map((l) => l.origin)];
-    this.saved = { at: this.now(), sites: new Set(origins.map(siteOf)) };
+    this.saved = { at: this.now(), sites: new Set(origins.map(registrableSite)) };
     return this.saved.sites;
   }
 
@@ -91,7 +91,7 @@ export class EvalGate {
       if (!/^https?:\/\//.test(origin)) throw new Error(`${EVAL_REFUSED}: scripts only run on http(s) pages. ${OTHER_TOOLS}`);
       if (p.secret) this.blocked.add(origin);
       if (this.blocked.has(origin)) throw new Error(`${EVAL_REFUSED}: a sign-in form was seen on ${origin}, so scripts stay off there for the rest of this chat. ${OTHER_TOOLS}`);
-      if (await this.isSavedSite(d, p.url)) throw new Error(`browser_eval is disabled on sites with saved logins (${siteOf(p.url)}). ${OTHER_TOOLS}`);
+      if (await this.isSavedSite(d, p.url)) throw new Error(`browser_eval is disabled on sites with saved logins (${registrableSite(p.url)}). ${OTHER_TOOLS}`);
       this.tainted.add(p.documentId);
       return { documentId: p.documentId, token };
     } catch (error) {
@@ -103,7 +103,7 @@ export class EvalGate {
   /** Whether `url` is on a site with a saved login; a list that cannot be read counts as yes. */
   private async isSavedSite(d: BrowserDriver, url: string): Promise<boolean> {
     try {
-      return (await this.savedSites(d)).has(siteOf(url));
+      return (await this.savedSites(d)).has(registrableSite(url));
     } catch {
       return true;
     }

@@ -21,6 +21,11 @@ test("repairing names the step, reason and invoice", () => {
   assert.deepEqual(t.lines, ["Step 4 · Couldn't find Download", "Looking for invoice 2026-10-03"]);
 });
 
+test("repairing shows the invoice amount and currency", () => {
+  const t = playbookCardText({ threadId: "t", kind: "repairing", site: "a.com", step: 2, invoice: { date: "2026-10-03", amount: 12.5, currency: "EUR" } });
+  assert.deepEqual(t.lines, ["Step 2", "Looking for invoice 2026-10-03 · 12.5 EUR"]);
+});
+
 test("updated and learned", () => {
   assert.equal(playbookCardText({ threadId: "t", kind: "updated", site: "a.com", step: 4 }).title, "Updated playbook for a.com (step 4 changed)");
   const u = playbookCardText({ threadId: "t", kind: "updated", site: "a.com", step: 2, stepCount: 3, before: 'click link "Billing"', after: 'click link "Invoices"' });

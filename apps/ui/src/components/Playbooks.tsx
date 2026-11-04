@@ -101,7 +101,7 @@ export function Playbooks() {
               <small>{p.stepCount === 1 ? "1 step" : `${p.stepCount} steps`} · {lastSucceeded(p.lastSucceeded)}</small>
             </div>
             <span className="playbook-actions">
-              <span className={`pb-chip ${p.status === "ok" ? "ok" : "bad"}`}>{p.status === "ok" ? "OK" : "Needs attention"}</span>
+              <span className={`playbook-chip ${p.status === "ok" ? "ok" : "bad"}`}>{p.status === "ok" ? "OK" : "Needs attention"}</span>
               <button type="button" className="pill-btn" aria-expanded={open === p.site} aria-label={`Steps for ${p.site}`} onClick={() => toggle(p.site)}>Steps</button>
               {confirming === p.site ? (
                 <span className="login-confirm">

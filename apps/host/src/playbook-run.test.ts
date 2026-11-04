@@ -137,7 +137,7 @@ test("after a handoff, saving keeps the replayed steps and replaces only the rep
   trace.add({ kind: "replayed", index: 1, step: old.steps[0]! });
   trace.add({ kind: "download", source: "ref", locator: { role: "link", name: "Get PDF" }, url: `${B}inv-2026-10a.pdf`, contentType: "application/pdf", path: "invoices/a.pdf" });
   const r = savePlaybookFromTrace(trace.list(), [1, 2, 3], undefined, "t");
-  assert.deepEqual(r.event, { type: "playbook.event", threadId: "t", kind: "updated", site: "127.0.0.1", step: 2, stepCount: 2, before: 'download link "Download invoice"', after: "download a file" });
+  assert.deepEqual(r.event, { type: "playbook.event", threadId: "t", kind: "updated", site: "127.0.0.1", step: 2, stepCount: 2, before: "Download (PDF)", after: "Download (PDF)" });
   const pb = getPlaybook("127.0.0.1")!;
   assert.deepEqual(pb.steps[0], old.steps[0]);
   assert.match(pb.history.at(-1)!.summary, /changed step 2$/);

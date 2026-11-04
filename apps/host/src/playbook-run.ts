@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { getPlaybook, recordFailure, recordSuccess, siteKey } from "./playbooks.ts";
+import { getPlaybook, LABEL_MAX, recordFailure, recordSuccess, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
@@ -43,7 +43,7 @@ export function playbookGuardMessage(attempted: ReadonlySet<string>, toolName: s
 /** Handoffs that say the stored path is broken. Row and invoice misses, sign-in, blocked pages, declines and stops are not the playbook's fault. */
 const COUNTS: ReadonlySet<ReplayReason> = new Set(["not-found", "ambiguous", "error"]);
 
-/** A short human phrase for why a replay stopped, capped at 120 characters. */
+/** A short human phrase for why a replay stopped, capped at LABEL_MAX characters. */
 function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
   const name = stepTargetName(r.step);
   const phrase: Record<ReplayReason, string> = {
@@ -60,10 +60,10 @@ function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
     error: "The step failed",
   };
   const t = phrase[r.reason];
-  return t.length > 120 ? `${t.slice(0, 119)}…` : t;
+  return t.length > LABEL_MAX ? `${t.slice(0, LABEL_MAX - 1)}…` : t;
 }
 
-/** Records the outcome on the playbook and returns the event(s) to emit. */
+/** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
@@ -80,6 +80,10 @@ export function recordRun(site: string, r: ReplayResult, threadId: string, invoi
   return events;
 }
 
+/**
+ * The step as the model sees it in a handoff. Unlike the shared `describeStep` (plain wording for people), this names exactly which
+ * element was meant: full addresses, origins, role + quoted name, and the markers for choices made from the invoice.
+ */
 const describeStep = (s: PlaybookStep | { kind: string; url?: string }): string => {
   if ("target" in s && s.target) return `${s.kind} ${[s.target.role, s.target.name ? JSON.stringify(s.target.name) : s.target.text ? JSON.stringify(s.target.text) : "", s.target.row ? "(row chosen by the invoice)" : "", s.target.period ? "(month chosen by the invoice)" : ""].filter(Boolean).join(" ")}`;
   if ("url" in s && s.url) return `${s.kind} ${s.url}`;

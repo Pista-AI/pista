@@ -3,8 +3,8 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
-import type { HostEvent, Playbook, PlaybookExpect, PlaybookLocator, PlaybookStep } from "@pista/protocol";
-import { getPlaybook, isOpaque, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookStep } from "@pista/protocol";
+import { getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -30,6 +30,8 @@ const where = (l: { role?: string; name?: string; text?: string }) => [l.role, l
 
 /** Where a repeated-list entry sits, never the row's text. */
 const place = (r: TraceRow) => ("rowContext" in r && r.rowContext ? ` (row ${r.rowContext.clickedIndex + 1} of ${r.rowContext.texts.length})` : "");
+
+const navigatesByInvoice = (n: number) => `entry ${n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`;
 
 /** One compact line per entry. Page text in it is data, not instructions. */
 export function describeTrace(rows: readonly TraceRow[]): string {
@@ -103,16 +105,16 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
   // Once a step depends on the invoice, nothing after it may be a fixed address: those are specific to one invoice.
   let byInvoice = false;
   const steps: PlaybookStep[] = picked.slice(1).map((r, i): PlaybookStep => {
-    const text = clean(waitFor[String(r.n)]?.slice(0, 200));
+    const text = clean(waitFor[String(r.n)]?.slice(0, MAX_TEXT));
     const expect: PlaybookExpect = text ? { text } : {};
     switch (r.kind) {
       case "navigate":
-        if (byInvoice) throw new Error(`entry ${r.n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`);
+        if (byInvoice) throw new Error(navigatesByInvoice(r.n));
         return { kind: "navigate", url: r.url, ...(text ? { expect } : {}) };
       case "signIn": return { kind: "signIn", origin: r.origin, ...(text ? { expect } : {}) };
       case "replayed": {
         const t = "target" in r.step ? r.step.target : undefined;
-        if (byInvoice && r.step.kind === "navigate") throw new Error(`entry ${r.n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`);
+        if (byInvoice && r.step.kind === "navigate") throw new Error(navigatesByInvoice(r.n));
         if (t?.row || t?.period) byInvoice = true;
         return r.step;
       }
@@ -147,7 +149,7 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
   return { site, startUrl: first.url, steps };
 }
 
-const cap = (s: string, n = 120) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const cap = (s: string, n = LABEL_MAX) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The quoted name or text of a step's target, if any. Never the row rule, an address or a query string. */
 export function stepTargetName(s: PlaybookStep | { kind: string } | undefined): string | undefined {
@@ -159,10 +161,7 @@ export function stepTargetName(s: PlaybookStep | { kind: string } | undefined): 
 /** A short human label for a step (`click link "Download invoice"`), capped at 120 characters. */
 export function stepLabel(s: PlaybookStep | undefined): string {
   if (!s) return "(no step)";
-  const t = "target" in s ? s.target : undefined;
-  const what = [t?.role, stepTargetName(s)].filter(Boolean).join(" ");
-  const plain: Record<string, string> = { navigate: "open a page", download: "download a file", signIn: "sign in" };
-  return cap(what ? `${s.kind} ${what}` : (plain[s.kind] ?? s.kind));
+  return cap(describeStep(s));
 }
 
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
@@ -171,7 +170,7 @@ const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => J
 export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown): { message: string; event?: HostEvent } {
   try {
     const built = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
-    const fresh = validatePlaybook({ ...built, steps: built.steps }, built.site);
+    const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
     if (!old) {
       savePlaybook(fresh);

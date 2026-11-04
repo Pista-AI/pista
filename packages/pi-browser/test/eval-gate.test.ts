@@ -7,7 +7,7 @@ import { LOGIN_ORIGINS_SQL, readLoginOrigins, sqliteQuery } from "../src/chrome/
 import type { CdpEvent, CdpTransport } from "../src/chrome/pipe.ts";
 import type { BrowserDriver, DocumentProbe } from "../src/driver.ts";
 import { ChromeDriver } from "../src/drivers/chrome.ts";
-import { internalPageReason, siteOf } from "../src/eval-gate.ts";
+import { internalPageReason, registrableSite } from "../src/eval-gate.ts";
 import { registerBrowserTools } from "../src/tools.ts";
 
 type Tool = { execute: (...a: unknown[]) => Promise<{ content: { text?: string }[] }> };
@@ -58,8 +58,8 @@ test("browser_eval is refused on the site of a saved login, also on a sibling su
   assert.equal(f.log.evals, 0);
   f.doc.url = "https://other.org/";
   assert.match((await f.run("browser_eval", { script: "1" })).content[1]!.text!, /fine/);
-  assert.equal(siteOf("https://a.b.example.co.uk:8443/x"), "example.co.uk");
-  assert.notEqual(siteOf("https://example.org"), siteOf("https://example.com"));
+  assert.equal(registrableSite("https://a.b.example.co.uk:8443/x"), "example.co.uk");
+  assert.notEqual(registrableSite("https://example.org"), registrableSite("https://example.com"));
 });
 
 test("saved logins are cached for a minute", async () => {
@@ -223,17 +223,17 @@ test("the isolated-world probe writes and clears the token; no Runtime.enable is
 test("scripts only run on http(s) origins; blob: URLs belong to their creator's site", async () => {
   const f = fake({ url: "data:text/html,hi", documentId: "d1", secret: false });
   await assert.rejects(f.run("browser_eval", { script: "1" }), /only run on http/);
-  assert.equal(siteOf("blob:https://app.example.com/1234"), "example.com");
+  assert.equal(registrableSite("blob:https://app.example.com/1234"), "example.com");
 });
 
-test("siteOf edge cases", () => {
-  assert.equal(siteOf("https://a.github.io/x"), "github.io"); // over-blocks every github.io page: no public-suffix list
-  assert.equal(siteOf("https://www.bbc.co.uk"), "bbc.co.uk");
-  assert.equal(siteOf("http://192.168.1.5:3000/"), "192.168.1.5");
-  assert.equal(siteOf("http://[::1]:8080/"), "[::1]");
-  assert.equal(siteOf("http://localhost:3000"), "localhost");
-  assert.equal(siteOf("https://shop.bücher.example/"), "xn--bcher-kva.example");
-  assert.equal(siteOf("https://EXAMPLE.com./"), "example.com");
+test("registrableSite edge cases", () => {
+  assert.equal(registrableSite("https://a.github.io/x"), "github.io"); // over-blocks every github.io page: no public-suffix list
+  assert.equal(registrableSite("https://www.bbc.co.uk"), "bbc.co.uk");
+  assert.equal(registrableSite("http://192.168.1.5:3000/"), "192.168.1.5");
+  assert.equal(registrableSite("http://[::1]:8080/"), "[::1]");
+  assert.equal(registrableSite("http://localhost:3000"), "localhost");
+  assert.equal(registrableSite("https://shop.bücher.example/"), "xn--bcher-kva.example");
+  assert.equal(registrableSite("https://EXAMPLE.com./"), "example.com");
 });
 
 test("readLoginOrigins on a real SQLite database with a WAL: origin columns only, temp copy removed", async () => {
