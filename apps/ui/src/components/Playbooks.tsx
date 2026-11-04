@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Playbook, PlaybookMeta } from "@pista/protocol";
 import { host } from "../lib/host.ts";
 import { useApp } from "../lib/store.ts";
-import { describeStart, describeSteps } from "../lib/playbooks.ts";
+import { describePendingWhy, describeRefusal, describeStart, describeSteps } from "../lib/playbooks.ts";
 
 export const PLAYBOOKS_ANCHOR = "settings-playbooks";
 
@@ -57,6 +57,8 @@ export function Playbooks() {
       return setOpen(null);
     }
     openRef.current = site;
+    setKwInput("");
+    setKwError(null);
     setOpen(site);
     setDetail(undefined);
     try {
@@ -68,6 +70,28 @@ export function Playbooks() {
         setError(errText(e));
       }
     }
+  };
+  const [kwInput, setKwInput] = useState("");
+  const [kwError, setKwError] = useState<string | null>(null);
+  /** Runs a keyword change; the host's answer is the only judge of a typed keyword. */
+  const changeKeywords = async (site: string, fn: () => Promise<string | null>) => {
+    setBusy(true);
+    setKwError(null);
+    try {
+      const refusal = await fn();
+      if (refusal) setKwError(refusal);
+      else setKwInput("");
+      await refresh();
+    } catch (e) {
+      if (alive.current) setKwError(errText(e));
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  };
+  const setList = async (site: string, merchants: string[], typed?: string) => {
+    const r = await host.call("playbook.setMerchants", { site, merchants });
+    const bad = typed === undefined ? undefined : r.refused.find((x) => x.merchant === typed);
+    return bad ? describeRefusal(bad.merchant, bad.reason) : null;
   };
   const remove = async (site: string) => {
     setConfirming(null);
@@ -115,6 +139,34 @@ export function Playbooks() {
               )}
             </span>
           </div>
+          {open === p.site && (
+            <div className="playbook-steps playbook-keywords">
+              <strong>Bank keywords</strong>
+              <span className="help">Transaction lines that contain these go to this site. Use * for any text in between.</span>
+              <div className="kw-chips">
+                {(p.merchants ?? []).map((k) => (
+                  <span key={k} className="kw-chip ok">{k}
+                    <button type="button" aria-label={`Remove ${k}`} disabled={busy} onClick={() => changeKeywords(p.site, () => setList(p.site, (p.merchants ?? []).filter((m) => m !== k)))}>×</button>
+                  </span>
+                ))}
+                {(p.merchantsPending ?? []).map((k) => {
+                  const why = describePendingWhy(p.merchantsPendingWhy?.[k]);
+                  return (
+                    <span key={k} className="kw-chip pending" title={why}>{k} <em>pending</em>
+                      <button type="button" aria-label={`Confirm ${k}`} disabled={busy} onClick={() => changeKeywords(p.site, () => setList(p.site, [...(p.merchants ?? []), k], k))}>✓</button>
+                      <button type="button" aria-label={`Dismiss ${k}`} disabled={busy} onClick={() => changeKeywords(p.site, async () => { await host.call("playbook.dismissMerchant", { site: p.site, merchant: k }); return null; })}>×</button>
+                      {why && <small>{why}</small>}
+                    </span>
+                  );
+                })}
+              </div>
+              <form className="kw-add" onSubmit={(e) => { e.preventDefault(); const t = kwInput.trim(); if (t) void changeKeywords(p.site, () => setList(p.site, [...(p.merchants ?? []), t], t)); }}>
+                <input value={kwInput} placeholder="paypal*telnyx" aria-label={`Add a bank keyword for ${p.site}`} onChange={(e) => { setKwInput(e.target.value); setKwError(null); }} />
+                <button type="submit" className="pill-btn" disabled={busy || !kwInput.trim()}>Add</button>
+              </form>
+              {kwError && <div role="alert" className="login-error">{kwError}</div>}
+            </div>
+          )}
           {open === p.site && (
             <div className="playbook-steps">
               {detail === undefined ? <span className="help">Loading…</span> : detail === null ? <span className="help">Could not load the steps.</span> : (

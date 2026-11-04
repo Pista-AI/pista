@@ -5,7 +5,7 @@ import { setupHome } from "./test-helpers.ts";
 
 setupHome("first-pass-event", { cleanup: "exit" });
 const { firstPassEvent, runFirstPass } = await import("./first-pass.ts");
-const { getPlaybook, listPlaybooks, removeMerchant, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
+const { confirmMerchant, getPlaybook, listPlaybooks, removeMerchant, savePlaybook, setMerchants, dismissMerchant, validatePlaybook } = await import("./playbooks.ts");
 
 function make(site: string, extra: Partial<Playbook> = {}): Playbook {
   const pb = { ...validatePlaybook({ startUrl: `https://${site}/billing`, steps: [{ kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" }] }, site), ...extra };
@@ -55,11 +55,49 @@ test("sizes are bounded", () => {
   assert.deepEqual([e.lines.length, e.total, e.learned.length], [200, 300, 20]);
 });
 
-test("removeMerchant takes a confirmed keyword away", () => {
-  make("delta.test", { merchants: ["DELTA", "DELTA PRO"] });
-  removeMerchant("delta.test", "DELTA");
-  assert.deepEqual(getPlaybook("delta.test")!.merchants, ["DELTA PRO"]);
-  removeMerchant("delta.test", "DELTA PRO");
+test("removeMerchant takes a confirmed keyword away, including one with a wildcard, and says when it was not there", () => {
+  make("delta.test", { merchants: ["DELTA", "DELTA PRO", "PAYPAL*DELTA"] });
+  assert.equal(removeMerchant("delta.test", "DELTA"), true);
+  assert.deepEqual(getPlaybook("delta.test")!.merchants, ["DELTA PRO", "PAYPAL*DELTA"]);
+  assert.equal(removeMerchant("delta.test", "paypal*delta"), true);
+  assert.equal(removeMerchant("delta.test", "PAYPAL*DELTA"), false);
+  assert.equal(removeMerchant("delta.test", "ZZZ"), false);
+  assert.equal(removeMerchant("delta.test", "DELTA PRO"), true);
   assert.equal(getPlaybook("delta.test")!.merchants, undefined);
-  assert.throws(() => removeMerchant("nope.test", "X"));
+});
+
+test("confirmMerchant moves a pending keyword over and clears its notes", () => {
+  make("eps.test", { merchants: ["EPS ONE"], merchantsPending: ["EPSILON", "OTHER WORD"], merchantsPendingWhy: { EPSILON: "short" }, merchantMisses: { EPSILON: 1 } });
+  assert.deepEqual(confirmMerchant("eps.test", "epsilon"), { ok: true });
+  const pb = getPlaybook("eps.test")!;
+  assert.deepEqual(pb.merchants, ["EPS ONE", "EPSILON"]);
+  assert.deepEqual(pb.merchantsPending, ["OTHER WORD"]);
+  assert.equal(pb.merchantsPendingWhy?.EPSILON, undefined);
+  assert.equal(pb.merchantMisses?.EPSILON, undefined);
+});
+
+test("confirmMerchant refuses a keyword that is no longer pending, and changes nothing", () => {
+  make("zeta.test", { merchantsPending: ["ZETA CORP", "ZETA TWO"] });
+  dismissMerchant("zeta.test", "ZETA CORP");
+  assert.deepEqual(confirmMerchant("zeta.test", "ZETA CORP"), { ok: true, refused: "not-pending" });
+  setMerchants("zeta.test", ["ZETA TWO"]);
+  assert.deepEqual(confirmMerchant("zeta.test", "ZETA TWO"), { ok: true, refused: "not-pending" });
+  assert.deepEqual(getPlaybook("zeta.test")!.merchants, ["ZETA TWO"]);
+  removeMerchant("zeta.test", "ZETA TWO");
+  assert.deepEqual(confirmMerchant("zeta.test", "ZETA TWO"), { ok: true, refused: "not-pending" });
+  assert.equal(getPlaybook("zeta.test")!.merchants, undefined);
+});
+
+test("confirmMerchant refuses when the list is full", () => {
+  make("eta.test", { merchants: ["AAAA ONE", "AAAA TWO", "AAAA THREE", "AAAA FOUR", "AAAA FIVE"], merchantsPending: ["ETA WORKS"] });
+  assert.deepEqual(confirmMerchant("eta.test", "ETA WORKS"), { ok: true, refused: "too-many" });
+  assert.deepEqual(getPlaybook("eta.test")!.merchantsPending, ["ETA WORKS"]);
+  assert.equal(getPlaybook("eta.test")!.merchants!.length, 5);
+});
+
+test("every keyword method rejects an unknown site", () => {
+  assert.throws(() => removeMerchant("nope.test", "ACME ROBOTICS"), /no playbook/);
+  assert.throws(() => confirmMerchant("nope.test", "ACME ROBOTICS"), /no playbook/);
+  assert.throws(() => setMerchants("nope.test", ["ACME ROBOTICS"]), /no playbook/);
+  assert.throws(() => dismissMerchant("nope.test", "ACME ROBOTICS"), /no playbook/);
 });

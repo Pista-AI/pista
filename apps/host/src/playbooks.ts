@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDomain } from "tldts";
-import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
-import { BROAD_REASONS, broadReason, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, mostSpecificKeyword, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
+import type { MerchantRefusal, Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
+import { BROAD_REASONS, broadReason, checkMerchant, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, mostSpecificKeyword, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Consecutive failures after which a playbook is flagged "needs-attention". */
@@ -327,10 +327,18 @@ export function recordFailure(site: string): Playbook | null {
   });
 }
 
-/** Replaces the site's confirmed merchant keywords (a user action) with the cleaned list, and clears suggestions it confirms. At most 10 items of 80 characters are looked at. Throws when the site has no playbook. */
-export function setMerchants(site: string, merchants: unknown): void {
+/** Replaces the site's confirmed merchant keywords (a user action) with the cleaned list, and clears suggestions it confirms. At most 10 items are looked at; refused ones are returned with the reason. Throws when the site has no playbook. */
+export function setMerchants(site: string, merchants: unknown): { merchant: string; reason: MerchantRefusal }[] {
   if (!Array.isArray(merchants) || merchants.some((m) => typeof m !== "string")) throw new Error("merchants must be an array of strings");
-  const list = cleanUserMerchants(merchants.slice(0, MAX_MERCHANT_INPUT).filter((m: string) => m.length <= MAX_MERCHANT_INPUT_CHARS));
+  const refused: { merchant: string; reason: MerchantRefusal }[] = [];
+  const kept = new Set<string>();
+  for (const m of merchants.slice(0, MAX_MERCHANT_INPUT) as string[]) {
+    const r = m.length > MAX_MERCHANT_INPUT_CHARS ? { refused: "too-long" as const } : checkMerchant(m, true);
+    if ("refused" in r) refused.push({ merchant: m, reason: r.refused });
+    else if (!kept.has(r.keyword) && kept.size >= MAX_MERCHANTS) refused.push({ merchant: m, reason: "too-many" });
+    else kept.add(r.keyword);
+  }
+  const list = [...kept];
   const pb = mutate(site, (p) => {
     if (list.length) p.merchants = list;
     else delete p.merchants;
@@ -344,6 +352,7 @@ export function setMerchants(site: string, merchants: unknown): void {
     pruneMerchantNotes(p);
   });
   if (!pb) throw new Error("no playbook for this site");
+  return refused;
 }
 
 /** Drops one suggested keyword (a user action). Throws when the site has no playbook. */
@@ -358,16 +367,55 @@ export function dismissMerchant(site: string, merchant: unknown): void {
   if (!pb) throw new Error("no playbook for this site");
 }
 
-/** Takes one confirmed keyword away (the user undoing a learned one). Throws when the site has no playbook. */
-export function removeMerchant(site: string, merchant: unknown): void {
-  const key = cleanMerchant(merchant);
+/** Takes one confirmed keyword away (the user undoing a learned one). Returns false when it was not confirmed. Throws when the site has no playbook. */
+export function removeMerchant(site: string, merchant: unknown): boolean {
+  // stored keywords may hold `*`, so clean the same way the editor does
+  const key = cleanMerchant(merchant, true);
+  let found = false;
   const pb = mutate(site, (p) => {
-    const rest = (p.merchants ?? []).filter((m) => m !== key);
+    const have = p.merchants ?? [];
+    found = key !== undefined && have.includes(key);
+    if (!found) return;
+    const rest = have.filter((m) => m !== key);
     if (rest.length) p.merchants = rest;
     else delete p.merchants;
     pruneMerchantNotes(p);
   });
   if (!pb) throw new Error("no playbook for this site");
+  return found;
+}
+
+class Refused extends Error {
+  constructor(readonly reason: MerchantRefusal) {
+    super(reason);
+  }
+}
+
+/** Moves one pending keyword to the confirmed ones, all or nothing. Refuses when it is no longer pending (a stale card), fails the keyword checks, or the list is full. Throws when the site has no playbook. */
+export function confirmMerchant(site: string, merchant: unknown): { ok: true; refused?: MerchantRefusal } {
+  try {
+    const pb = mutate(site, (p) => {
+      const pending = p.merchantsPending ?? [];
+      const key = pending.find((k) => k === merchant || k === cleanMerchant(merchant));
+      if (key === undefined) throw new Refused("not-pending");
+      const r = checkMerchant(key, true);
+      if ("refused" in r) throw new Refused(r.refused);
+      const have = p.merchants ?? [];
+      if (!have.includes(r.keyword) && have.length >= MAX_MERCHANTS) throw new Refused("too-many");
+      p.merchants = [...new Set([...have, r.keyword])];
+      const rest = pending.filter((k) => k !== key);
+      if (rest.length) p.merchantsPending = rest;
+      else delete p.merchantsPending;
+      delete p.merchantMisses?.[r.keyword];
+      delete p.merchantLastMiss?.[r.keyword];
+      pruneMerchantNotes(p);
+    });
+    if (!pb) throw new Error("no playbook for this site");
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof Refused) return { ok: true, refused: e.reason };
+    throw e;
+  }
 }
 
 /** Consecutive routed misses after which a confirmed keyword is dropped. */
