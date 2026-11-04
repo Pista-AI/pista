@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeStart, describeSteps } from "../src/lib/playbooks.ts";
+import { describePendingWhy, describeRefusal, describeStart, describeSteps } from "../src/lib/playbooks.ts";
 
 test("describes steps as plain text lines", () => {
   const lines = describeSteps([
@@ -38,4 +38,11 @@ test("shows where a playbook starts and where it opens the list directly, withou
   assert.deepEqual(describeStart("https://portal.example.com/?token=abc#x"), ["Starts at portal.example.com"]);
   assert.deepEqual(describeStart("https://portal.example.com/", "https://portal.example.com/account/invoices?page=2"), ["Starts at portal.example.com", "Opens the list directly at portal.example.com/account/invoices"]);
   assert.deepEqual(describeStart("not a url"), ["Starts at not a url"]);
+});
+
+test("describes refusals and pending reasons plainly", () => {
+  assert.equal(describeRefusal("the*inc", "too-general"), '"the*inc" is too general. Add a word that names the vendor.');
+  assert.match(describeRefusal("x", "too-many"), /Remove a keyword/);
+  assert.equal(describePendingWhy("umbrella"), "Names a company that sells many things.");
+  assert.equal(describePendingWhy(undefined), undefined);
 });

@@ -197,8 +197,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     return { ok: true };
   },
   "playbook.setMerchants": ({ site, merchants }) => {
-    setMerchants(site, merchants);
-    return { ok: true };
+    return { ok: true, refused: setMerchants(site, merchants) };
   },
   "projects.remove": async ({ projectId }) => {
     await threads.removeProject(projectId);
