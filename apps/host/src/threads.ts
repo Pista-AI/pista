@@ -460,7 +460,7 @@ export class ThreadManager {
         thread.toolAudit?.start(event as { toolCallId: string; toolName: string; args?: unknown });
         break;
       case "tool_execution_end":
-        thread.toolAudit?.end(event as { toolCallId: string; isError?: boolean });
+        thread.toolAudit?.end(event as { toolCallId: string; isError?: boolean; result?: { content?: { type: string; text?: string }[] } });
         this.guardRun(thread, event as { toolName: string; isError: boolean; result?: { content?: { type: string; text?: string }[] } });
         break;
       case "agent_settled":

@@ -134,3 +134,59 @@ test("download temp path has no dot-prefixed segment and a directory target give
   registerBrowserTools(api, () => driver, { downloadRoot: () => folder, traceDir: "off" });
   await assert.rejects(tools.get("browser_download")!.execute("1", { url: "https://x.test/a", path: "adir.pdf" }, undefined), /not a regular file/);
 });
+
+test("browser_download: a url that returns an HTML page is refused, flagged for the host, and leaves the target alone", async () => {
+  const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
+  const api = { registerTool: (t: { name: string; execute: never }) => tools.set(t.name, t), on: () => undefined } as never;
+  const traced: unknown[] = [];
+  const driver = {
+    download: async (o: { path: string }) => (writeFileSync(o.path, "<html><body>Invoice not found</body></html>"), { bytes: 43, contentType: "text/html; charset=utf-8" }),
+    setActivity: () => undefined,
+    state: async () => ({ url: "https://invoice.stripe.com/i/acct/live_x", title: "", loading: false }),
+  } as unknown as BrowserDriver;
+  registerBrowserTools(api, () => driver, { downloadRoot: () => folder, traceDir: "off", onTrace: (e) => traced.push(e) });
+  const run = (args: object) => tools.get("browser_download")!.execute("1", { url: "https://invoice.stripe.com/i/acct/live_x", ...args }, undefined) as Promise<{ details: { rejected?: string; site?: string; note?: string } }>;
+  const refused = (await run({ path: "html1.pdf" })).details;
+  assert.equal(refused.rejected, "not-an-invoice");
+  assert.equal(refused.site, "invoice.stripe.com");
+  assert.match(refused.note ?? "", /returned a web page, not a file.*by ref/);
+  assert.equal(existsSync(join(folder, "html1.pdf")), false);
+  assert.deepEqual(traced, []);
+  // An existing file, broken-looking or not, is neither overwritten nor removed.
+  writeFileSync(join(folder, "html2.pdf"), "<html>403 Forbidden</html>");
+  assert.equal((await run({ path: "html2.pdf" })).details.rejected, "not-an-invoice");
+  writeFileSync(join(folder, "html3.pdf"), "%PDF-1.7 keep me");
+  assert.equal((await run({ path: "html3.pdf", overwrite: true })).details.rejected, "not-an-invoice");
+  assert.equal(readFileSync(join(folder, "html2.pdf"), "utf8"), "<html>403 Forbidden</html>");
+  assert.equal(readFileSync(join(folder, "html3.pdf"), "utf8"), "%PDF-1.7 keep me");
+  assert.deepEqual(readdirSync(folder).filter((n) => n.endsWith(".part")), []);
+});
+
+test("browser_download: an HTML page without a content type is caught by its first bytes; a PDF is kept", async () => {
+  const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
+  const api = { registerTool: (t: { name: string; execute: never }) => tools.set(t.name, t), on: () => undefined } as never;
+  let body = "  <!DOCTYPE html><html></html>";
+  const driver = { download: async (o: { path: string }) => (writeFileSync(o.path, body), { bytes: body.length, contentType: "application/octet-stream" }), setActivity: () => undefined, state: async () => ({ url: "", title: "", loading: false }) } as unknown as BrowserDriver;
+  registerBrowserTools(api, () => driver, { downloadRoot: () => folder, traceDir: "off" });
+  const run = (path: string) => tools.get("browser_download")!.execute("1", { url: "https://x.test/a", path }, undefined) as Promise<{ details: { rejected?: string; bytes?: number } }>;
+  assert.equal((await run("sniff1.pdf")).details.rejected, "not-an-invoice");
+  body = "\ufeff<!-- x --><html></html>"; // a UTF-8 byte order mark in front
+  assert.equal((await run("sniff3.pdf")).details.rejected, "not-an-invoice");
+  body = "%PDF-1.7 fine";
+  assert.equal((await run("sniff2.pdf")).details.bytes, 13);
+});
+
+test("browser_navigate by ref: the tab guard sees the link's address before anything is opened", async () => {
+  const tools = new Map<string, { execute: (...a: unknown[]) => Promise<unknown> }>();
+  const api = { registerTool: (t: { name: string; execute: never }) => tools.set(t.name, t), on: () => undefined } as never;
+  const calls: string[] = [];
+  const driver = {
+    evaluate: async () => "https://guarded.test/billing?s=1",
+    navigate: async (u: string) => (calls.push(u), { url: u, title: "", loading: false }),
+    state: async () => ({ url: "", title: "", loading: false }),
+    setActivity: () => undefined,
+  } as unknown as BrowserDriver;
+  registerBrowserTools(api, () => driver, { traceDir: "off", tabGuard: (u) => (u.includes("guarded.test") ? "Blocked: playbook first." : undefined) });
+  await assert.rejects(tools.get("browser_navigate")!.execute("1", { ref: "e1" }, undefined), /Blocked: playbook first/);
+  assert.deepEqual(calls, []);
+});
