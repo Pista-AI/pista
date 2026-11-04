@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { deriveShortcut, getPlaybook, LABEL_MAX, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, recordFailure, recordSuccess, savePlaybook, siteKey, transactionKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
@@ -239,6 +239,8 @@ export type PlaybookRunResult =
 export interface PlaybookRunRequest {
   site: string;
   invoice: unknown;
+  /** The transaction's merchant text when the run was routed by a keyword. Only compared against the site's keywords, never stored. */
+  merchant?: string;
   path?: string;
   overwrite?: boolean;
 }
@@ -300,6 +302,12 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     });
   });
   for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
+  // A replay that passed the row check proves the keyword; a missing or unverified row counts against it.
+  if (req.merchant) {
+    // Only a run whose row check compared the amount as well as the date can confirm a keyword.
+    if (r.ok) noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount });
+    else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
+  }
   if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });

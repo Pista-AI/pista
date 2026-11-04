@@ -4,8 +4,8 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
-import { MAX_MERCHANTS, merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { merchantKeyword } from "./merchants.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -175,34 +175,35 @@ export function stepLabel(s: PlaybookStep | undefined): string {
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
-export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown): { message: string; event?: HostEvent } {
+export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown, unsure?: boolean): { message: string; event?: HostEvent } {
   try {
     const { unverified, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
     const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : "";
     const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
-    const confirmed = old?.merchants ?? [], pending = old?.merchantsPending ?? [];
-    const learnedKeyword = !!keyword && !confirmed.includes(keyword) && !pending.includes(keyword) && pending.length < MAX_MERCHANTS;
-    const nextPending = learnedKeyword ? [...pending, keyword] : pending;
-    const kwNote = learnedKeyword ? ` Suggested the merchant keyword ${keyword}; the owner confirms it before it is used.` : "";
-    const withMerchants = { ...(confirmed.length ? { merchants: confirmed } : {}), ...(nextPending.length ? { merchantsPending: nextPending } : {}) };
+    // Keywords on file carry over; a new one is added (pending, with the reason when broad) once the playbook is saved.
+    const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}) };
+    const learnKeyword = (): string => {
+      if (!keyword || !addPendingMerchant(built.site, keyword, { unsure })) return "";
+      const why = getPlaybook(built.site)?.merchantsPendingWhy?.[keyword];
+      return ` Suggested the merchant keyword ${keyword}; ${why ? "it is broad, so the owner confirms it" : "a later verified download for a matching transaction confirms it"} before it is used.`;
+    };
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
     if (!old) {
-      savePlaybook({ ...fresh, ...withMerchants, history: learned });
-      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}${kwNote}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
+      savePlaybook({ ...fresh, history: learned });
+      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}${learnKeyword()}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
     const startChanged = old.startUrl !== fresh.startUrl;
     if (!changed.length && !startChanged) {
       recordSuccess(built.site); // the same path just worked again
-      const cur = learnedKeyword ? getPlaybook(built.site) : null;
-      if (cur) savePlaybook({ ...cur, ...withMerchants });
-      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}${kwNote}` };
+      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}${learnKeyword()}` };
     }
     const now = new Date().toISOString();
-    savePlaybook({ ...fresh, ...withMerchants, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    savePlaybook({ ...fresh, ...carry, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    const kwNote = learnKeyword();
     const first = startChanged ? 1 : changed[0]! + 1;
     const [before, after] = startChanged ? ["Open the start page", "Open a different start page"] : [stepLabel(old.steps[first - 1]), stepLabel(fresh.steps[first - 1])];
     return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.${note}${kwNote}`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
@@ -223,9 +224,10 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
         steps: Type.Optional(Type.Array(Type.Number(), { description: "Entry numbers of the minimal path, in order" })),
         waitFor: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Entry number -> text expected on the page afterwards" })),
         invoice: Type.Optional(Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }, { description: "The invoice the saved download was for. Needed when a step picks one row of a list or a month; the playbook then picks that row by the invoice's date (and amount) next time. Used only to check the rule against the page; it is not stored in the playbook (it stays in this conversation)." })),
+        unsure: Type.Optional(Type.Boolean({ description: "Set true when the merchant text is generic or could belong to several vendors, so the keyword is not confirmed without the owner." })),
         merchant: Type.Optional(Type.String({ description: "The bank or card transaction's merchant text this invoice was for, exactly as it appeared. The host derives one short keyword from it (never stores the raw text) so later transactions from the same vendor can be matched to this site." })),
       }),
-      execute: async (_id, { steps, waitFor, invoice, merchant }) => {
+      execute: async (_id, { steps, waitFor, invoice, merchant, unsure }) => {
         const rows = trace.list();
         let text: string;
         if (!steps) {
@@ -233,7 +235,7 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
             ? `${describeTrace(rows)}\nCall again with steps: the entry numbers of the minimal path, in order, ending with the download; optionally waitFor text per step.`
             : "Nothing has been recorded yet in this thread.";
         } else {
-          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant);
+          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant, unsure);
           if (r.event) emit(r.event);
           text = r.message;
         }

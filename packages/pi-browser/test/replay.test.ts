@@ -9,10 +9,12 @@ import { rowTextOf } from "../src/row-match.ts";
 
 test("a lone download is acted on only when its row shows exactly the invoice date", () => {
   const inv = { date: "2026-10-03" };
-  assert.deepEqual(verifySingleRow("3 Oct 2026 49.00 EUR PDF", inv), { ok: true });
+  assert.deepEqual(verifySingleRow("3 Oct 2026 49.00 EUR PDF", inv), { ok: true, amount: false }); // the invoice has no amount to compare
+  assert.deepEqual(verifySingleRow("3 Oct 2026 49.00 EUR PDF", { ...inv, amount: 49, currency: "EUR" }), { ok: true, amount: true });
   const other = verifySingleRow("3 Sep 2026 49.00 EUR PDF", inv);
   assert.equal(other.ok, false);
   assert.ok(!other.ok && other.detail.includes("2026-10-03") && !other.detail.includes("Sep"));
+  assert.deepEqual(verifySingleRow("3 Oct 2026 PDF", { ...inv, amount: 49 }), { ok: true, amount: false }); // no amount shown: judged by date alone
   assert.equal(verifySingleRow("PDF", inv).ok, false);
   assert.equal(verifySingleRow("", inv).ok, false);
   assert.equal(verifySingleRow("3 Oct 2026 and 3 Nov 2026 PDF", inv).ok, false);
