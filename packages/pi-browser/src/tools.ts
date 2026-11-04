@@ -2,7 +2,8 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
-import { isPeriodLabel, rowTextOf } from "./row-match.ts";
+import { isPeriodLabel } from "./row-match.ts";
+import { loneRowText } from "./replay.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
@@ -323,7 +324,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           const located = options.onTrace && ref ? await locateTarget(d, ref) : undefined;
           const listContext = located && ref ? (await contextOf(d, ref)).rowContext : undefined;
           // A lone candidate gets its own row text too, so the host can check the invoice's date on it (see TraceRowContext).
-          const single = located && ref && !listContext ? rowTextOf((await d.evaluate(scripts.rowChain(ref)).catch(() => null)) as string[] | null) : undefined;
+          const single = located && ref && !listContext ? await loneRowText(d, ref) : undefined;
           const rowContext = listContext ?? (single !== undefined ? { texts: [single], clickedIndex: 0 } : undefined);
           const saved = await saveDownload(d, { root: folder, path, overwrite }, url ? { url } : fromRef!);
           const replaced = saved.replaced;

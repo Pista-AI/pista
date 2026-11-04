@@ -219,7 +219,7 @@ describe("playbook_save with repeated rows and month selectors", () => {
     assert.deepEqual(steps[0], { kind: "click", target: { role: "link", name: "Details", text: "Details", row: { match: ["date"] } } });
     assert.deepEqual(steps[1], { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" });
     const byUrl = base([{ kind: "download", source: "url", url: `${B}inv-77.pdf`, path: "a.pdf" }]);
-    assert.match(savePlaybookFromTrace(byUrl, [1, 2, 3], undefined, "t", inv).message, /specific to one invoice; download it by clicking/);
+    assert.match(savePlaybookFromTrace(byUrl, [1, 2, 3], undefined, "t", inv).message, /download it by clicking the invoice/);
     const nav = base([{ kind: "navigate", url: `${B}detail-77.html` }, { kind: "download", source: "ref", locator: { role: "link", name: "Download" }, path: "a.pdf" }]);
     assert.match(savePlaybookFromTrace(nav, [1, 2, 3, 4], undefined, "t", inv).message, /record the clicks that lead there/);
   });
@@ -250,12 +250,29 @@ describe("playbook_save with a lone download candidate", () => {
     return t.list();
   };
 
-  it("adds a date rule when the row shows the invoice date, and stores no row text", () => {
-    const r = savePlaybookFromTrace(lone(`3 Sep 2026 ${ROW} PDF`), [1, 2], undefined, "t", { date: "2026-09-03" });
+  it("saves a click-to-download step with no row rule when the row shows the invoice date, and stores no row text", () => {
+    const r = savePlaybookFromTrace(lone(`3 Sep 2026 49.00 EUR ${ROW} PDF`), [1, 2], undefined, "t", { date: "2026-09-03", amount: 49 });
     assert.equal(r.event?.type, "playbook.event");
     const pb = getPlaybook("127.0.0.1")!;
-    assert.deepEqual(pb.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF", row: { match: ["date"] } }, fileType: "pdf" }]);
+    assert.deepEqual(pb.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF" }, fileType: "pdf" }]);
     assert.ok(!JSON.stringify(pb).includes("jane@example.com") && !JSON.stringify(r).includes("jane@example.com"));
+  });
+
+  it("refuses an amount that differs, two dates, and a row with no date", () => {
+    for (const text of [`3 Sep 2026 12.00 EUR ${ROW}`, `3 Sep 2026 3 Oct 2026 ${ROW}`, ROW]) {
+      const r = savePlaybookFromTrace(lone(text), [1, 2], undefined, "t", { date: "2026-09-03", amount: 49 });
+      assert.match(r.message, /^Not saved: the download's row/);
+      assert.ok(!r.message.includes("jane@example.com"));
+    }
+    assert.equal(getPlaybook("127.0.0.1"), null);
+  });
+
+  it("refuses a download that is only an address or a selector when an invoice is given", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}list-single.html` });
+    t.add({ kind: "download", source: "url", url: `${B}inv-2026-09.pdf`, contentType: "application/pdf", path: "a.pdf" });
+    assert.match(savePlaybookFromTrace(t.list(), [1, 2], undefined, "t", { date: "2026-09-03" }).message, /^Not saved: entry 2: .*only an address or a selector/);
+    assert.equal(getPlaybook("127.0.0.1"), null);
   });
 
   it("refuses to save when the row shows another date, without quoting the row", () => {

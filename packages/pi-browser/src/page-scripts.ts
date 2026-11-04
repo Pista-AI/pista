@@ -964,10 +964,17 @@ function pageRowChain(ref: string): string[] | null {
   const out: string[] = [];
   let a: Element | null = el.parentElement;
   for (let i = 0; i < 6 && a && a !== document.body && a !== document.documentElement; i++, a = a.parentElement) {
-    if (d && [...a.querySelectorAll("a,button,[role]")].some((x) => { if (x === el) return false; const e = w.__pistaDescribe?.(x); return !!e && e.role === d.role && e.name === d.name; })) break;
+    // Stop before a level that holds any other link or button (it is a list or a page), or a heading or header (a date there is not the row's).
+    if ([...a.querySelectorAll("a,button,[role=button],[role=link]")].some((x) => x !== el && !x.contains(el) && !el.contains(x)) || a.querySelector("h1,h2,h3,h4,h5,h6,header,nav,[role=heading]")) break;
     out.push(text(a));
   }
   return out;
+}
+
+/** The page's visible text (whitespace squeezed), or null when it is longer than 20000 characters. Read only by the replay download check. */
+function pageMainText(): string | null {
+  const t = ((document.body as HTMLElement | null)?.innerText ?? "").replace(/\s+/g, " ").trim();
+  return t.length > 20000 ? null : t;
 }
 
 /**
@@ -1205,6 +1212,7 @@ export const scripts = {
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),
   rowTexts: (refs: string[]) => call(pageRowTexts, refs),
   rowChain: (ref: string) => call(pageRowChain, ref),
+  mainText: () => call(pageMainText),
   elementStillMatches: (ref: string, role: string, name: string) => call(pageElementStillMatches, ref, role, name),
   frames: () => call(pageFrames),
   /** The top document's child frames (see FrameReport), or null when it has none. */

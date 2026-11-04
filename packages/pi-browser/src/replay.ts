@@ -10,7 +10,7 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { isPeriodLabel, matchPeriod, matchRows, parseDates, rowTextOf } from "./row-match.ts";
+import { fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 /** What a row is matched on. Mirrors the protocol type; pi-browser does not depend on protocol (the host test checks they agree). */
@@ -121,12 +121,22 @@ export function pickRow(refs: readonly string[], rowTexts: readonly (string | nu
  * A single element found without a row rule, checked against the invoice before it is acted on: its row (see rowTextOf) must show
  * the invoice's date and no more than 3 distinct dates. The detail never quotes the row's text.
  */
-export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>, by: readonly ("date" | "amount")[] = ["date"]): { ok: true } | { ok: false; detail: string } {
+export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true } | { ok: false; detail: string } {
   const fail = (why: string) => ({ ok: false as const, detail: why });
   const date = invoice.date.slice(0, 10);
-  if (new Set(parseDates(rowText).filter((d) => d.d).map((d) => d.raw)).size > 3) return fail(`row holds too many dates to be one invoice (looking for ${date})`);
-  const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(by.includes("amount") && invoice.amount !== undefined ? { amount: invoice.amount, currency: invoice.currency } : {}) });
-  return m.kind === "one" ? { ok: true } : fail(`row doesn't show the invoice date ${date}`);
+  if (fullDateCount(rowText) !== 1) return fail(`row (or page) doesn't show exactly one date to compare with the invoice date ${date}`);
+  // The amount counts whenever the text shows one; a text without any amount is judged by its date alone.
+  const byAmount = invoice.amount !== undefined && parseAmounts(rowText).length > 0;
+  const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
+  return m.kind === "one" ? { ok: true } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
+}
+
+/** The text a lone element is verified on: its row (see rowTextOf), else the page's own text, which fits an invoice's detail page. "" for neither. */
+export async function loneRowText(d: BrowserDriver, ref: string): Promise<string> {
+  const row = rowTextOf((await d.evaluate(scripts.rowChain(ref)).catch(() => null)) as string[] | null);
+  if (row) return row;
+  const page = (await d.evaluate(scripts.mainText()).catch(() => null)) as string | null;
+  return page && fullDateCount(page) === 1 ? page : "";
 }
 
 /**
@@ -322,14 +332,15 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       case "download": {
         let source: { url: string } | { trigger: () => Promise<void> };
         if (step.url) {
+          // An address cannot be tied to an invoice's row, so with an invoice it is never taken.
+          if (o.invoice) throw new Handoff("row-not-verified", "This step downloads a fixed address, which can't be checked against the invoice's row.");
           source = { url: new URL(step.url, (await d.state()).url || undefined).href };
         } else if (step.target) {
           const r = await locate(d, step.target, [], o.invoice);
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
           // A download found without a row rule must still sit in the invoice's row: a list showing one invoice is not proof it is the wanted one.
           if (o.invoice && !step.target.row && !step.target.period) {
-            const chain = (await d.evaluate(scripts.rowChain(r.target)).catch(() => null)) as string[] | null;
-            const v = verifySingleRow(rowTextOf(chain), o.invoice);
+            const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
             if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
           }
           source = await refDownloadSource(d, r.target, riskApprove);

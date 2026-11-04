@@ -62,11 +62,13 @@ export function checkInvoice(v: unknown): InvoiceParams {
 
 /** The columns that make the replay rule pick the row that was clicked, checked with the same picker replay uses; throws when none does. */
 function rowRule(ctx: TraceRowContext, invoice: InvoiceParams | undefined): { match: ("date" | "amount")[] } | undefined {
-  // A lone download candidate: the rule is added when its row shows the invoice, and the save is refused when it does not.
+  // A lone download candidate has no list to pick from, so no row rule is stored: replay checks its row against the invoice every time.
+  // Saving is refused when the row (or the page) does not show the invoice.
   if (ctx.texts.length === 1) {
     if (!invoice) return undefined;
-    for (const by of [["date"], ["date", "amount"]] as const) if (verifySingleRow(ctx.texts[0] ?? "", invoice, by).ok) return { match: [...by] };
-    throw new Error(`the download's row doesn't show the invoice date ${invoice.date}, so it could not be checked that this is the right invoice; pick the row of the invoice in the list (or a page that shows it) and download from there`);
+    const v = verifySingleRow(ctx.texts[0] ?? "", invoice);
+    if (!v.ok) throw new Error(`the download's ${v.detail}, so it could not be checked that this is the right invoice; download from the row of that invoice in the list, or from a page that shows only its date`);
+    return undefined;
   }
   if (!invoice) throw new Error("this step picks one row of a list; pass the invoice it was for (invoice: { date, amount? })");
   const refs = ctx.texts.map((_, i) => String(i));
@@ -145,9 +147,10 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
       case "download": {
         const fileType = r.contentType?.split(";")[0]?.split("/")[1];
         const row = r.rowContext ? rowRule(r.rowContext, invoice) : undefined;
+        if (invoice && !r.locator?.role && !r.locator?.name && !r.locator?.text) throw new Error(`entry ${r.n}: this download has no button or link that can be found again (only an address or a selector), so its row can't be checked against the invoice; download it by clicking the invoice's button or link`);
         if (row) byInvoice = true;
         if (byInvoice && !r.locator) throw new Error(`entry ${r.n}: this download address is specific to one invoice; download it by clicking`);
-        const asClick = row || byInvoice;
+        const asClick = row || byInvoice || !!invoice;
         return { kind: "download", ...(!asClick && r.url ? { url: r.url } : { target: { ...r.locator, ...(row ? { row } : {}) } }), ...(fileType ? { fileType } : {}) };
       }
     }
