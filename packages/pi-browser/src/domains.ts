@@ -126,6 +126,21 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
           return saved;
         }
       : undefined,
+    tabs: inner.tabs?.bind(inner),
+    switchTab: inner.switchTab
+      ? async (id) => {
+          const before = (await inner.tabs?.())?.find((t) => t.active)?.id;
+          await inner.switchTab!(id);
+          try {
+            await check(); // the tab may already sit on a refused page
+          } catch (error) {
+            // check() blanked the refused tab; the agent goes back to where it was instead of being stranded on it.
+            if (before) await inner.switchTab!(before).catch(() => undefined);
+            throw error;
+          }
+        }
+      : undefined,
+    watchNewTabs: inner.watchNewTabs?.bind(inner),
     loginList: inner.loginList?.bind(inner),
     // The saved site must pass the domain rules before the app types anything on it.
     loginFill: inner.loginFill && inner.loginList

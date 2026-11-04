@@ -42,6 +42,14 @@ export interface DocumentProbe {
   secret: boolean;
 }
 
+/** One open tab of the browser the agent drives. `id` is only meaningful to the driver that listed it. */
+export interface TabInfo {
+  id: string;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
 export interface BrowserDriver {
   navigate(url: string): Promise<PageState>;
   state(): Promise<PageState>;
@@ -52,6 +60,15 @@ export interface BrowserDriver {
   /** Resolves false when trusted input isn't available; callers then fall back to DOM events. */
   input(event: NativeInput): Promise<boolean>;
   screenshot(): Promise<{ data: string; mimeType: string }>;
+  /** Optional: the tabs of the agent's browser, the one the tools act on marked active. Drivers with a single page list just that one. */
+  tabs?(): Promise<TabInfo[]>;
+  /** Optional: makes the tab `id` (from `tabs()`) the one every tool acts on. Rejects when it is unknown, closed, or the driver has one tab only. */
+  switchTab?(id: string): Promise<void>;
+  /**
+   * Optional: starts watching for tabs the page opens (a target="_blank" link, window.open). The returned function lists those opened since
+   * (and still open), so an action can ask once it has settled.
+   */
+  watchNewTabs?(): Promise<() => Promise<TabInfo[]>>;
   /**
    * Optional: saves one download straight to `path` (absolute) without the bytes passing through the caller. Either `url` is
    * downloaded with the browser's own session, or `trigger` runs (e.g. a click) while the browser waits for the download it causes.

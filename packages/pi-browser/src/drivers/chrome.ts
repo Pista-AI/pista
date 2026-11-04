@@ -8,7 +8,7 @@ import { internalPageReason } from "../eval-gate.ts";
 import { readLoginOrigins } from "../chrome/login-origins.ts";
 import type { BrowserDriver } from "../driver.ts";
 import { ScreencastFeed, type ScreencastFrame } from "../chrome/screencast.ts";
-import { CdpDriver } from "./cdp.ts";
+import { CdpDriver, type CdpConn, type PageTarget } from "./cdp.ts";
 
 export interface ChromeDriverOptions {
   /** The Pista home; the browser profile lives under it. */
@@ -39,6 +39,14 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
   /** Sessions we intercept: the agent tab and every child target (popups, frames, workers) auto-attached under it. */
   private sessions = new Set<string>();
   private ownTarget: string | undefined;
+  /** The session we hold for each page target (the agent tab and the popups auto-attached under it), so switching back reuses it. */
+  private sessionOf = new Map<string, string>();
+  /** Page targets that are ours: the agent tab and every tab opened from one of ours. Restored tabs of an earlier session never are. */
+  private ours = new Set<string>();
+  /** Who opened each of our tabs, as last seen, for going back when a tab closes. */
+  private openers = new Map<string, string>();
+  /** Where to go when the active tab closed: its opener, if that is still open. */
+  private returnTo: string | undefined;
   private downloadListeners = new Set<(event: CdpEvent) => void>();
   private pageInfo = { url: "", title: "" };
   private casting = false;
@@ -52,6 +60,7 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     private deps: ChromeDriverDeps = {},
   ) {
     super("");
+    this.strictOpener = true;
   }
 
   // One browser and one tab serve every thread, and the rules are the ones of the thread that created the driver (the first); the managed policy is the same for all threads.
@@ -71,27 +80,64 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     return readLoginOrigins(pistaChromeProfileDir(this.options.pistaHome));
   }
 
-  protected async openTransport() {
+  /** Our tabs only: the browser may hold restored tabs or the user's own, which the agent never sees. */
+  protected async candidateTargets(): Promise<PageTarget[]> {
+    const transport = this.browser?.transport;
+    if (!transport) return [];
+    const { targetInfos } = await transport.send("Target.getTargets");
+    const pages = ((targetInfos ?? []) as { targetId: string; type: string; url: string; title: string; openerId?: string }[]).filter((t) => t.type === "page");
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const t of pages) if (!this.ours.has(t.targetId) && t.openerId && this.ours.has(t.openerId)) (this.ours.add(t.targetId), (grew = true));
+    }
+    for (const t of pages) if (t.openerId) this.openers.set(t.targetId, t.openerId);
+    // Oldest first: the browser's own order changes with focus.
+    const order = [...this.ours];
+    return pages.filter((t) => this.ours.has(t.targetId)).sort((a, b) => order.indexOf(a.targetId) - order.indexOf(b.targetId)).map((t) => ({ id: t.targetId, url: t.url, title: t.title, ...(t.openerId ? { openerId: t.openerId } : {}) }));
+  }
+
+  /** The tab to go back to after the active one closed: its opener, else our first tab, whichever is still open. */
+  private async tabToReturnTo(transport: CdpConn["transport"]): Promise<string | undefined> {
+    const wanted = [this.returnTo, this.ownTarget];
+    this.returnTo = undefined;
+    const { targetInfos } = await transport.send("Target.getTargets");
+    const open = new Set(((targetInfos ?? []) as { targetId: string }[]).map((t) => t.targetId));
+    return wanted.find((id): id is string => Boolean(id) && open.has(id!));
+  }
+
+  protected async openTransport(targetId?: string): Promise<CdpConn> {
     if (!this.browser) {
       const found: FoundBrowser | null = (this.deps.find ?? findBrowser)({ overridePath: this.options.browserPath });
       if (!found) throw new Error("No Chrome, Edge or Brave browser was found. Install Chrome, or set PISTA_BROWSER_PATH to a Chromium-based browser.");
       const browser = await (this.deps.launch ?? launchBrowser)({ browserPath: found.path, profileDir: pistaChromeProfileDir(this.options.pistaHome) });
       this.browser = browser;
+      this.ownTarget = this.returnTo = undefined;
+      for (const m of [this.sessionOf, this.openers, this.ours]) m.clear();
       const { transport } = browser;
       transport.onClose(() => {
         if (this.browser === browser) this.browser = undefined;
       });
       transport.onEvent((event) => this.onBrowserEvent(event));
-      // Popups and tabs the page opens are separate top-level targets; attach to every new one and hold it until it is guarded.
-      if (this.rules) await transport.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+      // Popups and tabs the page opens are separate top-level targets; attach to every new one and hold it until it is set up (and guarded, when there are rules).
+      await transport.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+      await transport.send("Target.setDiscoverTargets", { discover: true }); // targetDestroyed events prune our tab bookkeeping
     }
     const { transport } = this.browser;
-    // A tab of our own: restored tabs from an earlier session may sit on pages the rules deny and are never used.
-    const { targetId } = await transport.send("Target.createTarget", { url: "about:blank" });
-    this.ownTarget = targetId;
-    const { sessionId } = await transport.send("Target.attachToTarget", { targetId, flatten: true });
-    this.sessions.add(sessionId);
-    return { transport, sessionId };
+    // Our own tab again, or the one that opened the tab that closed, when it is still there.
+    targetId ??= await this.tabToReturnTo(transport);
+    if (!targetId) {
+      // A tab of our own: restored tabs from an earlier session may sit on pages the rules deny and are never used.
+      ({ targetId } = await transport.send("Target.createTarget", { url: "about:blank" }));
+      this.ownTarget = targetId;
+      this.ours.add(targetId!);
+    }
+    let sessionId = this.sessionOf.get(targetId!);
+    if (!sessionId) {
+      ({ sessionId } = await transport.send("Target.attachToTarget", { targetId, flatten: true }));
+      this.sessionOf.set(targetId!, sessionId!);
+    }
+    this.sessions.add(sessionId!);
+    return { transport, sessionId, targetId };
   }
 
   /** Intercepts document loads of one session and of every target that attaches under it. */
@@ -105,8 +151,10 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     const transport = this.browser?.transport;
     if (!transport) return;
     this.sessions.add(sessionId);
+    // A tab we switch to while this runs may get a second session of its own: benign, but switching prefers the one known here.
+    if (info.type === "page" && !this.sessionOf.has(info.targetId)) this.sessionOf.set(info.targetId, sessionId);
     try {
-      await this.guardSession(sessionId);
+      if (this.rules) await this.guardSession(sessionId);
     } catch {
       // A page or frame that cannot be guarded must not run; a worker has no documents to guard.
       if (info.type === "page") await transport.send("Target.closeTarget", { targetId: info.targetId }).catch(() => undefined);
@@ -119,8 +167,18 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     if (event.method === "Target.detachedFromTarget") {
       const gone = event.params?.sessionId;
       this.sessions.delete(gone);
-      if (gone === sessionId) this.conn = undefined; // the user closed our tab; the next use opens a new one
-    } else if (event.method === "Target.attachedToTarget" && (!event.sessionId || this.sessions.has(event.sessionId)) && this.rules) {
+      for (const [target, session] of this.sessionOf) if (session === gone) this.sessionOf.delete(target);
+      if (gone === sessionId) {
+        // The tab closed: the next use goes back to the tab that opened it, or opens a new one.
+        this.returnTo = (this.conn?.targetId ? this.openers.get(this.conn.targetId) : undefined) ?? this.returnTo;
+        this.conn = undefined;
+      }
+    } else if (event.method === "Target.targetDestroyed") {
+      const id = event.params?.targetId as string;
+      if (id && id === this.conn?.targetId) this.returnTo ??= this.openers.get(id);
+      this.ours.delete(id);
+      this.openers.delete(id);
+    } else if (event.method === "Target.attachedToTarget" && (!event.sessionId || this.sessions.has(event.sessionId))) {
       void this.onChildAttached(event.params.sessionId, event.params.targetInfo);
     } else if (event.method === "Fetch.requestPaused" && event.sessionId && this.sessions.has(event.sessionId)) {
       const { requestId, request } = event.params;
@@ -134,7 +192,7 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
       // Ack every frame so the browser keeps sending; the feed decides which ones are worth delivering.
       this.sendRaw("Page.screencastFrameAck", { sessionId: castId }).catch(() => undefined);
       this.feed.push({ data, width: metadata?.deviceWidth ?? 0, height: metadata?.deviceHeight ?? 0, ...this.pageInfo });
-    } else if (event.method === "Target.targetInfoChanged" && event.params?.targetInfo?.targetId === this.ownTarget) {
+    } else if (event.method === "Target.targetInfoChanged" && event.params?.targetInfo?.targetId === (this.conn?.targetId ?? this.ownTarget)) {
       this.pageInfo = { url: event.params.targetInfo.url ?? "", title: event.params.targetInfo.title ?? "" };
     } else if (event.method.startsWith("Browser.download")) {
       for (const listener of this.downloadListeners) listener(event);
@@ -170,8 +228,9 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     this.casting = true;
     try {
       await transport.send("Target.setDiscoverTargets", { discover: true });
-      if (this.ownTarget) {
-        const { targetInfo } = await transport.send("Target.getTargetInfo", { targetId: this.ownTarget });
+      const active = this.conn.targetId ?? this.ownTarget;
+      if (active) {
+        const { targetInfo } = await transport.send("Target.getTargetInfo", { targetId: active });
         this.pageInfo = { url: targetInfo?.url ?? "", title: targetInfo?.title ?? "" };
       }
       await this.sendRaw("Page.startScreencast", { format: "jpeg", quality: 60, maxWidth: 1280, everyNthFrame: 1 });
@@ -191,9 +250,10 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     if (!this.conn || !this.browser) return false; // not running: never launch a browser just to show it
     await this.sendRaw("Page.bringToFront");
     const transport = this.browser?.transport;
-    if (!transport || !this.ownTarget) return true;
+    const active = this.conn.targetId ?? this.ownTarget;
+    if (!transport || !active) return true;
     try {
-      const { windowId } = await transport.send("Browser.getWindowForTarget", { targetId: this.ownTarget });
+      const { windowId } = await transport.send("Browser.getWindowForTarget", { targetId: active });
       // Only a minimized window is restored; fullscreen and maximized windows stay as the user left them.
       const { bounds } = await transport.send("Browser.getWindowBounds", { windowId });
       if (bounds?.windowState === "minimized") await transport.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
@@ -203,10 +263,24 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
     return true;
   }
 
-  protected async onAttachFailed() {
-    const target = this.ownTarget;
-    this.ownTarget = undefined;
+  protected async onAttachFailed(conn: CdpConn) {
+    const target = conn.targetId ?? this.ownTarget;
+    if (target === this.ownTarget) this.ownTarget = undefined;
     if (target) await this.browser?.transport.send("Target.closeTarget", { targetId: target });
+  }
+
+  async switchTab(id: string) {
+    if (this.conn?.targetId === id) return;
+    // The tab we leave stops casting; the one we enter starts in onAttached.
+    await this.stopCast();
+    try {
+      await super.switchTab(id);
+      // Show it as the browser's current tab: a background tab loads and paints slowly.
+      await this.browser?.transport.send("Target.activateTarget", { targetId: id }).catch(() => undefined);
+    } catch (error) {
+      if (this.feed.count > 0) await this.startCast();
+      throw error;
+    }
   }
 
   async download(opts: { path: string; url?: string; trigger?: () => Promise<unknown> }) {

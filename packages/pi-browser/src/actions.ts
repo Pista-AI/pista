@@ -1,4 +1,5 @@
 import { deltaEnabled, presentSnapshot } from "./delta.ts";
+import { DomainBlockedError } from "./domains.ts";
 import type { BrowserDriver } from "./driver.ts";
 import { describeEffect, effectFeedbackEnabled, type EffectOp } from "./effect.ts";
 import { cutMarker, formatSnapshot, frameNotes, scripts, type FrameReport, type PageObservation, type PageSnapshot, type PreparedTarget } from "./page-scripts.ts";
@@ -24,6 +25,8 @@ export interface ActionResult {
   text?: string;
   /** Why the action didn't happen; the agent should correct course. */
   note?: string;
+  /** The click opened a new tab and the tools now act on it. */
+  openedTab?: true;
 }
 
 /** Settling after an action: wait for the page to render, not for a fixed time. */
@@ -71,8 +74,8 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
     return o && typeof o.fp === "string" ? o : undefined;
   };
   /** Settles, then appends what the page actually did (compared with `watch.before`) to the outcome. `arg` is the typed text. */
-  const after = async (outcome: string, popup?: SettleOptions, watch?: { op: EffectOp; target?: string; before: PageObservation | undefined; arg?: string; submit?: boolean }): Promise<ActionResult> => {
-    await settle(driver, popup);
+  const after = async (outcome: string, popup?: SettleOptions, watch?: { op: EffectOp; target?: string; before: PageObservation | undefined; arg?: string; submit?: boolean }, settled = false): Promise<ActionResult> => {
+    if (!settled) await settle(driver, popup);
     if (!watch || !feedback) return { outcome, text: await snapshot(150, true, popup?.noNavigation) };
     // Observed before the snapshot, which renumbers the refs. A page that is mid-navigation can't be scripted: its URL still tells.
     let now = await observe(watch.target);
@@ -130,11 +133,33 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
         t = confirmed.target;
       }
       const popup = await baseline(t.role, ["combobox", "listbox"]);
+      const newTabs = await driver.watchNewTabs?.().catch(() => undefined);
       // A covering element (invisible overlay, sticky header) would swallow a real click, so click through the DOM.
       const trusted = !t.coveredBy && t.x !== undefined && t.y !== undefined && (await driver.input({ type: "click", x: t.x, y: t.y }));
       if (!trusted) await driver.evaluate(scripts.syntheticInput(req.target, "click"));
       const covered = t.coveredBy ? ` (${t.coveredBy} was covering it, so it was clicked directly; if nothing changed, close that element first)` : "";
-      return after(`Clicked ${t.label}${covered}.`, popup, { op: "click", target: req.target, before });
+      const clicked = `Clicked ${t.label}${covered}.`;
+      const watch = { op: "click" as const, target: req.target, before };
+      if (!newTabs) return after(clicked, popup, watch);
+      // A link with target="_blank" or window.open() opens another tab: the tools follow it, so the next snapshot shows what the click led to.
+      await settle(driver, popup);
+      const fresh = await newTabs().catch(() => []);
+      if (fresh.length === 1 && driver.switchTab) {
+        try {
+          await driver.switchTab(fresh[0]!.id);
+          await settle(driver);
+          const url = (await driver.state().catch(() => undefined))?.url || fresh[0]!.url;
+          return { ...(await after(`${clicked} Opened a new tab: ${url}`, undefined, undefined, true)), openedTab: true };
+        } catch (error) {
+          if (error instanceof DomainBlockedError) throw error; // the tab was refused by policy: say so, do not report a switch failure
+          return after(`${clicked} It opened a new tab (${fresh[0]!.url}) that could not be switched to: ${(error as Error).message}`, popup, watch, true);
+        }
+      }
+      if (fresh.length > 1) {
+        const list = fresh.map((f) => f.url || "about:blank").join(", ");
+        return after(`${clicked} It opened ${fresh.length} new tabs (${list}); you are still on the first page. Use browser_tabs to switch to one.`, popup, undefined, true);
+      }
+      return after(clicked, popup, watch, true);
     }
     case "type": {
       const before = await observe(req.target);

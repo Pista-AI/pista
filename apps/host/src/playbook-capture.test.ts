@@ -31,6 +31,16 @@ describe("playbook_save", () => {
     assert.match(text, /^6 download .*inv-001\.pdf \(application\/pdf, address given by you\)$/m);
   });
 
+  it("says when a click opened a new tab, and saves it as an ordinary click", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}opens-tab.html` }); // 1
+    t.add({ kind: "click", locator: { role: "link", name: "Open invoice", text: "Open invoice" }, urlAfter: `${B}detail-tab.html`, openedTab: true }); // 2
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice", text: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    assert.match(describeTrace(t.list()), /^2 click link "Open invoice" -> .*detail-tab\.html \(opened a new tab\)$/m);
+    savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t");
+    assert.deepEqual(getPlaybook("127.0.0.1")!.steps.map((x) => x.kind), ["click", "download"]);
+  });
+
   it("keeps at most the last 200 entries, numbers never repeat", () => {
     const t = new PlaybookTrace();
     for (let i = 0; i < TRACE_LIMIT + 5; i++) t.add({ kind: "navigate", url: `${B}p${i}.html` });

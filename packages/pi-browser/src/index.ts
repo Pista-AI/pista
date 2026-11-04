@@ -1,4 +1,4 @@
-export type { BrowserDriver, NativeInput, PageState } from "./driver.ts";
+export type { BrowserDriver, NativeInput, PageState, TabInfo } from "./driver.ts";
 export { runPageAction, type ActionResult, type Approve, type PageAction } from "./actions.ts";
 export type { RiskApprover } from "./approval.ts";
 export { checkUrl, normalizeDomainPattern, guardDriver, DomainBlockedError, type DomainRules } from "./domains.ts";

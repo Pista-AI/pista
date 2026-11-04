@@ -176,6 +176,13 @@ export class PaneBrowserDriver implements BrowserDriver {
   async state() {
     return this.toState(await this.ask({ action: "state" }));
   }
+  async tabs() {
+    const page = await this.state();
+    return [{ id: "1", url: page.url, title: page.title, active: true }];
+  }
+  async switchTab(_id: string): Promise<void> {
+    throw new Error("The built-in browser has one tab, so there is nothing to switch to.");
+  }
   async back() {
     await this.ask({ action: "back" });
   }

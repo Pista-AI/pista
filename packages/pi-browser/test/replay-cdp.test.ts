@@ -210,3 +210,21 @@ test("the shortcut address is opened directly, skipping sign-in; a page that is 
   assert.ok(stale.ok && stale.shortcut === "failed", JSON.stringify(stale));
   assert.equal(asked, 1, "the full path ran, including the sign-in click");
 });
+
+test("a click that opens a new tab is followed, so the next step acts on the new page", { skip }, async () => {
+  const before = new Set(((await (await fetch(`${CDP}/json/list`)).json()) as { id: string }[]).map((t) => t.id));
+  await driver!.tabs(); // attach
+  const stranger = (await (await fetch(`${CDP}/json/new?about:blank`, { method: "PUT" })).json()) as { id: string };
+  assert.ok(!(await driver!.tabs()).some((t) => t.id === stranger.id), "a tab the driver did not attach to or see open is never listed");
+  await assert.rejects(driver!.switchTab(stranger.id), /No tab/);
+  await fetch(`${CDP}/json/close/${stranger.id}`);
+  const r = await runReplay(
+    { startUrl: `${base}opens-tab.html`, steps: [{ kind: "click", target: { role: "link", name: "Open invoice" } }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }] },
+    options("invoices/tab.pdf"),
+  );
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(readFileSync(join(dir, "invoices/tab.pdf"), "latin1").includes("inv-2026-09"));
+  assert.ok((await driver!.state()).url.endsWith("/detail-tab.html"));
+  // Leave no extra tab behind for the other tests.
+  for (const t of (await (await fetch(`${CDP}/json/list`)).json()) as { id: string; type: string }[]) if (t.type === "page" && !before.has(t.id)) await fetch(`${CDP}/json/close/${t.id}`);
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkUrl, normalizeDomainPattern, type DomainRules } from "../src/domains.ts";
+import { checkUrl, DomainBlockedError, guardDriver, normalizeDomainPattern, type DomainRules } from "../src/domains.ts";
 import type { BrowserDriver } from "../src/driver.ts";
 import { registerBrowserTools } from "../src/tools.ts";
 
@@ -142,4 +142,30 @@ test("without rules the driver is used as is", async () => {
   const { driver } = fakeDriver("https://evil.com/");
   const out = await tools(driver, {}).get("browser_navigate")!.execute("1", { url: "https://evil.com/" });
   assert.match(out.content[0].text!, /evil\.com/);
+});
+
+test("switching to a tab that is refused by policy goes back to the previous tab and rethrows", async () => {
+  const tabs = [
+    { id: "A", url: "https://ok.test/", title: "", active: true },
+    { id: "B", url: "https://evil.test/", title: "", active: false },
+  ];
+  const navigated: string[] = [];
+  const activate = (id: string) => tabs.forEach((t) => (t.active = t.id === id));
+  const inner = {
+    state: async () => {
+      const t = tabs.find((x) => x.active)!;
+      return { url: t.url, title: "", loading: false };
+    },
+    navigate: async (url: string) => {
+      navigated.push(url);
+      tabs.find((x) => x.active)!.url = url;
+      return { url, title: "", loading: false };
+    },
+    tabs: async () => tabs.map((t) => ({ ...t })),
+    switchTab: async (id: string) => activate(id),
+  } as unknown as BrowserDriver;
+  const guarded = guardDriver(inner, { allowedDomains: ["ok.test"] });
+  await assert.rejects(guarded.switchTab!("B"), DomainBlockedError);
+  assert.deepEqual(navigated, ["about:blank"], "the refused tab was blanked");
+  assert.equal(tabs.find((t) => t.active)!.id, "A", "and the agent is back on the first tab");
 });
