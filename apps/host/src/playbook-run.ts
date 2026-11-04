@@ -227,7 +227,7 @@ export function hostConsent(o: {
 const GATED = Symbol("gated");
 
 export type PlaybookRunResult =
-  | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean }
+  | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** keywords this run confirmed */ learned?: string[] }
   | { status: "handoff"; site: string; reason: ReplayReason; text: string }
   | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
 
@@ -299,12 +299,13 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
   });
   for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
   // A replay that passed the row check proves the keyword; a missing or unverified row counts against it.
+  let learned: string[] = [];
   if (req.merchant) {
     // Only a run whose row check compared the amount as well as the date can confirm a keyword.
-    if (r.ok) noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount && !req.deferProof });
+    if (r.ok) learned = noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount && !req.deferProof });
     else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
   }
-  if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount };
+  if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(learned.length ? { learned } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
   return { status: "handoff", site: pb.site, reason: r.reason, text: formatHandoff(pb.site, invoice, pb.steps.length, r) };

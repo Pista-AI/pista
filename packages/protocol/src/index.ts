@@ -979,6 +979,8 @@ export interface Methods {
   "playbook.dismissMerchant": { params: { site: string; merchant: string }; result: { ok: true } };
   /** Replaces the site's confirmed merchant keywords (cleaned and capped by the host). Fails when the site has no playbook. */
   "playbook.setMerchants": { params: { site: string; merchants: string[] }; result: { ok: true } };
+  /** Takes one confirmed keyword away (undo of a learned one). Fails when the site has no playbook. */
+  "playbook.removeMerchant": { params: { site: string; merchant: string }; result: { ok: true } };
 
   "mcp.status": { params: { threadId?: string }; result: McpServerStatus[] };
 
@@ -1050,7 +1052,34 @@ export type HostEvent =
       /** Step labels for "updated". */
       before?: string;
       after?: string;
+    }
+  /**
+   * What the host did with a pasted list of transactions before the model started. Sites and keywords are untrusted display text. No raw line or merchant text is ever included.
+   * `ask` lists broad pending keywords that matched a pasted line: the user may confirm them (`playbook.setMerchants`) or drop them (`playbook.dismissMerchant`). `learned` keywords can be undone (`playbook.removeMerchant`).
+   */
+  | {
+      type: "playbook.firstPass";
+      threadId: string;
+      fetchedCount: number;
+      /** All pasted lines, also when `lines` is capped. */
+      total: number;
+      lines: FirstPassLine[];
+      learned: { site: string; keyword: string }[];
+      ask: { site: string; keyword: string; why: "short" | "umbrella" | "other-site" | "unsure" }[];
     };
+
+export interface FirstPassLine {
+  lineNo: number;
+  site?: string;
+  /** Parsed values, yyyy-mm-dd; the amount is absolute. */
+  date?: string;
+  amount?: number;
+  currency?: string;
+  status: "fetched" | "exists" | "handed-off" | "declined" | "stopped" | "unmatched";
+  /** Base name of the saved file. */
+  file?: string;
+  reason?: string;
+}
 
 export type ClientFrame = { kind: "req"; id: string; method: MethodName; params: unknown };
 export type HostFrame =

@@ -10,7 +10,7 @@ import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
 import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
-import { batchGate, endFirstPass, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
+import { batchGate, endFirstPass, firstPassEvent, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
 export { hostConsent } from "./playbook-run.ts";
 
@@ -217,6 +217,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
               run: (req, signal) => runKeepingGuardShut(attempted, (scratch) => runPlaybookForInvoice({ ...runDeps, attempted: scratch }, consent, req, signal)),
               writeManifest: (rows) => ref.cwd && writeManifestRows(ref.cwd, rows),
             }, stop.signal);
+            if (out) hub.emit(firstPassEvent(ref.threadId, out, known()));
             if (stop.signal.aborted) {
               // The user pressed Stop: the model does not start. Files already fetched stay in the manifest.
               hub.emit({ type: "thread.event", threadId: ref.threadId, event: { type: "agent_settled" } });

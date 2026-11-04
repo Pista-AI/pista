@@ -358,6 +358,18 @@ export function dismissMerchant(site: string, merchant: unknown): void {
   if (!pb) throw new Error("no playbook for this site");
 }
 
+/** Takes one confirmed keyword away (the user undoing a learned one). Throws when the site has no playbook. */
+export function removeMerchant(site: string, merchant: unknown): void {
+  const key = cleanMerchant(merchant);
+  const pb = mutate(site, (p) => {
+    const rest = (p.merchants ?? []).filter((m) => m !== key);
+    if (rest.length) p.merchants = rest;
+    else delete p.merchants;
+    pruneMerchantNotes(p);
+  });
+  if (!pb) throw new Error("no playbook for this site");
+}
+
 /** Consecutive routed misses after which a confirmed keyword is dropped. */
 export const KEYWORD_MISS_LIMIT = 2;
 
@@ -458,17 +470,18 @@ export function recordKeywordMiss(site: string, keyword: string, txKey?: string)
 
 /**
  * A routed run's outcome for a transaction's merchant text. A hit resets the matching confirmed keywords and, only when `amountVerified`
- * (the row check compared the amount as well as the date), confirms matching pending ones. A miss counts once, against the single most
+ * (the row check compared the amount as well as the date), confirms matching pending ones (returned). A miss counts once, against the single most
  * specific matching confirmed keyword; `txKey` (from `transactionKey`) keeps a retry of the same transaction from counting twice.
  */
-export function noteMerchantOutcome(site: string, merchantText: string, outcome: "hit" | "miss", opts: BroadContext & { amountVerified?: boolean; txKey?: string } = {}): void {
+export function noteMerchantOutcome(site: string, merchantText: string, outcome: "hit" | "miss", opts: BroadContext & { amountVerified?: boolean; txKey?: string } = {}): string[] {
   const { amountVerified, txKey, ...ctx } = opts;
   const confirmed = getPlaybook(site)?.merchants ?? [];
   if (outcome === "miss") {
     const k = mostSpecificKeyword(confirmed, merchantText);
     if (k) recordKeywordMiss(site, k, txKey);
-    return;
+    return [];
   }
-  if (amountVerified) confirmByProof(site, merchantText, ctx);
+  const promoted = amountVerified ? confirmByProof(site, merchantText, ctx) : [];
   for (const k of confirmed) if (keywordMatches(k, merchantText)) recordKeywordHit(site, k);
+  return promoted;
 }
