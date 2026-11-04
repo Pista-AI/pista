@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Playbook, PlaybookMeta } from "@pista/protocol";
 import { host } from "../lib/host.ts";
 import { useApp } from "../lib/store.ts";
-import { describeSteps } from "../lib/playbooks.ts";
+import { describeStart, describeSteps } from "../lib/playbooks.ts";
 
 export const PLAYBOOKS_ANCHOR = "settings-playbooks";
 
@@ -99,6 +99,7 @@ export function Playbooks() {
             <div className="login-info">
               <strong>{p.site}</strong>
               <small>{p.stepCount === 1 ? "1 step" : `${p.stepCount} steps`} · {lastSucceeded(p.lastSucceeded)}</small>
+              {describeStart(p.startUrl, p.shortcutUrl).map((line) => <small key={line}>{line}</small>)}
             </div>
             <span className="playbook-actions">
               <span className={`playbook-chip ${p.status === "ok" ? "ok" : "bad"}`}>{p.status === "ok" ? "OK" : "Needs attention"}</span>

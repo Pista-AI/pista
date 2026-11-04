@@ -192,3 +192,17 @@ test("a path recorded for one month's invoice replays for an invoice in another 
   assert.ok(r.ok, JSON.stringify(r));
   assert.ok(readFileSync(join(dir, "invoices/rep.pdf"), "latin1").includes("inv-2026-11b"));
 });
+
+test("the shortcut address is opened directly, skipping sign-in; a page that is not the expected one falls back to the full path", { skip }, async () => {
+  let asked = 0;
+  const seen: string[] = [];
+  const o = (path: string) => ({ ...options(path), expectTimeoutMs: 1500, confirmRisk: async () => (asked++, true), onStep: (i: number, s: string) => seen.push(`${i}:${s}`) });
+  const direct = await runReplay({ startUrl: `${base}login.html`, steps: steps(), shortcut: { url: `${base}billing.html`, afterStep: 2 } }, o("invoices/s1.pdf"));
+  assert.ok(direct.ok && direct.shortcut === "used", JSON.stringify(direct));
+  assert.equal(asked, 0, "the sign-in click was not made");
+  assert.deepEqual(seen.slice(0, 3), ["0:done", "1:done", "2:done"]);
+  assert.ok(readFileSync(join(dir, "invoices/s1.pdf"), "latin1").startsWith("%PDF"));
+  const stale = await runReplay({ startUrl: `${base}login.html`, steps: steps(), shortcut: { url: `${base}home.html`, afterStep: 2 } }, o("invoices/s2.pdf"));
+  assert.ok(stale.ok && stale.shortcut === "failed", JSON.stringify(stale));
+  assert.equal(asked, 1, "the full path ran, including the sign-in click");
+});

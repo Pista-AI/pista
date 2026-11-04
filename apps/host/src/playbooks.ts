@@ -2,7 +2,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDomain } from "tldts";
-import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookStep } from "@pista/protocol";
+import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
 import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Consecutive failures after which a playbook is flagged "needs-attention". */
@@ -128,6 +128,68 @@ function step(v: unknown, site: string): PlaybookStep | null {
   }
 }
 
+/** A step whose target depends on the invoice, or the download itself: nothing at or after it may be skipped. */
+const byInvoice = (s: PlaybookStep): boolean => s.kind === "download" || ("target" in s && !!(s.target?.row || s.target?.period));
+
+const CHOOSER_ROLES = new Set(["menuitem", "menuitemradio", "option", "radio", "combobox", "listbox", "treeitem"]);
+const CHOOSER_NAME = /account|workspace|organi[sz]ation|company|profile/i;
+/** Names of buttons and links that only open a menu or lead to a page, even when they mention an account. */
+const OPENER_NAME = /\b(menu|settings|billing|invoices?)\b|menu$/i;
+const locators = (s: PlaybookStep): PlaybookLocator[] => (s.kind === "click" ? [s.target, ...(s.fallbacks ?? [])] : []);
+/** A step that picks which account, workspace or company the session works in: skipping it could land on the wrong one. */
+const choosesContext = (s: PlaybookStep): boolean => locators(s).some((l) => {
+  if (l.role && CHOOSER_ROLES.has(l.role)) return true;
+  const name = `${l.name ?? ""} ${l.text ?? ""}`;
+  return (l.role === "button" || l.role === "link") && CHOOSER_NAME.test(name) && !OPENER_NAME.test(name.trim());
+});
+const hasExpect = (s: PlaybookStep | undefined): boolean => !!s && "expect" in s && !!s.expect && !!(s.expect.urlIncludes || s.expect.text || s.expect.element);
+
+/**
+ * Whether skipping stored steps 1..afterStep is safe: the step at `afterStep` expects something recognisable on the landing page, and
+ * none of the skipped steps is a sign-in, an account/workspace chooser, or depends on the invoice (or is the download). When in doubt, no.
+ */
+export function canSkipTo(steps: readonly PlaybookStep[], afterStep: number): boolean {
+  if (!Number.isInteger(afterStep) || afterStep < 1 || afterStep > steps.length || !hasExpect(steps[afterStep - 1])) return false;
+  return !steps.slice(0, afterStep).some((s) => byInvoice(s) || s.kind === "signIn" || choosesContext(s));
+}
+
+/** An address that names one thing: no query at all, and no path segment that is all digits, a UUID, or 8+ hex characters. */
+function stableAddress(url: string): boolean {
+  const u = new URL(url);
+  return !u.search && !u.pathname.split("/").some((seg) => /^\d+$/.test(seg) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg) || /^[0-9a-f]{8,}$/i.test(seg));
+}
+
+/**
+ * The address to open directly instead of the clicks before it: the last click before the first invoice-dependent step or download
+ * whose page address (`urlsAfter[i]`, for stored step i + 1) differs from the start, is same-site and carries no id, token or secret
+ * query. Returns undefined when no click qualifies. The one place shortcuts are derived, from a capture or from a replay.
+ */
+export function deriveShortcut(startUrl: string, steps: readonly PlaybookStep[], urlsAfter: readonly (string | undefined)[], site: string): PlaybookShortcut | undefined {
+  let found: PlaybookShortcut | undefined;
+  for (let i = 0; i < steps.length && !byInvoice(steps[i]!); i++) {
+    const raw = urlsAfter[i];
+    if (steps[i]!.kind !== "click" || !raw || !canSkipTo(steps, i + 1)) continue;
+    try {
+      const url = sanitizeUrl(raw, site);
+      if (stableAddress(raw) && url !== sanitizeUrl(startUrl, site)) found = { url, afterStep: i + 1 };
+    } catch {}
+  }
+  return found;
+}
+
+/** A shortcut kept only when its address is clean and `afterStep` is a step before any invoice-dependent step or the download. */
+function shortcutOf(v: unknown, site: string, steps: readonly PlaybookStep[]): PlaybookShortcut | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const { url, afterStep } = v as { url?: unknown; afterStep?: unknown };
+  if (typeof url !== "string" || typeof afterStep !== "number" || !Number.isInteger(afterStep) || afterStep < 1 || afterStep > steps.length) return undefined;
+  if (!canSkipTo(steps, afterStep)) return undefined;
+  try {
+    return { url: sanitizeUrl(url, site), afterStep };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Builds a fresh Playbook from untrusted input, keeping known fields only. Throws with a short reason. */
 export function validatePlaybook(input: unknown, site: string): Playbook {
   const o = obj(input);
@@ -148,11 +210,14 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
         }
       }).slice(-MAX_HISTORY)
     : [];
+  const steps = o.steps.flatMap((s) => step(s, site) ?? []);
+  const shortcut = shortcutOf(o.shortcut, site, steps), candidate = shortcutOf(o.shortcutCandidate, site, steps);
   return {
     version: 1,
     site,
     startUrl: sanitizeUrl(String(o.startUrl), site),
-    steps: o.steps.flatMap((s) => step(s, site) ?? []),
+    steps,
+    ...(shortcut ? { shortcut, ...(count(o.shortcutFails) ? { shortcutFails: count(o.shortcutFails) } : {}) } : candidate ? { shortcutCandidate: candidate } : {}),
     createdAt: date(o.createdAt) ?? now,
     updatedAt: date(o.updatedAt) ?? now,
     ...(date(o.lastSucceeded) ? { lastSucceeded: date(o.lastSucceeded) } : {}),
@@ -213,7 +278,7 @@ export function listPlaybooks(): PlaybookMeta[] {
     if (!n.endsWith(".json")) continue;
     const pb = getPlaybook(n.slice(0, -5));
     if (!pb) continue;
-    out.push({ site: pb.site, startUrl: pb.startUrl, stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
+    out.push({ site: pb.site, startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
   }
   return out.sort((a, b) => a.site.localeCompare(b.site));
 }

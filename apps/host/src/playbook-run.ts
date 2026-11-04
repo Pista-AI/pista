@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { getPlaybook, LABEL_MAX, recordFailure, recordSuccess, siteKey } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, LABEL_MAX, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
@@ -64,11 +64,36 @@ function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
   return t.length > LABEL_MAX ? `${t.slice(0, LABEL_MAX - 1)}…` : t;
 }
 
+/** Shortcut failures in a row (the full path then worked) after which the shortcut is dropped: one slow page must not lose it. */
+const SHORTCUT_FAILS = 2;
+
+/** After a successful run: counts a failed shortcut (dropping it at the second in a row), or learns one; seen on two successful runs it is kept. */
+function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): void {
+  const pb = getPlaybook(site);
+  if (!pb) return;
+  const at = new Date().toISOString();
+  const { shortcut, shortcutCandidate: c, shortcutFails, ...rest } = pb;
+  const log = (summary: string) => [...pb.history, { at, summary }];
+  if (shortcut) {
+    if (r.shortcut === "used" && shortcutFails) savePlaybook({ ...rest, shortcut });
+    else if (r.shortcut === "failed") {
+      const fails = (shortcutFails ?? 0) + 1;
+      savePlaybook(fails >= SHORTCUT_FAILS ? { ...rest, history: log("shortcut dropped") } : { ...rest, shortcut, shortcutFails: fails });
+    }
+    return;
+  }
+  const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), site);
+  if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found, history: log("shortcut confirmed") });
+  else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) savePlaybook({ ...rest, shortcutCandidate: found, history: log("shortcut learned") });
+  else if (!found && c) savePlaybook(rest);
+}
+
 /** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
     recordSuccess(site);
+    noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
   if (r.reason === "declined" || r.reason === "aborted") return [];
@@ -189,7 +214,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
             approve: async () => !signal?.aborted,
             confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
             signal,
-            onStep: (i, status) => status === "done" && done.push(i),
+            onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
           });
         });
         for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);

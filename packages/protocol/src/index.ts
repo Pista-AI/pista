@@ -811,6 +811,16 @@ export type PlaybookStep =
   | { kind: "wait"; expect: PlaybookExpect }
   | { kind: "download"; target?: PlaybookLocator; url?: string; fileType?: string };
 
+/** `host/path` of an address (no scheme, query or fragment), for display as text. */
+export function hostPath(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname === "/" ? "" : u.pathname}`;
+  } catch {
+    return url.slice(0, 80);
+  }
+}
+
 function pathOf(url: string): string {
   try {
     const u = new URL(url);
@@ -843,12 +853,24 @@ export function describeStep(step: PlaybookStep): string {
   }
 }
 
+export interface PlaybookShortcut { url: string; afterStep: number }
+
 export interface Playbook {
   version: 1;
   /** Registrable domain the playbook belongs to. */
   site: string;
   startUrl: string;
   steps: PlaybookStep[];
+  /**
+   * An address that is already past stored step `afterStep` (1-based): replay may open `url` and continue with the step after it,
+   * skipping the earlier clicks. It never reaches a step that depends on the invoice or the download. Replay falls back to the full
+   * path from `startUrl` (and drops the shortcut) when the page does not show what step `afterStep` expects.
+   */
+  shortcut?: PlaybookShortcut;
+  /** A shortcut seen on one successful run; it becomes `shortcut` when the next successful run shows the same one. */
+  shortcutCandidate?: PlaybookShortcut;
+  /** Consecutive runs where the shortcut did not check out and the full path then worked; the shortcut is dropped at 2. */
+  shortcutFails?: number;
   createdAt: string;
   updatedAt: string;
   lastSucceeded?: string;
@@ -862,6 +884,8 @@ export interface Playbook {
 export interface PlaybookMeta {
   site: string;
   startUrl: string;
+  /** Where replay opens the list directly, when a shortcut is known. */
+  shortcutUrl?: string;
   stepCount: number;
   status: Playbook["status"];
   lastSucceeded?: string;

@@ -31,9 +31,11 @@ export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number }
-  | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string };
+  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; shortcut?: ReplayShortcutOutcome }
+  | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
+/** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
+export type ReplayShortcutOutcome = "used" | "failed";
 export interface ReplayOptions {
   /** The raw driver; replay wraps it in the same domain guard the browser tools use. */
   driver: BrowserDriver;
@@ -260,7 +262,7 @@ export async function expectationMet(d: BrowserDriver, expect: ReplayExpect): Pr
 }
 
 /** Replays `playbook` from its start page. Never handles credentials: sign-in goes through the driver's saved-login fill. */
-export async function runReplay(playbook: { startUrl: string; steps: readonly ReplayStep[] }, o: ReplayOptions): Promise<ReplayResult> {
+export async function runReplay(playbook: { startUrl: string; steps: readonly ReplayStep[]; shortcut?: { url: string; afterStep: number } }, o: ReplayOptions): Promise<ReplayResult> {
   const rules = o.domainRules;
   const d = rules && (rules.allowedDomains || rules.deniedDomains?.length) ? guardDriver(o.driver, rules, o.onDomainBlock) : o.driver;
   const now = o.now ?? Date.now;
@@ -379,22 +381,64 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     }
   };
 
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i]!;
-    o.onStep?.(i, "start");
+  const urls: string[] = [];
+  let shortcut: ReplayShortcutOutcome | undefined;
+  type Failure = Extract<ReplayResult, { ok: false }>;
+  /** True on a sign-in page: a password field, or a sign-in looking address. The same wall the full path would stop at. */
+  const loginWall = async (): Promise<boolean> => {
     try {
-      await run(step, i);
-    } catch (error) {
-      o.onStep?.(i, "failed");
-      const reason: ReplayReason = error instanceof Handoff ? error.reason : o.signal?.aborted ? "aborted" : error instanceof DomainBlockedError ? "blocked" : "error";
-      const detail = (error instanceof Error ? error.message : String(error)).slice(0, DETAIL_MAX);
-      // A page refused by the rules or off this playbook's site is not read into the handoff.
-      const url = await d.state().then((s) => s.url, () => "");
-      const snapshot = checkUrl(url, rules ?? {}) || !allowed(url) ? "" : await snapshotOf(d, 150).then((s) => formatSnapshot(s).slice(0, SNAPSHOT_MAX)).catch(() => "");
-      return { ok: false, failedIndex: i, step, reason, detail, url: url.slice(0, URL_MAX), snapshot };
+      if (/(^|[/_.-])(log-?in|sign-?in|sso|auth)($|[/_.-])/i.test(new URL((await d.state()).url).pathname)) return true;
+      return d.probe ? (await d.probe()).secret : (await d.evaluate(scripts.hasPassword())) === true;
+    } catch {
+      return false;
     }
-    o.onStep?.(i, "done");
+  };
+  const walk = async (from: number): Promise<Failure | undefined> => {
+    for (let i = from; i < steps.length; i++) {
+      const step = steps[i]!;
+      o.onStep?.(i, "start");
+      try {
+        await run(step, i);
+      } catch (error) {
+        o.onStep?.(i, "failed");
+        const reason: ReplayReason = error instanceof Handoff ? error.reason : o.signal?.aborted ? "aborted" : error instanceof DomainBlockedError ? "blocked" : "error";
+        const detail = (error instanceof Error ? error.message : String(error)).slice(0, DETAIL_MAX);
+        // A page refused by the rules or off this playbook's site is not read into the handoff.
+        const url = await d.state().then((st) => st.url, () => "");
+        const snapshot = checkUrl(url, rules ?? {}) || !allowed(url) ? "" : await snapshotOf(d, 150).then((st) => formatSnapshot(st).slice(0, SNAPSHOT_MAX)).catch(() => "");
+        return { ok: false, failedIndex: i, step, reason, detail, url: url.slice(0, URL_MAX), snapshot };
+      }
+      o.onStep?.(i, "done");
+      urls[i] = (await d.state().then((st) => st.url, () => "")).slice(0, URL_MAX);
+    }
+    return undefined;
+  };
+  let from = 0;
+  const sc = playbook.shortcut;
+  const afterStep = sc && Number.isInteger(sc.afterStep) && sc.afterStep >= 1 && sc.afterStep < steps.length ? steps[sc.afterStep] : undefined;
+  const expected = afterStep && "expect" in afterStep && afterStep.expect && (afterStep.expect.urlIncludes || afterStep.expect.text || afterStep.expect.element) ? afterStep.expect : undefined;
+  // Only a shortcut whose landing page can be recognised is used. It opens like any navigation (same guards), must show what step `afterStep` expects, and must not be a sign-in page.
+  if (sc && expected) {
+    try {
+      await run({ kind: "navigate", url: sc.url, expect: expected }, sc.afterStep);
+      if (await loginWall()) throw new Handoff("sign-in-needed", "The shortcut page asks for a sign-in.");
+      shortcut = "used";
+      from = sc.afterStep + 1;
+      for (let j = 0; j < from; j++) o.onStep?.(j, "done"); // the skipped steps count as done: the page is where they would have left it
+      urls[sc.afterStep] = (await d.state()).url;
+    } catch (error) {
+      // A stop is reported by the walk below; any other problem means the full path runs instead.
+      if (!o.signal?.aborted && !(error instanceof Handoff && error.reason === "aborted")) shortcut = "failed";
+    }
   }
-  if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "" };
-  return { ok: true, download: saved, steps: playbook.steps.length };
+  let failure = await walk(from);
+  if (failure && shortcut === "used" && failure.reason !== "aborted" && failure.reason !== "declined") {
+    // The shortcut led somewhere the stored steps do not fit: once from the full path before handing off. If that works, the shortcut failed.
+    shortcut = "failed";
+    failure = await walk(0);
+    if (failure) shortcut = undefined;
+  }
+  if (failure) return { ...failure, ...(shortcut ? { shortcut } : {}) };
+  if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "", ...(shortcut ? { shortcut } : {}) };
+  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), ...(shortcut ? { shortcut } : {}) };
 }
