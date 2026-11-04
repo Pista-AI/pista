@@ -185,15 +185,18 @@ export interface PlaybookRunDeps {
   threadId: string;
   /** Replays inject these in tests; defaults to the real one. */
   replay?: typeof runReplay;
-  /**
-   * Consent for host callers. Tool calls leave this unset: the approval gate in extensions.ts asked before the tool ran.
-   * A host caller MUST supply it (without it the run proceeds as if already approved). The core asks it where `playbookConsent`
-   * says the gate would ask, and refuses where the gate refuses. Needs `approvalMode` and `confirmSignIns`; without a mode it asks.
-   */
-  approve?: (summary: { site: string; stepCount: number; hasSignIn: boolean }) => Promise<boolean>;
-  approvalMode?: () => ApprovalMode;
-  confirmSignIns?: () => boolean | undefined;
 }
+
+/**
+ * Consent for a run, required so a caller cannot leave it out (fail closed).
+ * "gated": only the playbook_run tool wrapper, because the approval gate in extensions.ts already ran on the tool call.
+ * Otherwise (host callers): the core asks `approve` where `playbookConsent` says the gate would ask, and refuses where the gate refuses.
+ */
+export type PlaybookRunConsent =
+  | "gated"
+  | { approve: (summary: { site: string; stepCount: number; hasSignIn: boolean }) => Promise<boolean>; approvalMode: () => ApprovalMode; confirmSignIns: () => boolean | undefined };
+
+export type PlaybookRunCoreDeps = PlaybookRunDeps & { consent: PlaybookRunConsent };
 
 export type PlaybookRunResult =
   | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number }
@@ -211,7 +214,7 @@ export interface PlaybookRunRequest {
  * Follows the saved playbook for one invoice. Everything the playbook_run tool does, callable from host code.
  * Throws on a bad invoice, no project folder, or a path outside invoices/ (as the tool does).
  */
-export async function runPlaybookForInvoice(deps: PlaybookRunDeps, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
+export async function runPlaybookForInvoice(deps: PlaybookRunCoreDeps, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
   const pb = playbookFor(req.site);
   if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
   const invoice = checkInvoice(req.invoice);
@@ -221,10 +224,11 @@ export async function runPlaybookForInvoice(deps: PlaybookRunDeps, req: Playbook
   if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
   const overwrite = req.overwrite;
   if (!overwrite && existsSync(confineToFolder(root, path))) return { status: "exists", text: `A file already exists at ${path}. Pass overwrite: true to replace it, or another path.` };
-  if (deps.approve) {
+  if (deps.consent !== "gated") {
+    const consent = deps.consent;
     const hasSignIn = pb.steps.some((s) => s.kind === "signIn");
-    const { decision } = playbookConsent(deps.approvalMode?.() ?? "ask-writes", deps.confirmSignIns?.(), hasSignIn);
-    const allowed = decision === "allow" || (decision === "ask" && (await deps.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn })));
+    const { decision } = playbookConsent(consent.approvalMode(), consent.confirmSignIns(), hasSignIn);
+    const allowed = decision === "allow" || (decision === "ask" && (await consent.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn })));
     if (!allowed) {
       deps.attempted.add(pb.site); // as the gate's declined event does: a decline does not keep the site shut
       return { status: "declined", text: `The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.` };
@@ -272,7 +276,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
       }),
       execute: async (_id, { site, invoice, path, overwrite }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const r = await runPlaybookForInvoice(deps, { site, invoice, path, overwrite }, signal);
+        const r = await runPlaybookForInvoice({ ...deps, consent: "gated" }, { site, invoice, path, overwrite }, signal);
         if (r.status === "downloaded") return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).` }, null, 2));
         return text(r.text);
       },

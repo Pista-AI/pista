@@ -281,8 +281,7 @@ function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true,
     emit: (e: unknown) => events.push(e),
     threadId: "t",
     replay: (async (...a: unknown[]) => (replays++, replay(...a))) as never,
-    approve: async (s: unknown) => (asked.push(s), answer),
-    approvalMode: () => mode,
+    consent: { approve: async (s: unknown) => (asked.push(s), answer), approvalMode: () => mode, confirmSignIns: () => undefined },
   };
   return { attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}) => runPlaybookForInvoice(deps as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }) };
 }
