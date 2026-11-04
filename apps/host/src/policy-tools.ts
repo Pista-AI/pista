@@ -226,3 +226,17 @@ export function compileToolRules(policy: ManagedPolicy | null | undefined): Tool
 
 /** True for the tools that run a shell command from `input.command`. */
 export const isShellTool = (toolName: string) => SHELL_TOOLS.includes(toolName);
+
+/** The first rule that refuses this call, or null. Every tool call, including codemode's nested ones, passes through here. */
+export function denyToolCall(rules: ToolRules, toolName: string, input: unknown): Denial | null {
+  const denied = rules.checkTool(toolName) ?? rules.checkMcp(toolName, input);
+  if (denied || !isShellTool(toolName)) return denied;
+  const command = (input as { command?: unknown } | null | undefined)?.command;
+  // A shell call without a readable command cannot be checked, so it does not run.
+  return typeof command === "string" ? rules.checkBash(command) : { rule: "tools.bash", reason: "Blocked by your organisation's policy: tools.bash (no command to check)" };
+}
+
+/** The managed policy's tool rules refuse this call (the approval gate and host-side runs share this). */
+export function toolRulesDeny(store: { toolRules: ToolRules | null | undefined }, toolName: string, input: unknown): Denial | null {
+  return store.toolRules ? denyToolCall(store.toolRules, toolName, input) : null;
+}

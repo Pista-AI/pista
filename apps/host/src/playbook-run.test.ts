@@ -7,7 +7,7 @@ import { liveOf, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("playbook-run", { cleanup: "exit" });
 const { approvalExtension } = await import("./extensions.ts");
-const { formatHandoff, playbookGuardMessage, recordRun, registerPlaybookRun, serialised, unfence } = await import("./playbook-run.ts");
+const { formatHandoff, playbookConsent, playbookGuardMessage, recordRun, registerPlaybookRun, runPlaybookForInvoice, serialised, unfence } = await import("./playbook-run.ts");
 const { Hub } = await import("./hub.ts");
 const { PlaybookTrace, savePlaybookFromTrace } = await import("./playbook-capture.ts");
 const { getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
@@ -264,4 +264,106 @@ test("a shortcut is learned once two successful runs saw the same address", () =
   assert.deepEqual(seen(), [undefined, undefined, undefined]);
   assert.equal(last().at(-1), "shortcut dropped");
   assert.equal(getPlaybook("127.0.0.1")!.failCount, 0, "a failed shortcut is not a playbook failure");
+});
+
+/** runPlaybookForInvoice called directly, as host code does, with the replay stubbed. */
+function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true, replay: (...a: unknown[]) => Promise<unknown> = async () => handoff("not-found"), policy?: string) {
+  const attempted = new Set<string>();
+  const events: unknown[] = [];
+  const asked: unknown[] = [];
+  let replays = 0;
+  const deps = {
+    driver: () => ({}) as never,
+    downloadRoot: () => projectDir,
+    trace: new PlaybookTrace(),
+    attempted,
+    confirmRisk: async () => false,
+    emit: (e: unknown) => events.push(e),
+    threadId: "t",
+    replay: (async (...a: unknown[]) => (replays++, replay(...a))) as never,
+  };
+  const consent = { approve: async (s: unknown) => (asked.push(s), answer), approvalMode: () => mode, confirmSignIns: () => undefined, policy: () => policy };
+  return { deps, attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}, over: Record<string, unknown> = {}, signal?: AbortSignal) => runPlaybookForInvoice(deps as never, { ...consent, ...over } as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }, signal) };
+}
+
+test("the consent decision is shared: read-only refuses, ask mode asks, full access passes, a sign-in step asks", () => {
+  assert.deepEqual(playbookConsent("read-only", undefined, false), { decision: "refuse", forced: false });
+  assert.deepEqual(playbookConsent("ask-writes", undefined, false), { decision: "ask", forced: false });
+  assert.deepEqual(playbookConsent("full-access", undefined, false), { decision: "allow", forced: false });
+  assert.deepEqual(playbookConsent("full-access", undefined, true), { decision: "ask", forced: true });
+  assert.equal(playbookConsent("full-access", false, true).decision, "allow");
+});
+
+test("a direct run asks in ask mode, not in full access, and read-only refuses", async () => {
+  save();
+  const ask = direct("ask-writes");
+  assert.equal((await ask.run()).status, "handoff");
+  assert.deepEqual(ask.asked, [{ site: "127.0.0.1", stepCount: 2, hasSignIn: false }]);
+  const full = direct("full-access");
+  await full.run();
+  assert.equal(full.asked.length, 0);
+  assert.equal(full.replays(), 1);
+  const ro = direct("read-only");
+  assert.equal((await ro.run()).status, "declined");
+  assert.deepEqual([ro.asked.length, ro.replays(), [...ro.attempted]], [0, 0, ["127.0.0.1"]], "refused without asking or replaying, and the site opens for browsing");
+});
+
+test("a direct run the user declines does not replay and opens the site", async () => {
+  save();
+  const d = direct("ask-writes", false);
+  assert.equal((await d.run()).status, "declined");
+  assert.deepEqual([d.replays(), [...d.attempted], d.events], [0, ["127.0.0.1"], []]);
+});
+
+test("a direct run leaves the same attempted set and events as the tool, and returns the tool's handoff text", async () => {
+  save();
+  const t = runTool({ replay: async () => handoff("not-found") });
+  const toolText = await t.run({ path: "invoices/direct.pdf" });
+  const d = direct("full-access");
+  const r = await d.run();
+  assert.deepEqual([...d.attempted], [...t.attempted]);
+  assert.equal(r.status === "handoff" && r.text, toolText);
+  assert.ok(d.events.length > 0);
+  assert.equal(d.events.every((e) => (e as { type: string }).type === "playbook.event"), true);
+});
+
+test("a direct run is bound by policy and tool rules, and read-only says so", async () => {
+  save();
+  const d = direct("full-access", true, undefined, "Blocked by policy: playbook_run is denied.");
+  const r = await d.run();
+  assert.deepEqual([r.status, "text" in r && r.text, d.replays(), d.asked.length, [...d.attempted]], ["declined", "Blocked by policy: playbook_run is denied.", 0, 0, ["127.0.0.1"]]);
+  const ro = await direct("read-only").run();
+  assert.equal("text" in ro && ro.text, "Read-only mode: not running the playbook for 127.0.0.1.");
+});
+
+test("an abort while waiting for approval ends the run as aborted without replaying", async () => {
+  save();
+  const d = direct("ask-writes");
+  const ac = new AbortController();
+  const pending = d.run({}, { approve: (_s: unknown, sig?: AbortSignal) => (assert.equal(sig, ac.signal), new Promise<boolean>(() => {})) }, ac.signal);
+  setTimeout(() => ac.abort(), 10);
+  assert.equal(((await Promise.race([pending, new Promise((r) => setTimeout(() => r({ status: "hung" }), 2000))])) as { status: string }).status, "aborted");
+  assert.equal(d.replays(), 0);
+});
+
+test("hostConsent wires the gate's tool rules: a store that denies playbook_run refuses a host call", async () => {
+  save();
+  const { hostConsent } = await import("./extensions.ts");
+  const store = { config: { approvalMode: "full-access" }, toolRules: { checkTool: (n: string) => (n === "playbook_run" ? { rule: "tools.deny", reason: "Blocked by your organisation's policy: tools.deny" } : null), checkMcp: () => null, checkBash: () => null } } as never;
+  const d = direct("full-access");
+  const asked: unknown[] = [];
+  const consent = hostConsent({ store, approve: async (s) => (asked.push(s), true) });
+  const r = await runPlaybookForInvoice(d.deps as never, consent, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/hc.pdf" });
+  assert.equal(r.status, "declined");
+  assert.match("text" in r ? r.text : "", /tools\.deny/);
+  assert.deepEqual([d.replays(), asked.length], [0, 0]);
+});
+
+test("a paused host consent refuses before replay", async () => {
+  save();
+  const { hostConsent } = await import("./extensions.ts");
+  const d = direct("full-access");
+  const consent = hostConsent({ store: { config: { approvalMode: "full-access" }, toolRules: null }, approve: async () => true, paused: () => true });
+  const r = await runPlaybookForInvoice(d.deps as never, consent, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/p.pdf" });
+  assert.deepEqual([r.status, "text" in r && /^Paused/.test(r.text), d.replays()], ["declined", true, 0]);
 });

@@ -3,10 +3,11 @@ import { existsSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type ReplayReason, type ReplayResult, type RiskApprover } from "@pista/pi-browser";
 import { Type } from "typebox";
-import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
+import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
 import { deriveShortcut, getPlaybook, LABEL_MAX, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
+import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
 export const PLAYBOOK_DECLINED = "pista:playbook-declined";
@@ -157,6 +158,19 @@ export function serialised<T>(key: object, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** What the approval gate (tool calls) and `runPlaybookForInvoice` (host callers) do before a playbook run: let it through, ask the user, or refuse. */
+export type PlaybookConsent = { decision: "allow" | "ask" | "refuse"; /** a sign-in step is asked about every time, even in full access */ forced: boolean };
+
+/**
+ * The one place that decides whether a playbook run needs the user's consent, so the gate and the core cannot drift apart:
+ * read-only refuses; ask mode asks; full access lets it through unless a sign-in step makes it ask (the owner can turn that off with `confirmSignIns: false`).
+ */
+export function playbookConsent(mode: ApprovalMode, confirmSignIns: boolean | undefined, hasSignIn: boolean): PlaybookConsent {
+  const forced = hasSignIn && confirmSignIns !== false;
+  if (mode === "full-access" && !forced) return { decision: "allow", forced };
+  return { decision: mode === "read-only" ? "refuse" : "ask", forced };
+}
+
 export interface PlaybookRunDeps {
   driver: () => BrowserDriver;
   domainRules?: DomainRules;
@@ -174,6 +188,124 @@ export interface PlaybookRunDeps {
   replay?: typeof runReplay;
 }
 
+declare const consentBrand: unique symbol;
+
+/**
+ * Consent for a host caller, required so it cannot be left out (fail closed). The core asks `approve` where `playbookConsent` says the
+ * approval gate would ask, and refuses where the gate refuses. `policy` is the gate's own refusals (a role's block, managed policy,
+ * tool rules): return the reason to refuse, or undefined. Host callers MUST get this from `hostConsent` (extensions.ts), which wires
+ * `policy` to the approval gate's own checks; the type is branded so a hand-built object does not compile. `approve` gets the run's signal; an abort while it waits ends the run as "aborted".
+ */
+export interface PlaybookRunConsent {
+  readonly [consentBrand]: true;
+  approve: (summary: { site: string; stepCount: number; hasSignIn: boolean }, signal?: AbortSignal) => Promise<boolean>;
+  approvalMode: () => ApprovalMode;
+  confirmSignIns: () => boolean | undefined;
+  policy: () => string | undefined;
+  /** The gate's declined/pause state: true refuses the run before it replays. */
+  paused?: () => boolean;
+}
+
+const brandConsent = (c: Omit<PlaybookRunConsent, typeof consentBrand>): PlaybookRunConsent => c as PlaybookRunConsent;
+
+/**
+ * The consent for a host-side playbook run (`runPlaybookForInvoice`), and the only way to get one. The policy check is the gate's own
+ * (`block` is the role refusal passed to `approvalExtension`, plus the managed tool rules), for the playbook_run tool.
+ * `paused` lets the caller report the gate's declined state so a paused thread runs nothing.
+ */
+export function hostConsent(o: {
+  store: { config: { approvalMode: ApprovalMode; confirmSignIns?: boolean }; toolRules: ToolRules | null | undefined };
+  approve: PlaybookRunConsent["approve"];
+  block?: (toolName: string, input: Record<string, unknown>) => string | undefined;
+  paused?: () => boolean;
+}): PlaybookRunConsent {
+  return brandConsent({
+    approve: o.approve,
+    approvalMode: () => o.store.config.approvalMode,
+    confirmSignIns: () => o.store.config.confirmSignIns,
+    policy: () => o.block?.("playbook_run", {}) ?? toolRulesDeny(o.store, "playbook_run", {})?.reason,
+    ...(o.paused ? { paused: o.paused } : {}),
+  });
+}
+
+/** Module-private: only the playbook_run tool wrapper may skip the consent step, because the approval gate already ran on the tool call. */
+const GATED = Symbol("gated");
+
+export type PlaybookRunResult =
+  | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number }
+  | { status: "handoff"; site: string; reason: ReplayReason; text: string }
+  | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
+
+export interface PlaybookRunRequest {
+  site: string;
+  invoice: unknown;
+  path?: string;
+  overwrite?: boolean;
+}
+
+/**
+ * Follows the saved playbook for one invoice. Everything the playbook_run tool does, callable from host code.
+ * Throws on a bad invoice, no project folder, or a path outside invoices/ (as the tool does).
+ */
+export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRunConsent, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
+  return runCore(deps, consent, req, signal);
+}
+
+async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
+  const pb = playbookFor(req.site);
+  if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
+  const invoice = checkInvoice(req.invoice);
+  const root = deps.downloadRoot();
+  if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
+  const path = req.path?.trim() || defaultPath(pb.site, invoice);
+  if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
+  const overwrite = req.overwrite;
+  if (!overwrite && existsSync(confineToFolder(root, path))) return { status: "exists", text: `A file already exists at ${path}. Pass overwrite: true to replace it, or another path.` };
+  if (consent !== GATED) {
+    const declined = (text: string): PlaybookRunResult => {
+      deps.attempted.add(pb.site); // as the gate's declined event does: a refusal does not keep the site shut
+      return { status: "declined", text };
+    };
+    if (consent.paused?.()) return declined(`Paused: not running the playbook for ${pb.site}.`);
+    const refused = consent.policy();
+    if (refused) return declined(refused);
+    const hasSignIn = pb.steps.some((s) => s.kind === "signIn");
+    const { decision } = playbookConsent(consent.approvalMode(), consent.confirmSignIns(), hasSignIn);
+    if (decision === "refuse") return declined(`Read-only mode: not running the playbook for ${pb.site}.`);
+    if (decision === "ask") {
+      if (signal?.aborted) return { status: "aborted", text: `Stopped before the playbook for ${pb.site} ran.` };
+      const aborted = new Promise<"aborted">((resolve) => signal?.addEventListener("abort", () => resolve("aborted"), { once: true }));
+      const answer = await Promise.race([consent.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn }, signal), aborted]);
+      if (answer === "aborted") return { status: "aborted", text: `Stopped while waiting for approval of the playbook for ${pb.site}.` };
+      if (!answer) return declined(`The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.`);
+    }
+  }
+  const driver = deps.driver();
+  const done: number[] = [];
+  const r = await serialised(driver, () => {
+    deps.attempted.add(pb.site); // the replay starts now
+    return (deps.replay ?? runReplay)(pb, {
+      driver,
+      domainRules: deps.domainRules,
+      allowUrl: (u) => siteOf(u) === pb.site && /^https?:/i.test(u),
+      downloadRoot: root,
+      downloadPath: path,
+      overwrite,
+      invoice,
+      // Consent was settled above (the gate for tool calls, `approve` for host callers), so the steps need no further question.
+      approve: async () => !signal?.aborted,
+      confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
+      signal,
+      onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
+    });
+  });
+  for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
+  if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps };
+  // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
+  if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
+  return { status: "handoff", site: pb.site, reason: r.reason, text: formatHandoff(pb.site, invoice, pb.steps.length, r) };
+}
+
 export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): void {
   pi.registerTool(
     defineTool({
@@ -188,40 +320,11 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         path: Type.Optional(Type.String({ description: "Where to save it, relative to the project folder" })),
         overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
       }),
-      execute: async (_id, { site: rawSite, invoice: rawInvoice, path: rawPath, overwrite }, signal) => {
+      execute: async (_id, { site, invoice, path, overwrite }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const pb = playbookFor(rawSite);
-        if (!pb) return text(`No playbook is saved for ${String(rawSite).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.`);
-        const invoice = checkInvoice(rawInvoice);
-        const root = deps.downloadRoot();
-        if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
-        const path = rawPath?.trim() || defaultPath(pb.site, invoice);
-        if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
-        if (!overwrite && existsSync(confineToFolder(root, path))) return text(`A file already exists at ${path}. Pass overwrite: true to replace it, or another path.`);
-        const driver = deps.driver();
-        const done: number[] = [];
-        const r = await serialised(driver, () => {
-          deps.attempted.add(pb.site); // the replay starts now
-          return (deps.replay ?? runReplay)(pb, {
-            driver,
-            domainRules: deps.domainRules,
-            allowUrl: (u) => siteOf(u) === pb.site && /^https?:/i.test(u),
-            downloadRoot: root,
-            downloadPath: path,
-            overwrite,
-            invoice,
-            // The approval gate asked about this call before it ran (once per run, in the modes where browser clicks ask), so the steps need no further question.
-            approve: async () => !signal?.aborted,
-            confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
-            signal,
-            onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
-          });
-        });
-        for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
-        if (r.ok) return text(JSON.stringify({ path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), note: `Followed the saved playbook for ${pb.site} (${r.steps} steps).` }, null, 2));
-        // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
-        if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
-        return text(formatHandoff(pb.site, invoice, pb.steps.length, r));
+        const r = await runCore(deps, GATED, { site, invoice, path, overwrite }, signal);
+        if (r.status === "downloaded") return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).` }, null, 2));
+        return text(r.text);
       },
     }),
   );
