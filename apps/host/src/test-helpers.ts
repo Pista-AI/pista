@@ -4,7 +4,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after } from "node:test";
+import { after, before } from "node:test";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ManagedPolicy } from "@pista/protocol";
 import type { Hub } from "./hub.ts";
@@ -62,6 +62,27 @@ export async function makeManager(opts: ManagerOptions = {}) {
 }
 
 export { fauxModels } from "./eval/faux-models.ts";
+
+/**
+ * The Chrome evals share one browser page, and node runs test files in parallel processes: this takes a lock (a directory, created atomically)
+ * in a `before` hook and drops it in `after` and at exit, so those files run one after another. Call it only when Chrome answers.
+ */
+export function serialiseChromeEval(): void {
+  const lock = join(tmpdir(), "pista-chrome-eval.lock");
+  const release = () => rmSync(lock, { recursive: true, force: true });
+  before(async () => {
+    for (const started = Date.now(); ; await new Promise((r) => setTimeout(r, 200))) {
+      try {
+        mkdirSync(lock);
+        break;
+      } catch {
+        if (Date.now() - started > 120_000) throw new Error("another Chrome eval holds the lock");
+      }
+    }
+    process.on("exit", release);
+  });
+  after(release);
+}
 
 /** The manager's private map of loaded threads; `T` narrows it to what a test reads. */
 export function liveOf<T = unknown>(manager: ThreadManager): Map<string, T> {

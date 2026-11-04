@@ -6,7 +6,7 @@ import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fauxModels, liveOf, makeManager, setupHome } from "./test-helpers.ts";
+import { fauxModels, liveOf, makeManager, serialiseChromeEval, setupHome } from "./test-helpers.ts";
 
 const CDP = process.env.PI_BROWSER_CDP_URL ?? "http://127.0.0.1:9223";
 const skip: string | false = await fetch(`${CDP}/json/version`, { signal: AbortSignal.timeout(1000) }).then(() => false as const, () => `no Chrome answers at ${CDP}`);
@@ -83,6 +83,7 @@ hub.add({ readyState: 1, OPEN: 1, on: () => {}, send: (frame: string) => {
 const { piAi, faux, models, ref } = await fauxModels();
 const { manager, store, project } = await makeManager({ projectDir, models, hub });
 store.patchConfig({ defaultModel: ref, approvalMode: "ask-writes" });
+if (!skip) serialiseChromeEval();
 
 type Ctx = { messages: { role: string; content: string | { type: string; text?: string; name?: string }[] }[] };
 const lastText = (ctx: Ctx) => {
@@ -163,7 +164,8 @@ test("run 3: a renamed link hands off at the download step; the model repairs it
     assert.deepEqual(toolCalls(id), ["playbook_run", "browser_snapshot", "browser_download", "playbook_save", "playbook_save"]);
     assert.match(file(path), /inv-2026-10b/);
     assert.match(results.at(-1)!, new RegExp(`Updated the playbook for 127\\.0\\.0\\.1; first changed step is ${steps}`), results.at(-1)!);
-    assert.deepEqual(playbookEvents().at(-1), { type: "playbook.event", threadId: id, kind: "updated", site: "127.0.0.1", step: steps });
+    const updated = playbookEvents().at(-1)!;
+    assert.deepEqual({ ...updated, before: typeof updated.before, after: typeof updated.after }, { type: "playbook.event", threadId: id, kind: "updated", site: "127.0.0.1", step: steps, stepCount: steps, before: "string", after: "string" });
     const pb = getPlaybook("127.0.0.1")!;
     assert.match(pb.history.at(-1)!.summary, new RegExp(`changed step ${steps}$`));
     assert.equal(pb.steps.length, steps);
