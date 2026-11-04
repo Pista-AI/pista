@@ -891,6 +891,9 @@ export interface Playbook {
   history: { at: string; summary: string }[];
 }
 
+/** Why the host refused a keyword the user typed. */
+export type MerchantRefusal = "too-short" | "too-long" | "wildcard-placement" | "too-many-wildcards" | "too-general" | "too-many";
+
 export interface PlaybookMeta {
   site: string;
   startUrl: string;
@@ -977,8 +980,8 @@ export interface Methods {
   "playbook.delete": { params: { site: string }; result: { ok: true } };
   /** Drops one suggested keyword. */
   "playbook.dismissMerchant": { params: { site: string; merchant: string }; result: { ok: true } };
-  /** Replaces the site's confirmed merchant keywords (cleaned and capped by the host). Fails when the site has no playbook. */
-  "playbook.setMerchants": { params: { site: string; merchants: string[] }; result: { ok: true } };
+  /** Replaces the site's confirmed merchant keywords (cleaned and capped by the host); `refused` lists the ones it did not accept, with why. Fails when the site has no playbook. */
+  "playbook.setMerchants": { params: { site: string; merchants: string[] }; result: { ok: true; refused: { merchant: string; reason: MerchantRefusal }[] } };
 
   "mcp.status": { params: { threadId?: string }; result: McpServerStatus[] };
 
