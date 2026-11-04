@@ -64,13 +64,27 @@ test("a paste with an end marker cannot close the data block early", async () =>
   assert.equal(body.split("pasted-lines>>>").length, 2);
 });
 
-test("nothing routed, or a declined batch: no first pass and no run", async () => {
+test("nothing routed: no first pass and no run", async () => {
   let ran = 0;
   const run = async () => (ran++, downloaded("x", 1));
   assert.equal(await runFirstPass("2026-01-16 SOMEBODY ELSE 12.00 USD", { playbooks: all, allow: async () => true, run }), undefined);
   assert.equal(await runFirstPass("not transactions at all", { playbooks: all, allow: async () => true, run }), undefined);
-  assert.equal(await runFirstPass(PASTE, { playbooks: all, allow: async () => false, run }), undefined);
   assert.equal(ran, 0);
+});
+
+test("a declined batch: every routed line is declined, nothing runs, and the rest still goes to the model", async () => {
+  let ran = 0;
+  const out = await runFirstPass(PASTE, { playbooks: all, allow: async () => false, run: async () => (ran++, downloaded("x", 1)) });
+  assert.ok(out);
+  assert.equal(ran, 0);
+  assert.equal(out.ran, false);
+  assert.deepEqual(out.declined.map((d) => d.line.lineNo), [1, 3, 4]);
+  const text = summarise(out);
+  assert.match(text, /declined fetching these 3 automatically[\s\S]*Do not fetch them; ask the user before fetching/);
+  const block = text.split("<<<pasted-lines\n")[1]!;
+  assert.match(block, /SOMEBODY ELSE/);
+  assert.match(block, /GAMMA CLOUD/);
+  assert.doesNotMatch(block, /ACME|BETA/);
 });
 
 test("a thrown run and a stop send the line back to the model", async () => {
@@ -197,9 +211,28 @@ test("declined lines are told apart from the work list, and a decline does not o
   assert.deepEqual([...attempted], ["acme.test"]);
 });
 
-test("the first pass runs once per thread, on the first text that parses as transactions", () => {
+test("the first pass runs once per thread: a text that parses is ready until a batch really ran", () => {
   const once = firstPassOnce();
-  assert.equal(once("hello, can you help?"), false);
-  assert.equal(once("2026-01-15 ACME ROBOTICS 49.00 USD"), true);
-  assert.equal(once("2026-01-16 ACME ROBOTICS 49.00 USD"), false);
+  assert.equal(once.ready("hello, can you help?"), false);
+  assert.equal(once.ready("2026-01-15 ACME ROBOTICS 49.00 USD"), true);
+  assert.equal(once.ready("2026-01-15 ACME ROBOTICS 49.00 USD"), true, "still ready when nothing ran (declined, stopped, nothing routed)");
+  once.ran();
+  assert.equal(once.ready("2026-01-16 ACME ROBOTICS 49.00 USD"), false);
+});
+
+test("ran is true for an allowed batch and false after a stop", async () => {
+  const paste = "2026-01-15 ACME ROBOTICS -49.00 USD\n2026-01-16 PLAIN SHOP -3.00 USD\n2026-01-17 PLAIN SHOP -2.00 USD";
+  assert.equal((await runFirstPass(paste, { playbooks: all, allow: async () => true, run: async (r) => downloaded(r.site, 1) }))!.ran, true);
+  const ac = new AbortController();
+  assert.equal((await runFirstPass(paste, { playbooks: all, allow: async () => true, run: async (r) => (ac.abort(), downloaded(r.site, 1)) }, ac.signal))!.ran, false);
+});
+
+test("trial: a line counts only toward the keyword that routed it", async () => {
+  make("kappa.test", { merchantsPending: ["KAPPA", "KAPPA PRO"] });
+  const paste = ["2026-05-01 KAPPA PRO MONTHLY -9.00 USD", "2026-05-02 KAPPA PRO MONTHLY -9.00 USD", "2026-05-03 PLAIN SHOP -5.00 USD"].join("\n");
+  const { routed } = routeLines(parseTransactions(paste).lines, all());
+  assert.deepEqual(routed.map((r) => r.keyword), ["KAPPA PRO", "KAPPA PRO"]);
+  await runFirstPass(paste, { playbooks: all, allow: async () => true, run: asRun(() => true).run });
+  const pb = getPlaybook("kappa.test")!;
+  assert.deepEqual([pb.merchants, pb.merchantsPending], [["KAPPA PRO"], ["KAPPA"]]);
 });

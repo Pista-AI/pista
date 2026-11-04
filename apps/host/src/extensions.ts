@@ -187,7 +187,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         const first = firstPassOnce();
         // Before the model's first turn: a paste that parses as transactions is routed to saved playbooks by the host; anything else passes through untouched.
         pi.on("input", async (event, ctx) => {
-          if (event.streamingBehavior || event.source === "extension" || !first(event.text)) return { action: "continue" as const };
+          if (event.streamingBehavior || event.source === "extension" || !first.ready(event.text)) return { action: "continue" as const };
           const stop = startFirstPass(ref.threadId, ctx?.signal);
           try {
             let declined = false;
@@ -222,6 +222,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
               hub.emit({ type: "thread.event", threadId: ref.threadId, event: { type: "agent_settled" } });
               return { action: "handled" as const };
             }
+            if (out?.ran) first.ran();
             return out ? { action: "transform" as const, text: summarise(out), images: event.images } : { action: "continue" as const };
           } finally {
             endFirstPass(ref.threadId, stop);
