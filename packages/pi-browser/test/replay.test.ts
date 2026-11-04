@@ -271,3 +271,31 @@ test("a period step needs the invoice and hands off when no month, or several, c
   assert.equal(await run(["September 2026", "October 2026"], { date: "2026-12-04" }), "row-not-found");
   assert.equal(await run(["October 2026", "Oct 2026"], { date: "2026-10-04" }), "row-ambiguous");
 });
+
+test("a shortcut opens the list directly and skips the earlier steps; a page without the expectation falls back to the full path", async () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-"));
+  const steps = [
+    { kind: "click" as const, target: { role: "link", name: "Billing" } },
+    { kind: "navigate" as const, url: "https://ok.test/billing", expect: { urlIncludes: "/billing" } },
+    { kind: "download" as const, url: "https://ok.test/a.pdf", fileType: "pdf" },
+  ];
+  const opts = (f: ReturnType<typeof fakeDriver>, seen: string[]) => ({ ...base, downloadRoot: root, overwrite: true, driver: f.driver, expectTimeoutMs: 1, onStep: (i: number, s: string) => seen.push(`${i}:${s}`) });
+  const file = { body: "%PDF-1.7 x", contentType: "application/pdf" };
+  const used = fakeDriver({ file });
+  const seen: string[] = [];
+  const r = await runReplay({ startUrl: "https://ok.test/", steps, shortcut: { url: "https://ok.test/billing", afterStep: 2 } }, opts(used, seen));
+  assert.ok(r.ok && r.shortcut === "used", JSON.stringify(r));
+  assert.equal(used.opened(), 1, "only the shortcut was opened, the start page and the click were skipped");
+  assert.deepEqual(seen, ["0:done", "1:done", "2:done", "3:start", "3:done"]);
+  assert.deepEqual(r.ok && r.urls, ["", "", "https://ok.test/billing", "https://ok.test/billing"]);
+
+  const stale = fakeDriver({ file });
+  const none = await runReplay({ startUrl: "https://ok.test/", steps: steps.slice(1), shortcut: { url: "https://ok.test/other", afterStep: 1 } }, opts(stale, []));
+  assert.ok(none.ok && none.shortcut === "failed", JSON.stringify(none));
+  assert.equal(stale.opened(), 3, "the shortcut, then the start page and the step");
+  const off = fakeDriver({ file, redirect: "https://other.test/x" });
+  const gone = await runReplay({ startUrl: "https://ok.test/", steps: steps.slice(1), shortcut: { url: "https://ok.test/billing", afterStep: 1 } }, opts(off, []));
+  assert.equal(reasonOf(gone), "0:blocked");
+  assert.equal(!gone.ok && gone.shortcut, "failed");
+  assert.equal(reasonOf(await runReplay({ startUrl: "https://ok.test/", steps: steps.slice(1), shortcut: { url: "https://ok.test/billing", afterStep: 1 } }, { ...opts(fakeDriver({ file }), []), signal: AbortSignal.abort() })), "0:aborted");
+});

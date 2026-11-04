@@ -2,7 +2,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDomain } from "tldts";
-import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookStep } from "@pista/protocol";
+import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
 import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Consecutive failures after which a playbook is flagged "needs-attention". */
@@ -128,6 +128,43 @@ function step(v: unknown, site: string): PlaybookStep | null {
   }
 }
 
+/** A step whose target depends on the invoice, or the download itself: nothing at or after it may be skipped. */
+const byInvoice = (s: PlaybookStep): boolean => s.kind === "download" || ("target" in s && !!(s.target?.row || s.target?.period));
+
+/**
+ * The address to open directly instead of the clicks before it: the last click before the first invoice-dependent step or download
+ * whose page address (`urlsAfter[i]`, for stored step i + 1) differs from the start, is same-site and carries no id, token or secret
+ * query. Returns undefined when no click qualifies. The one place shortcuts are derived, from a capture or from a replay.
+ */
+export function deriveShortcut(startUrl: string, steps: readonly PlaybookStep[], urlsAfter: readonly (string | undefined)[], site: string): PlaybookShortcut | undefined {
+  let found: PlaybookShortcut | undefined;
+  for (let i = 0; i < steps.length && !byInvoice(steps[i]!); i++) {
+    const raw = urlsAfter[i];
+    if (steps[i]!.kind !== "click" || !raw) continue;
+    try {
+      const url = sanitizeUrl(raw, site);
+      const u = new URL(raw);
+      u.hash = "";
+      // A query that had to be stripped means the page needs it: not a stable address.
+      if (url === u.toString() && url !== sanitizeUrl(startUrl, site)) found = { url, afterStep: i + 1 };
+    } catch {}
+  }
+  return found;
+}
+
+/** A shortcut kept only when its address is clean and `afterStep` is a step before any invoice-dependent step or the download. */
+function shortcutOf(v: unknown, site: string, steps: readonly PlaybookStep[]): PlaybookShortcut | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const { url, afterStep } = v as { url?: unknown; afterStep?: unknown };
+  if (typeof url !== "string" || typeof afterStep !== "number" || !Number.isInteger(afterStep) || afterStep < 1 || afterStep > steps.length) return undefined;
+  if (steps.slice(0, afterStep).some(byInvoice)) return undefined;
+  try {
+    return { url: sanitizeUrl(url, site), afterStep };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Builds a fresh Playbook from untrusted input, keeping known fields only. Throws with a short reason. */
 export function validatePlaybook(input: unknown, site: string): Playbook {
   const o = obj(input);
@@ -148,11 +185,14 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
         }
       }).slice(-MAX_HISTORY)
     : [];
+  const steps = o.steps.flatMap((s) => step(s, site) ?? []);
+  const shortcut = shortcutOf(o.shortcut, site, steps), candidate = shortcutOf(o.shortcutCandidate, site, steps);
   return {
     version: 1,
     site,
     startUrl: sanitizeUrl(String(o.startUrl), site),
-    steps: o.steps.flatMap((s) => step(s, site) ?? []),
+    steps,
+    ...(shortcut ? { shortcut } : candidate ? { shortcutCandidate: candidate } : {}),
     createdAt: date(o.createdAt) ?? now,
     updatedAt: date(o.updatedAt) ?? now,
     ...(date(o.lastSucceeded) ? { lastSucceeded: date(o.lastSucceeded) } : {}),
@@ -213,7 +253,7 @@ export function listPlaybooks(): PlaybookMeta[] {
     if (!n.endsWith(".json")) continue;
     const pb = getPlaybook(n.slice(0, -5));
     if (!pb) continue;
-    out.push({ site: pb.site, startUrl: pb.startUrl, stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
+    out.push({ site: pb.site, startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
   }
   return out.sort((a, b) => a.site.localeCompare(b.site));
 }

@@ -139,3 +139,37 @@ it("expect.element locators lose row and period", async () => {
   const pb = validatePlaybook({ startUrl: "https://x.test/", steps: [{ kind: "click", target: { role: "link", name: "A" }, expect: { element: { role: "link", name: "B", row: { match: ["date"] }, period: true } } }, { kind: "download", url: "https://x.test/a.pdf" }] }, "x.test");
   assert.deepEqual((pb.steps[0] as { expect: { element: object } }).expect.element, { role: "link", name: "B" });
 });
+
+describe("shortcut", () => {
+  const steps = [
+    { kind: "click", target: { role: "button", name: "Account menu" } },
+    { kind: "click", target: { role: "tab", name: "Invoices" }, expect: { text: "Invoices" } },
+    { kind: "click", target: { role: "link", name: "Download", row: { match: ["date"] } } },
+    { kind: "download", fileType: "pdf" },
+  ];
+  const pb = (shortcut: unknown) => validatePlaybook({ startUrl: "https://example.com/", steps, shortcut }, "example.com");
+  it("keeps a same-site address with the volatile query stripped, and a step before the row and download", () => {
+    assert.deepEqual(pb({ url: "https://example.com/account/invoices?utm_source=x#top", afterStep: 2 }).shortcut, { url: "https://example.com/account/invoices", afterStep: 2 });
+    assert.deepEqual(pb({ url: "https://example.com/account/invoices", afterStep: 1 }).shortcut?.afterStep, 1);
+  });
+  it("drops it for another site, an opaque path, or a step out of range, on or after an invoice-dependent step", () => {
+    for (const bad of [
+      { url: "https://evil.test/invoices", afterStep: 2 },
+      { url: `https://example.com/x/${"0123abcd".repeat(8)}`, afterStep: 2 },
+      { url: "https://example.com/invoices", afterStep: 0 },
+      { url: "https://example.com/invoices", afterStep: 1.5 },
+      { url: "https://example.com/invoices", afterStep: 5 },
+      { url: "https://example.com/invoices", afterStep: 3 },
+      { url: "https://example.com/invoices", afterStep: 4 },
+      { url: 5, afterStep: 2 },
+      "https://example.com/invoices",
+    ]) assert.equal(pb(bad).shortcut, undefined, JSON.stringify(bad));
+  });
+  it("a candidate is validated the same way, and a shortcut wins over it", () => {
+    const c = { url: "https://example.com/invoices", afterStep: 2 };
+    assert.deepEqual(validatePlaybook({ startUrl: "https://example.com/", steps, shortcutCandidate: c }, "example.com").shortcutCandidate, c);
+    assert.equal(validatePlaybook({ startUrl: "https://example.com/", steps, shortcutCandidate: { ...c, afterStep: 3 } }, "example.com").shortcutCandidate, undefined);
+    const both = validatePlaybook({ startUrl: "https://example.com/", steps, shortcut: c, shortcutCandidate: c }, "example.com");
+    assert.deepEqual([both.shortcut, both.shortcutCandidate], [c, undefined]);
+  });
+});

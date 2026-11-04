@@ -3,8 +3,8 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
-import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookStep } from "@pista/protocol";
-import { getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
+import { deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -85,7 +85,7 @@ function isPeriodClick(ctx: TracePeriodContext, invoice: InvoiceParams | undefin
 const urlOf = (r: TraceRow): string | undefined => (r.kind === "navigate" ? r.url : r.kind === "click" ? r.urlAfter : r.kind === "download" ? r.url : r.kind === "signIn" ? r.origin : undefined);
 
 /** Builds the playbook for the chosen entry numbers, or throws a short reason. Not yet validated; the caller runs validatePlaybook. */
-export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> = {}, invoice?: InvoiceParams): { site: string; startUrl: string; steps: PlaybookStep[]; unverified?: boolean } {
+export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> = {}, invoice?: InvoiceParams): { site: string; startUrl: string; steps: PlaybookStep[]; shortcut?: PlaybookShortcut; unverified?: boolean } {
   if (!chosen.length) throw new Error("steps is empty");
   if (chosen.some((n, i) => !Number.isInteger(n) || (i > 0 && n <= chosen[i - 1]!))) throw new Error("steps must be whole entry numbers in increasing order");
   const picked = chosen.map((n) => {
@@ -152,7 +152,8 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
       }
     }
   });
-  return { site, startUrl: first.url, steps, ...(unverified ? { unverified } : {}) };
+  const shortcut = deriveShortcut(first.url, steps, picked.slice(1).map((r) => (r.kind === "click" ? r.urlAfter : undefined)), site);
+  return { site, startUrl: first.url, steps, ...(shortcut ? { shortcut } : {}), ...(unverified ? { unverified } : {}) };
 }
 
 const cap = (s: string, n = LABEL_MAX) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

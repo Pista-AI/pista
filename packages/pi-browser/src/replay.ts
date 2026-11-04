@@ -31,9 +31,11 @@ export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number }
-  | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string };
+  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; shortcut?: ReplayShortcutOutcome }
+  | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
+/** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
+export type ReplayShortcutOutcome = "used" | "failed";
 export interface ReplayOptions {
   /** The raw driver; replay wraps it in the same domain guard the browser tools use. */
   driver: BrowserDriver;
@@ -260,7 +262,7 @@ export async function expectationMet(d: BrowserDriver, expect: ReplayExpect): Pr
 }
 
 /** Replays `playbook` from its start page. Never handles credentials: sign-in goes through the driver's saved-login fill. */
-export async function runReplay(playbook: { startUrl: string; steps: readonly ReplayStep[] }, o: ReplayOptions): Promise<ReplayResult> {
+export async function runReplay(playbook: { startUrl: string; steps: readonly ReplayStep[]; shortcut?: { url: string; afterStep: number } }, o: ReplayOptions): Promise<ReplayResult> {
   const rules = o.domainRules;
   const d = rules && (rules.allowedDomains || rules.deniedDomains?.length) ? guardDriver(o.driver, rules, o.onDomainBlock) : o.driver;
   const now = o.now ?? Date.now;
@@ -379,7 +381,25 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     }
   };
 
-  for (let i = 0; i < steps.length; i++) {
+  const urls: string[] = [];
+  let shortcut: ReplayShortcutOutcome | undefined;
+  let from = 0;
+  const sc = playbook.shortcut;
+  if (sc && Number.isInteger(sc.afterStep) && sc.afterStep >= 1 && sc.afterStep < steps.length) {
+    // Open the address directly, with the same guards as any navigation, and wait for what step `afterStep` expects there.
+    const afterStep = steps[sc.afterStep]!;
+    try {
+      await run({ kind: "navigate", url: sc.url, ...("expect" in afterStep && afterStep.expect ? { expect: afterStep.expect } : {}) }, sc.afterStep);
+      shortcut = "used";
+      from = sc.afterStep + 1;
+      for (let j = 0; j < from; j++) o.onStep?.(j, "done"); // the skipped steps count as done: the page is where they would have left it
+      urls[sc.afterStep] = (await d.state()).url;
+    } catch (error) {
+      // A stop is reported by the loop below; any other problem means the full path runs instead.
+      if (!o.signal?.aborted && !(error instanceof Handoff && error.reason === "aborted")) shortcut = "failed";
+    }
+  }
+  for (let i = from; i < steps.length; i++) {
     const step = steps[i]!;
     o.onStep?.(i, "start");
     try {
@@ -391,10 +411,11 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       // A page refused by the rules or off this playbook's site is not read into the handoff.
       const url = await d.state().then((s) => s.url, () => "");
       const snapshot = checkUrl(url, rules ?? {}) || !allowed(url) ? "" : await snapshotOf(d, 150).then((s) => formatSnapshot(s).slice(0, SNAPSHOT_MAX)).catch(() => "");
-      return { ok: false, failedIndex: i, step, reason, detail, url: url.slice(0, URL_MAX), snapshot };
+      return { ok: false, failedIndex: i, step, reason, detail, url: url.slice(0, URL_MAX), snapshot, ...(shortcut ? { shortcut } : {}) };
     }
     o.onStep?.(i, "done");
+    urls[i] = (await d.state().then((st) => st.url, () => "")).slice(0, URL_MAX);
   }
-  if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "" };
-  return { ok: true, download: saved, steps: playbook.steps.length };
+  if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "", ...(shortcut ? { shortcut } : {}) };
+  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), ...(shortcut ? { shortcut } : {}) };
 }

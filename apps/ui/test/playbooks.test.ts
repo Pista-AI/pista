@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeSteps } from "../src/lib/playbooks.ts";
+import { describeStart, describeSteps } from "../src/lib/playbooks.ts";
 
 test("describes steps as plain text lines", () => {
   const lines = describeSteps([
@@ -32,4 +32,10 @@ test("shows the row selector of a download step from its target", () => {
     { kind: "download", target: { role: "link", row: { match: ["date", "amount"] } }, fileType: "pdf" },
   ]);
   assert.deepEqual(lines, ["Pick the row matching the invoice date", "Download (PDF)"]);
+});
+
+test("shows where a playbook starts and where it opens the list directly, without the query", () => {
+  assert.deepEqual(describeStart("https://portal.example.com/?token=abc#x"), ["Starts at portal.example.com"]);
+  assert.deepEqual(describeStart("https://portal.example.com/", "https://portal.example.com/account/invoices?page=2"), ["Starts at portal.example.com", "Opens the list directly at portal.example.com/account/invoices"]);
+  assert.deepEqual(describeStart("not a url"), ["Starts at not a url"]);
 });

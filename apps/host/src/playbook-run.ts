@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { getPlaybook, LABEL_MAX, recordFailure, recordSuccess, siteKey } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, LABEL_MAX, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
@@ -64,11 +64,22 @@ function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
   return t.length > LABEL_MAX ? `${t.slice(0, LABEL_MAX - 1)}…` : t;
 }
 
+/** After a successful run: drops a shortcut that did not check out, or learns one. It is kept only once two successful runs saw the same address. */
+function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): void {
+  const pb = getPlaybook(site);
+  if (!pb || r.shortcut === "used" || (pb.shortcut && r.shortcut !== "failed")) return;
+  const { shortcut: _s, shortcutCandidate: c, ...rest } = pb;
+  const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), site);
+  if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found });
+  else if (_s || found?.url !== c?.url || found?.afterStep !== c?.afterStep) savePlaybook({ ...rest, ...(found ? { shortcutCandidate: found } : {}) });
+}
+
 /** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
     recordSuccess(site);
+    noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
   if (r.reason === "declined" || r.reason === "aborted") return [];

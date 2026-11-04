@@ -284,3 +284,33 @@ describe("playbook_save with a lone download candidate", () => {
     assert.doesNotMatch(describeTrace(lone(`3 Sep 2026 ${ROW}`)), /row 1 of 1|jane@/);
   });
 });
+
+describe("playbook_save: shortcut", () => {
+  const url = (name: string) => `${B}${name}`;
+  const click = (name: string, urlAfter: string) => ({ kind: "click" as const, locator: { role: "link", name }, urlAfter });
+  const learn = (entries: Parameters<PlaybookTrace["add"]>[0][]) => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: url("login.html") });
+    for (const e of entries) t.add(e);
+    t.add({ kind: "navigate", url: url("list.html") });
+    t.add({ kind: "download", source: "url", url: url("inv-001.pdf"), contentType: "application/pdf", path: "invoices/a.pdf" });
+    savePlaybookFromTrace(t.list(), Array.from({ length: entries.length + 3 }, (_, i) => i + 1), undefined, "t");
+    return getPlaybook("127.0.0.1");
+  };
+  it("takes the last click whose page has its own stable address", () => {
+    assert.deepEqual(learn([click("Menu", url("login.html")), click("Billing", url("billing.html")), click("Invoices", url("billing/invoices.html"))])?.shortcut, { url: url("billing/invoices.html"), afterStep: 3 });
+  });
+  it("skips an address with an opaque id in its path or a token in its query, and one that is not new", () => {
+    assert.equal(learn([click("Menu", url("login.html")), click("Invoices", url(`acct/${"0123abcd".repeat(8)}/invoices`))])?.shortcut, undefined);
+    assert.deepEqual(learn([click("Billing", url("billing.html")), click("Invoices", `${url("invoices.html")}?sid=abc`)])?.shortcut, { url: url("billing.html"), afterStep: 1 });
+  });
+  it("never reaches past a step that picks the invoice's row", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: url("login.html") });
+    t.add(click("Billing", url("billing.html")));
+    t.add({ kind: "click", locator: { role: "link", name: "Invoices" }, urlAfter: url("invoices-by-month.html"), periodContext: { names: ["September 2026", "October 2026"], clickedIndex: 1 } });
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["2026-09-03 49.00 EUR", "2026-10-03 49.00 EUR"], clickedIndex: 1 } });
+    savePlaybookFromTrace(t.list(), [1, 2, 3, 4], undefined, "t", { date: "2026-10-03" });
+    assert.deepEqual(getPlaybook("127.0.0.1")?.shortcut, { url: url("billing.html"), afterStep: 1 });
+  });
+});

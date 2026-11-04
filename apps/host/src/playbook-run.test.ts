@@ -68,7 +68,7 @@ test("a playbook_run the user declines at the approval gate still opens the site
 test("failures count towards needs-attention at three; declines and stops do not count; a success resets", () => {
   save();
   const inv = { date: "2026-10-03", amount: 12.5, currency: "EUR" };
-  const run = (r: ReturnType<typeof handoff> | { ok: true; download: { path: string; bytes: number }; steps: number }) => recordRun("127.0.0.1", r, "t", inv, 2);
+  const run = (r: ReturnType<typeof handoff> | { ok: true; download: { path: string; bytes: number }; steps: number; urls: string[] }) => recordRun("127.0.0.1", r, "t", inv, 2);
   const repairing = (reason: string) => ({ type: "playbook.event", threadId: "t", kind: "repairing", site: "127.0.0.1", step: 2, reason, stepCount: 2, invoice: inv });
   assert.deepEqual(run(handoff("declined")), []);
   assert.deepEqual(run(handoff("aborted")), []);
@@ -82,7 +82,7 @@ test("failures count towards needs-attention at three; declines and stops do not
   assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link"), { type: "playbook.event", threadId: "t", kind: "needs-attention", site: "127.0.0.1", step: 2, stepCount: 2 }]);
   assert.equal(getPlaybook("127.0.0.1")!.status, "needs-attention");
   assert.equal(run(handoff("not-found")).length, 1, "flagged once");
-  const ok = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2 };
+  const ok = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2, urls: [] as string[] };
   assert.deepEqual(run(ok), [{ type: "playbook.event", threadId: "t", kind: "followed", site: "127.0.0.1", stepCount: 2, invoice: inv }]);
   assert.deepEqual([getPlaybook("127.0.0.1")!.status, getPlaybook("127.0.0.1")!.failCount], ["ok", 0]);
 });
@@ -234,4 +234,24 @@ test("a playbook_run refused by read-only mode or the policy still opens the sit
   } finally {
     Object.defineProperty(store, "toolRules", { value: undefined, configurable: true });
   }
+});
+
+test("a shortcut is learned once two successful runs saw the same address, and dropped when it did not check out", () => {
+  save([{ kind: "click", target: { role: "link", name: "Billing" } }, { kind: "download", target: { role: "link", name: "Download invoice", row: { match: ["date"] } } }]);
+  const done = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2 };
+  const run = (page: string, shortcut?: "used" | "failed") => recordRun("127.0.0.1", { ...done, urls: ["", page, ""], ...(shortcut ? { shortcut } : {}) }, "t");
+  const seen = () => [getPlaybook("127.0.0.1")!.shortcut, getPlaybook("127.0.0.1")!.shortcutCandidate];
+  const billing = { url: `${B}billing.html`, afterStep: 1 };
+  run(`${B}billing.html`);
+  assert.deepEqual(seen(), [undefined, billing]);
+  run(`${B}other.html`);
+  assert.deepEqual(seen(), [undefined, { url: `${B}other.html`, afterStep: 1 }], "a different address starts over");
+  run(`${B}billing.html`);
+  run(`${B}billing.html`);
+  assert.deepEqual(seen(), [billing, undefined]);
+  run(`${B}elsewhere.html`, "used");
+  assert.deepEqual(seen(), [billing, undefined], "a run that used the shortcut leaves it alone");
+  assert.equal(getPlaybook("127.0.0.1")!.failCount, 0);
+  run(`${B}billing.html`, "failed");
+  assert.deepEqual(seen(), [undefined, undefined], "a shortcut that failed is removed, and not learned again on that run");
 });
