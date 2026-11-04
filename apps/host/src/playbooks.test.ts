@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ReplayStep } from "@pista/pi-browser";
 import type { Playbook, PlaybookStep } from "@pista/protocol";
+import { MERCHANT_STOPWORDS, merchantKeyword, normaliseMerchant } from "./merchants.ts";
 import { FAIL_THRESHOLD, deletePlaybook, getPlaybook, listPlaybooks, recordFailure, recordSuccess, sanitizeUrl, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 // Stored steps must stay replayable: the runner in pi-browser types them structurally (checked by pnpm typecheck).
@@ -182,5 +183,73 @@ describe("shortcut", () => {
     assert.equal(validatePlaybook({ startUrl: "https://example.com/", steps, shortcutCandidate: { ...ok, afterStep: 3 } }, "example.com").shortcutCandidate, undefined);
     const both = validatePlaybook({ startUrl: "https://example.com/", steps, shortcut: ok, shortcutCandidate: ok }, "example.com");
     assert.deepEqual([both.shortcut, both.shortcutCandidate], [ok, undefined]);
+  });
+});
+
+describe("validatePlaybook merchants", () => {
+  const pb = (m: unknown, pending?: unknown) => validatePlaybook(base({ merchants: m, merchantsPending: pending }), "example.com");
+  const merchants = (m: unknown) => pb(m).merchants;
+  it("upper-cases, strips other characters, collapses spaces and dedupes", () => {
+    assert.deepEqual(merchants(["acme  robotics", "ACME ROBOTICS", " Åhléns ", "a<b>c;d", "O'Reilly Media"]), ["ACME ROBOTICS", "ÅHLÉNS", "ABCD", "O'REILLY MEDIA"]);
+  });
+  it("keeps letters outside A-Z", () => {
+    assert.deepEqual(merchants(["Ørsted", "Æble Café", "Straße Bräu", "Öberg Verkstad"]), ["ØRSTED", "ÆBLE CAFÉ", "STRASSE BRÄU", "ÖBERG VERKSTAD"]);
+    assert.equal(merchantKeyword("Ørsted A/S Fredericia"), "ØRSTED");
+    assert.equal(merchantKeyword("KORTKÖP Åhléns City"), "ÅHLÉNS CITY");
+    assert.equal(merchantKeyword("Köp Café Göteborg Ö"), "CAFÉ");
+  });
+  it("enforces length, letters, one-letter tokens, opaque and generic words", () => {
+    assert.equal(merchants(["ABC", "x".repeat(41), "1234567", "AB1 2CD", "A B C D", "0123abcd".repeat(5), "LLC", "PayPal", "Card Payment", "Cloud Hosting", "Kortköp", ...MERCHANT_STOPWORDS]), undefined);
+    assert.deepEqual(merchants(["PAYPAL SPOTIFY", "Acme Cloud"]), ["PAYPAL SPOTIFY", "ACME CLOUD"]);
+  });
+  it("keeps at most 5, ignores non-strings and non-arrays", () => {
+    assert.deepEqual(merchants(["AAAA", "BBBB", "CCCC", "DDDD", "EEEE", "FFFF"]), ["AAAA", "BBBB", "CCCC", "DDDD", "EEEE"]);
+    assert.deepEqual(merchants(["AAAA", 5, null, { x: 1 }]), ["AAAA"]);
+    assert.equal(merchants("AAAA"), undefined);
+  });
+  it("cleans pending keywords the same way and leaves out confirmed ones", () => {
+    assert.deepEqual(pb(["ACME ROBOTICS"], ["acme robotics", "beta works", "LLC"]).merchantsPending, ["BETA WORKS"]);
+    assert.equal(pb(undefined, "x").merchantsPending, undefined);
+  });
+});
+
+describe("merchantKeyword", () => {
+  const cases: [string, string | undefined][] = [
+    ["ACME ROBOTICS LLC*1234 SAN FRANCISCO CA", "ACME ROBOTICS"],
+    ["ACME CLOUD LLC*1234 SAN FRANCISCO", "ACME"],
+    ["SQ *BLUE BOTTLE COFFEE 0123", "BLUE BOTTLE"],
+    ["PAYPAL *SPOTIFY 35314369001", "SPOTIFY"],
+    ["KLARNA *Nordic Gadgets", "GADGETS"],
+    ["ZETTLE_*Cafe Roma", "CAFE ROMA"],
+    ["Notion Labs Inc. San Francisco", "NOTION LABS"],
+    ["Figma 2026-10-03 49.00 USD", "FIGMA"],
+    ["KORTKÖP 241103 SPOTIFY AB STOCKHOLM", "SPOTIFY"],
+    ["Kortköp 24-11-03 Åhléns City Stockholm", "ÅHLÉNS CITY"],
+    ["Lastschrift 03.11. ACME GMBH BERLIN DE", "ACME"],
+    ["TST* Cafe Roma", "CAFE ROMA"],
+    ["Swish betalning Anna Svensson", undefined],
+    ["ÖVERFÖRING Erik Berg", undefined],
+    ["12345 6789", undefined],
+    ["PAYPAL *", undefined],
+    ["INC LLC", undefined],
+    ["X Y Z", undefined],
+    ["Betalning till Orsted", undefined],
+    ["Autogiro Vattenfall", undefined],
+    ["PLUSGIRO 12 34 Foo Bar", undefined],
+    ["Transfer to Acme Robotics", undefined],
+    ["Payment to Acme Robotics", undefined],
+    ["Anna Svensson", undefined],
+    ["Jean-Luc Picard", undefined],
+    ["Anna Svensson AB", "ANNA SVENSSON"],
+  ];
+  for (const [text, want] of cases) it(`${JSON.stringify(text)} -> ${JSON.stringify(want)}`, () => assert.equal(merchantKeyword(text), want));
+  it("returns at most two words from the allowed characters", () => {
+    const k = merchantKeyword("Some Very Long Vendor Name Here*9999")!;
+    assert.equal(k, "SOME VERY");
+    assert.match(k, /^[A-Z0-9&.' -]+$/);
+  });
+  it("normaliseMerchant upper-cases, folds diacritics and drops prefix and reference", () => {
+    assert.equal(normaliseMerchant("sq *Åhléns*77 x"), "ÅHLÉNS");
+    assert.equal(normaliseMerchant("ＡＣＭＥ"), "ACME");
   });
 });

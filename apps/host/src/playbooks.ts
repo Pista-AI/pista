@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { getDomain } from "tldts";
 import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
+import { cleanMerchant, cleanMerchants, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS } from "./merchants.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Consecutive failures after which a playbook is flagged "needs-attention". */
@@ -212,12 +213,16 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
     : [];
   const steps = o.steps.flatMap((s) => step(s, site) ?? []);
   const shortcut = shortcutOf(o.shortcut, site, steps), candidate = shortcutOf(o.shortcutCandidate, site, steps);
+  const merchants = cleanMerchants(o.merchants);
+  const pending = cleanMerchants(o.merchantsPending).filter((m) => !merchants.includes(m));
   return {
     version: 1,
     site,
     startUrl: sanitizeUrl(String(o.startUrl), site),
     steps,
     ...(shortcut ? { shortcut, ...(count(o.shortcutFails) ? { shortcutFails: count(o.shortcutFails) } : {}) } : candidate ? { shortcutCandidate: candidate } : {}),
+    ...(merchants.length ? { merchants } : {}),
+    ...(pending.length ? { merchantsPending: pending } : {}),
     createdAt: date(o.createdAt) ?? now,
     updatedAt: date(o.updatedAt) ?? now,
     ...(date(o.lastSucceeded) ? { lastSucceeded: date(o.lastSucceeded) } : {}),
@@ -278,7 +283,7 @@ export function listPlaybooks(): PlaybookMeta[] {
     if (!n.endsWith(".json")) continue;
     const pb = getPlaybook(n.slice(0, -5));
     if (!pb) continue;
-    out.push({ site: pb.site, startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
+    out.push({ site: pb.site, startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), ...(pb.merchants ? { merchants: pb.merchants } : {}), ...(pb.merchantsPending ? { merchantsPending: pb.merchantsPending } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
   }
   return out.sort((a, b) => a.site.localeCompare(b.site));
 }
@@ -310,4 +315,29 @@ export function recordFailure(site: string): Playbook | null {
     if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
     pb.history.push({ at: now, summary: "replay failed" });
   });
+}
+
+/** Replaces the site's confirmed merchant keywords (a user action) with the cleaned list, and clears suggestions it confirms. At most 10 items of 80 characters are looked at. Throws when the site has no playbook. */
+export function setMerchants(site: string, merchants: unknown): void {
+  if (!Array.isArray(merchants) || merchants.some((m) => typeof m !== "string")) throw new Error("merchants must be an array of strings");
+  const list = cleanMerchants(merchants.slice(0, MAX_MERCHANT_INPUT).filter((m: string) => m.length <= MAX_MERCHANT_INPUT_CHARS));
+  const pb = mutate(site, (p) => {
+    if (list.length) p.merchants = list;
+    else delete p.merchants;
+    const rest = (p.merchantsPending ?? []).filter((m) => !list.includes(m));
+    if (rest.length) p.merchantsPending = rest;
+    else delete p.merchantsPending;
+  });
+  if (!pb) throw new Error("no playbook for this site");
+}
+
+/** Drops one suggested keyword (a user action). Throws when the site has no playbook. */
+export function dismissMerchant(site: string, merchant: unknown): void {
+  const key = cleanMerchant(merchant);
+  const pb = mutate(site, (p) => {
+    const rest = (p.merchantsPending ?? []).filter((m) => m !== key);
+    if (rest.length) p.merchantsPending = rest;
+    else delete p.merchantsPending;
+  });
+  if (!pb) throw new Error("no playbook for this site");
 }
