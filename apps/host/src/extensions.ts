@@ -10,7 +10,7 @@ import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
 import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
-import { batchGate, endFirstPass, runFirstPass, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
+import { batchGate, endFirstPass, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
 export { hostConsent } from "./playbook-run.ts";
 
@@ -184,9 +184,10 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
       registerPlaybookRun(pi, runDeps);
       const { firstPass } = opts;
       if (firstPass) {
+        const first = firstPassOnce();
         // Before the model's first turn: a paste that parses as transactions is routed to saved playbooks by the host; anything else passes through untouched.
         pi.on("input", async (event, ctx) => {
-          if (event.streamingBehavior || event.source === "extension") return { action: "continue" as const };
+          if (event.streamingBehavior || event.source === "extension" || !first(event.text)) return { action: "continue" as const };
           const stop = startFirstPass(ref.threadId, ctx?.signal);
           try {
             let declined = false;
@@ -213,7 +214,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
             const out = await runFirstPass(event.text, {
               playbooks: known,
               allow: async (routed) => !(declined = !(await batchGate(consent, routed, known(), ask))),
-              run: (req, signal) => runPlaybookForInvoice(runDeps, consent, req, signal),
+              run: (req, signal) => runKeepingGuardShut(attempted, (scratch) => runPlaybookForInvoice({ ...runDeps, attempted: scratch }, consent, req, signal)),
               writeManifest: (rows) => ref.cwd && writeManifestRows(ref.cwd, rows),
             }, stop.signal);
             if (stop.signal.aborted) {

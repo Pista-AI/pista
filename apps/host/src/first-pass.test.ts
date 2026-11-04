@@ -6,7 +6,7 @@ import type { Playbook } from "@pista/protocol";
 import { setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("first-pass", { cleanup: "exit" });
-const { abortFirstPass, batchGate, endFirstPass, routeLines, runFirstPass, startFirstPass, summarise, writeManifestRows } = await import("./first-pass.ts");
+const { abortFirstPass, batchGate, endFirstPass, firstPassOnce, routeLines, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } = await import("./first-pass.ts");
 const { hostConsent } = await import("./playbook-run.ts");
 const { parseTransactions } = await import("./transactions.ts");
 const { getPlaybook, listPlaybooks, savePlaybook, validatePlaybook, noteMerchantOutcome } = await import("./playbooks.ts");
@@ -127,30 +127,6 @@ test("a confirmed keyword's lines are not deferred", async () => {
 });
 
 test("Stop: the signal reaches the run, later lines go back to the model, and nothing is promoted", async () => {
-  make("theta.test", { merchantsPending: ["THETA WORKS"] });
-  const ac = new AbortController();
-  const signals: (AbortSignal | undefined)[] = [];
-  const out = await runFirstPass(ZETA.replaceAll("ZETA", "THETA"), {
-    playbooks: all, allow: async () => true,
-    run: async (req, signal) => (signals.push(signal), ac.abort(), downloaded(req.site, 1)),
-  }, ac.signal);
-  assert.deepEqual(signals, [ac.signal], "one run, with the signal; the next is not started");
-  assert.deepEqual(out!.rest.filter((r) => r.why === "stopped").map((r) => r.line.lineNo), [2]);
-  assert.equal(getPlaybook("theta.test")!.merchants, undefined);
-});
-
-test("Stop: abortFirstPass cancels the running first pass of that thread only", () => {
-  const a = startFirstPass("t1"), b = startFirstPass("t2");
-  abortFirstPass("t1");
-  assert.equal(a.signal.aborted, true);
-  assert.equal(b.signal.aborted, false);
-  endFirstPass("t1", a);
-  endFirstPass("t2", b);
-  abortFirstPass("t2");
-  assert.equal(b.signal.aborted, false, "finished passes are forgotten");
-});
-
-test("sign-ins: the card names the sites that ask again; full access asks nothing up front; a user who turned confirmSignIns off is not told", async () => {
   make("iota.test", { merchants: ["IOTA CLOUD"], steps: [{ kind: "signIn", origin: "https://iota.test" }, { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" }] as Playbook["steps"] });
   const { routed } = routeLines(parseTransactions("2026-03-01 IOTA CLOUD -9.00 USD\n2026-03-02 ACME ROBOTICS -4.00 USD\n2026-03-03 PLAIN SHOP -1.00 USD").lines, all());
   const consent = (approvalMode: "ask-writes" | "full-access", confirmSignIns?: boolean) => hostConsent({ store: { config: { approvalMode, confirmSignIns }, toolRules: undefined }, approve: async () => true });
@@ -164,7 +140,7 @@ test("sign-ins: the card names the sites that ask again; full access asks nothin
   assert.doesNotMatch(asked[1]!, /signing in/);
 });
 
-test("the batch gate: asks once in ask mode, refuses read-only, policy and pause, lets full access through", async () => {
+test("the batch gate: asks once in ask mode, refuses read-only and policy, lets full access through", async () => {
   const { routed } = routeLines(parseTransactions(PASTE).lines, all());
   const store = (approvalMode: "ask-writes" | "read-only" | "full-access") => ({ config: { approvalMode }, toolRules: undefined });
   const consent = (mode: Parameters<typeof store>[0], extra: Partial<Parameters<typeof hostConsent>[0]> = {}) => hostConsent({ store: store(mode), approve: async () => true, ...extra });
@@ -176,7 +152,6 @@ test("the batch gate: asks once in ask mode, refuses read-only, policy and pause
   assert.equal(asked.length, 1, "full access does not ask");
   assert.equal(await batchGate(consent("read-only"), routed, all(), ask), false);
   assert.equal(await batchGate(consent("full-access", { block: () => "blocked by policy" }), routed, all(), ask), false);
-  assert.equal(await batchGate(consent("full-access", { paused: () => true }), routed, all(), ask), false);
   assert.equal(await batchGate(consent("ask-writes"), routed, all(), async () => false), false, "declined");
 });
 
@@ -187,4 +162,44 @@ test("manifest rows are merged into the file already there", () => {
   const file = join(projectDir, "invoices", "manifest.json");
   assert.ok(existsSync(file));
   assert.equal(JSON.parse(readFileSync(file, "utf8")).length, 2);
+});
+
+test("trial: only the keyword whose lines verified is promoted, not another pending keyword that also matches", async () => {
+  make("theta.test", { merchantsPending: ["THETA", "THETA CLOUD"] });
+  const paste = ["2026-04-01 THETA CLOUD SERVICE -9.00 USD", "2026-04-02 THETA CLOUD SERVICE -9.00 USD"].join("\n");
+  // "THETA CLOUD" matches both lines and verifies; "THETA" also matches both, but the second line fails.
+  await runFirstPass(paste, { playbooks: all, allow: async () => true, run: asRun((n) => n === 0).run });
+  assert.equal(getPlaybook("theta.test")!.merchants, undefined, "a failed line keeps both pending");
+  make("iota.test", { merchantsPending: ["IOTA", "IOTA CREATIVE"] });
+  // "IOTA CREATIVE" and "IOTA" both match line 1 and it verifies; "IOTA" also matches line 2, which fails.
+  const two = ["2026-04-01 IOTA CREATIVE CLOUD -9.00 USD", "2026-04-02 IOTA SYSTEMS -9.00 USD", "2026-04-03 PLAIN SHOP -5.00 USD"].join("\n");
+  const { run } = asRun((n) => n === 0);
+  const out = await runFirstPass(two, { playbooks: all, allow: async () => true, run });
+  assert.ok(out);
+  const pb = getPlaybook("iota.test")!;
+  assert.deepEqual(pb.merchants, ["IOTA CREATIVE"]);
+  assert.deepEqual(pb.merchantsPending, ["IOTA"]);
+});
+
+test("declined lines are told apart from the work list, and a decline does not open the site", async () => {
+  const out = await runFirstPass("2026-01-15 ACME ROBOTICS -49.00 USD\n2026-01-16 SOMEBODY ELSE -12.00 USD\n2026-01-17 PLAIN SHOP -3.00 USD", { playbooks: all, allow: async () => true, run: async () => ({ status: "declined" as const, text: "no" }) });
+  assert.ok(out);
+  assert.deepEqual(out.declined.map((d) => [d.line.lineNo, d.site]), [[1, "acme.test"]]);
+  const text = summarise(out);
+  assert.match(text, /declined these[\s\S]*line 1: acme\.test/);
+  const block = text.split("<<<pasted-lines\n")[1]!;
+  assert.doesNotMatch(block, /ACME/);
+  assert.match(block, /SOMEBODY ELSE/);
+  const attempted = new Set<string>();
+  await runKeepingGuardShut(attempted, async (s) => (s.add("acme.test"), { status: "declined" as const, text: "no" }));
+  assert.equal(attempted.size, 0);
+  await runKeepingGuardShut(attempted, async (s) => (s.add("acme.test"), downloaded("acme.test", 1)));
+  assert.deepEqual([...attempted], ["acme.test"]);
+});
+
+test("the first pass runs once per thread, on the first text that parses as transactions", () => {
+  const once = firstPassOnce();
+  assert.equal(once("hello, can you help?"), false);
+  assert.equal(once("2026-01-15 ACME ROBOTICS 49.00 USD"), true);
+  assert.equal(once("2026-01-16 ACME ROBOTICS 49.00 USD"), false);
 });

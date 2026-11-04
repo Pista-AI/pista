@@ -53,7 +53,6 @@ describe("broadReason", () => {
     assert.equal(broadReason("GOOGLE CLOUD"), "umbrella");
     assert.equal(broadReason("ACME", { otherSites: ["ACME"] }), "other-site");
     assert.equal(broadReason("ACME", { unsure: true }), "unsure");
-    assert.equal(broadReason("ACME", { unverifiedElsewhere: true }), "unverified-elsewhere");
     assert.equal(broadReason("ACME ROBOTICS"), undefined);
   });
 });

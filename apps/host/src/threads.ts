@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { abortFirstPass } from "./first-pass.ts";
 import { join } from "node:path";
 import {
   type AgentSession,
@@ -23,6 +22,7 @@ import type {
 } from "@pista/protocol";
 import { type AuditSink, auditHash, noopAudit } from "./audit.ts";
 import { emitPrompt, emitUsage, scopeAudit, ToolAudit } from "./audit-events.ts";
+import { abortFirstPass } from "./first-pass.ts";
 import { AgentRoles } from "./role-files.ts";
 import { CLIENT_DIR, type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import { DecisionLog } from "./decisions.ts";

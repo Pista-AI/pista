@@ -876,7 +876,7 @@ export interface Playbook {
   /** Keywords the model suggested when saving; they are never used for matching until a verified download of a matching transaction confirms them, or, when broad (`merchantsPendingWhy`), the user does (`playbook.setMerchants`). `*` is only allowed in keywords the user set. */
   merchantsPending?: string[];
   /** Why a pending keyword waits for the user instead of being confirmed by a verified download (it is broad). Keyed by keyword. */
-  merchantsPendingWhy?: Record<string, "short" | "umbrella" | "other-site" | "unsure" | "unverified-elsewhere">;
+  merchantsPendingWhy?: Record<string, "short" | "umbrella" | "other-site" | "unsure">;
   /** Consecutive routed runs that ended without the invoice's row; a confirmed keyword is dropped at 2 misses on different transactions. Keyed by keyword. */
   merchantMisses?: Record<string, number>;
   /** Short hash of the last transaction that missed, per keyword, so a retry of it is not counted twice. */

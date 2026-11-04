@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 // Playbook content is untrusted data (it may be model-written or edited on disk): validate it, never inject it as instructions.
+import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDomain } from "tldts";
@@ -377,8 +377,8 @@ export function keywordsOnOtherSites(site: string): string[] {
 }
 
 /**
- * Records a keyword the model learned: pending, with the reason when it is broad. `ctx.unsure` (the model's flag) and `ctx.unverifiedElsewhere`
- * come from the caller; the short, umbrella and other-site checks are made here. Returns whether it was added. `*` never survives in a model's keyword.
+ * Records a keyword the model learned: pending, with the reason when it is broad. `ctx.unsure` (the model's flag)
+ * comes from the caller; the short, umbrella and other-site checks are made here. Returns whether it was added. `*` never survives in a model's keyword.
  */
 export function addPendingMerchant(site: string, keyword: string, ctx: BroadContext = {}): boolean {
   const key = cleanMerchant(keyword);
@@ -397,14 +397,14 @@ export function addPendingMerchant(site: string, keyword: string, ctx: BroadCont
 /**
  * A verified download (the invoice's row matched on the site) for a transaction whose merchant text matches pending keywords of the site:
  * promotes those that are not broad to confirmed `merchants`. Callers must only use this when the amount was verified as well as the date. Broad ones stay pending for the user. Returns the promoted keywords.
- * `merchantText` is only compared, never stored.
+ * `merchantText` is only compared, never stored. `only` limits the promotion to those keywords (a caller that proved just them).
  */
-export function confirmByProof(site: string, merchantText: string, ctx: BroadContext = {}): string[] {
+export function confirmByProof(site: string, merchantText: string, ctx: BroadContext = {}, only?: readonly string[]): string[] {
   const promoted: string[] = [];
   mutate(site, (p, now) => {
     const others = keywordsOnOtherSites(site);
     for (const k of p.merchantsPending ?? []) {
-      if ((p.merchants ?? []).length + promoted.length >= MAX_MERCHANTS || !keywordMatches(k, merchantText)) continue;
+      if ((p.merchants ?? []).length + promoted.length >= MAX_MERCHANTS || (only && !only.includes(k)) || !keywordMatches(k, merchantText)) continue;
       const why = p.merchantsPendingWhy?.[k] ?? broadReason(k, { otherSites: others, ...ctx });
       if (why) p.merchantsPendingWhy = { ...p.merchantsPendingWhy, [k]: why };
       else promoted.push(k);
