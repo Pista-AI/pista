@@ -8,7 +8,7 @@ import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
-import { PLAYBOOK_DECLINED, playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
+import { PLAYBOOK_DECLINED, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
 
 export type { ThreadRef };
 
@@ -371,15 +371,17 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         const playbook = event.toolName === "playbook_run" ? playbookFor((event.input as { site?: unknown }).site) : undefined;
         if (event.toolName === "playbook_run" && !playbook) return undefined; // nothing to follow; the tool says so
         const action = playbook ? `Follow the saved playbook for ${playbook.site}? (${playbook.steps.length} steps)` : undefined;
-        const forced = signInNeedsConfirmation(event.toolName, store.config.confirmSignIns, playbook?.steps.some((s) => s.kind === "signIn"));
-        if (mode === "full-access" && !forced) return undefined;
+        // The same decision the host-side core makes (playbookConsent), so the two cannot drift apart.
+        const consent = playbook ? playbookConsent(mode, store.config.confirmSignIns, playbook.steps.some((s) => s.kind === "signIn")) : undefined;
+        const forced = consent ? consent.forced : signInNeedsConfirmation(event.toolName, store.config.confirmSignIns);
+        if (consent ? consent.decision === "allow" : mode === "full-access" && !forced) return undefined;
         // The policy gate (last in line) refuses this call anyway; do not ask the user about it.
         // A playbook run that read-only mode or the policy refuses counts as declined, so the site does not stay shut for browsing.
         const refusedRun = () => playbook && pi.events?.emit(PLAYBOOK_DECLINED, playbook.site);
         if (store.toolRules && denyToolCall(store.toolRules, event.toolName, event.input)) return void refusedRun();
         const reason = isWrite(event.toolName);
         if (!reason) return undefined;
-        if (mode === "read-only") {
+        if (consent ? consent.decision === "refuse" : mode === "read-only") {
           refusedRun();
           return { block: true, reason: `Blocked: read-only mode (${reason}).` };
         }

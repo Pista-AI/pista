@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type ReplayReason, type ReplayResult, type RiskApprover } from "@pista/pi-browser";
 import { Type } from "typebox";
-import type { HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
+import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
 import { deriveShortcut, getPlaybook, LABEL_MAX, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
@@ -157,6 +157,19 @@ export function serialised<T>(key: object, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** What the approval gate (tool calls) and `runPlaybookForInvoice` (host callers) do before a playbook run: let it through, ask the user, or refuse. */
+export type PlaybookConsent = { decision: "allow" | "ask" | "refuse"; /** a sign-in step is asked about every time, even in full access */ forced: boolean };
+
+/**
+ * The one place that decides whether a playbook run needs the user's consent, so the gate and the core cannot drift apart:
+ * read-only refuses; ask mode asks; full access lets it through unless a sign-in step makes it ask (the owner can turn that off with `confirmSignIns: false`).
+ */
+export function playbookConsent(mode: ApprovalMode, confirmSignIns: boolean | undefined, hasSignIn: boolean): PlaybookConsent {
+  const forced = hasSignIn && confirmSignIns !== false;
+  if (mode === "full-access" && !forced) return { decision: "allow", forced };
+  return { decision: mode === "read-only" ? "refuse" : "ask", forced };
+}
+
 export interface PlaybookRunDeps {
   driver: () => BrowserDriver;
   domainRules?: DomainRules;
@@ -172,6 +185,75 @@ export interface PlaybookRunDeps {
   threadId: string;
   /** Replays inject these in tests; defaults to the real one. */
   replay?: typeof runReplay;
+  /**
+   * Consent for host callers. Tool calls leave this unset: the approval gate in extensions.ts asked before the tool ran.
+   * A host caller MUST supply it (without it the run proceeds as if already approved). The core asks it where `playbookConsent`
+   * says the gate would ask, and refuses where the gate refuses. Needs `approvalMode` and `confirmSignIns`; without a mode it asks.
+   */
+  approve?: (summary: { site: string; stepCount: number; hasSignIn: boolean }) => Promise<boolean>;
+  approvalMode?: () => ApprovalMode;
+  confirmSignIns?: () => boolean | undefined;
+}
+
+export type PlaybookRunResult =
+  | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number }
+  | { status: "handoff"; site: string; reason: ReplayReason; text: string }
+  | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
+
+export interface PlaybookRunRequest {
+  site: string;
+  invoice: unknown;
+  path?: string;
+  overwrite?: boolean;
+}
+
+/**
+ * Follows the saved playbook for one invoice. Everything the playbook_run tool does, callable from host code.
+ * Throws on a bad invoice, no project folder, or a path outside invoices/ (as the tool does).
+ */
+export async function runPlaybookForInvoice(deps: PlaybookRunDeps, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
+  const pb = playbookFor(req.site);
+  if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
+  const invoice = checkInvoice(req.invoice);
+  const root = deps.downloadRoot();
+  if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
+  const path = req.path?.trim() || defaultPath(pb.site, invoice);
+  if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
+  const overwrite = req.overwrite;
+  if (!overwrite && existsSync(confineToFolder(root, path))) return { status: "exists", text: `A file already exists at ${path}. Pass overwrite: true to replace it, or another path.` };
+  if (deps.approve) {
+    const hasSignIn = pb.steps.some((s) => s.kind === "signIn");
+    const { decision } = playbookConsent(deps.approvalMode?.() ?? "ask-writes", deps.confirmSignIns?.(), hasSignIn);
+    const allowed = decision === "allow" || (decision === "ask" && (await deps.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn })));
+    if (!allowed) {
+      deps.attempted.add(pb.site); // as the gate's declined event does: a decline does not keep the site shut
+      return { status: "declined", text: `The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.` };
+    }
+  }
+  const driver = deps.driver();
+  const done: number[] = [];
+  const r = await serialised(driver, () => {
+    deps.attempted.add(pb.site); // the replay starts now
+    return (deps.replay ?? runReplay)(pb, {
+      driver,
+      domainRules: deps.domainRules,
+      allowUrl: (u) => siteOf(u) === pb.site && /^https?:/i.test(u),
+      downloadRoot: root,
+      downloadPath: path,
+      overwrite,
+      invoice,
+      // Consent was settled above (the gate for tool calls, `approve` for host callers), so the steps need no further question.
+      approve: async () => !signal?.aborted,
+      confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
+      signal,
+      onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
+    });
+  });
+  for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
+  if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps };
+  // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
+  if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
+  return { status: "handoff", site: pb.site, reason: r.reason, text: formatHandoff(pb.site, invoice, pb.steps.length, r) };
 }
 
 export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): void {
@@ -188,40 +270,11 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         path: Type.Optional(Type.String({ description: "Where to save it, relative to the project folder" })),
         overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
       }),
-      execute: async (_id, { site: rawSite, invoice: rawInvoice, path: rawPath, overwrite }, signal) => {
+      execute: async (_id, { site, invoice, path, overwrite }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const pb = playbookFor(rawSite);
-        if (!pb) return text(`No playbook is saved for ${String(rawSite).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.`);
-        const invoice = checkInvoice(rawInvoice);
-        const root = deps.downloadRoot();
-        if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
-        const path = rawPath?.trim() || defaultPath(pb.site, invoice);
-        if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
-        if (!overwrite && existsSync(confineToFolder(root, path))) return text(`A file already exists at ${path}. Pass overwrite: true to replace it, or another path.`);
-        const driver = deps.driver();
-        const done: number[] = [];
-        const r = await serialised(driver, () => {
-          deps.attempted.add(pb.site); // the replay starts now
-          return (deps.replay ?? runReplay)(pb, {
-            driver,
-            domainRules: deps.domainRules,
-            allowUrl: (u) => siteOf(u) === pb.site && /^https?:/i.test(u),
-            downloadRoot: root,
-            downloadPath: path,
-            overwrite,
-            invoice,
-            // The approval gate asked about this call before it ran (once per run, in the modes where browser clicks ask), so the steps need no further question.
-            approve: async () => !signal?.aborted,
-            confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
-            signal,
-            onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
-          });
-        });
-        for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
-        if (r.ok) return text(JSON.stringify({ path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), note: `Followed the saved playbook for ${pb.site} (${r.steps} steps).` }, null, 2));
-        // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
-        if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
-        return text(formatHandoff(pb.site, invoice, pb.steps.length, r));
+        const r = await runPlaybookForInvoice(deps, { site, invoice, path, overwrite }, signal);
+        if (r.status === "downloaded") return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).` }, null, 2));
+        return text(r.text);
       },
     }),
   );

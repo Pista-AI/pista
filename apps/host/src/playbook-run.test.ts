@@ -7,7 +7,7 @@ import { liveOf, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("playbook-run", { cleanup: "exit" });
 const { approvalExtension } = await import("./extensions.ts");
-const { formatHandoff, playbookGuardMessage, recordRun, registerPlaybookRun, serialised, unfence } = await import("./playbook-run.ts");
+const { formatHandoff, playbookConsent, playbookGuardMessage, recordRun, registerPlaybookRun, runPlaybookForInvoice, serialised, unfence } = await import("./playbook-run.ts");
 const { Hub } = await import("./hub.ts");
 const { PlaybookTrace, savePlaybookFromTrace } = await import("./playbook-capture.ts");
 const { getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
@@ -264,4 +264,66 @@ test("a shortcut is learned once two successful runs saw the same address", () =
   assert.deepEqual(seen(), [undefined, undefined, undefined]);
   assert.equal(last().at(-1), "shortcut dropped");
   assert.equal(getPlaybook("127.0.0.1")!.failCount, 0, "a failed shortcut is not a playbook failure");
+});
+
+/** runPlaybookForInvoice called directly, as host code does, with the replay stubbed. */
+function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true, replay: (...a: unknown[]) => Promise<unknown> = async () => handoff("not-found")) {
+  const attempted = new Set<string>();
+  const events: unknown[] = [];
+  const asked: unknown[] = [];
+  let replays = 0;
+  const deps = {
+    driver: () => ({}) as never,
+    downloadRoot: () => projectDir,
+    trace: new PlaybookTrace(),
+    attempted,
+    confirmRisk: async () => false,
+    emit: (e: unknown) => events.push(e),
+    threadId: "t",
+    replay: (async (...a: unknown[]) => (replays++, replay(...a))) as never,
+    approve: async (s: unknown) => (asked.push(s), answer),
+    approvalMode: () => mode,
+  };
+  return { attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}) => runPlaybookForInvoice(deps as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }) };
+}
+
+test("the consent decision is shared: read-only refuses, ask mode asks, full access passes, a sign-in step asks", () => {
+  assert.deepEqual(playbookConsent("read-only", undefined, false), { decision: "refuse", forced: false });
+  assert.deepEqual(playbookConsent("ask-writes", undefined, false), { decision: "ask", forced: false });
+  assert.deepEqual(playbookConsent("full-access", undefined, false), { decision: "allow", forced: false });
+  assert.deepEqual(playbookConsent("full-access", undefined, true), { decision: "ask", forced: true });
+  assert.equal(playbookConsent("full-access", false, true).decision, "allow");
+});
+
+test("a direct run asks in ask mode, not in full access, and read-only refuses", async () => {
+  save();
+  const ask = direct("ask-writes");
+  assert.equal((await ask.run()).status, "handoff");
+  assert.deepEqual(ask.asked, [{ site: "127.0.0.1", stepCount: 2, hasSignIn: false }]);
+  const full = direct("full-access");
+  await full.run();
+  assert.equal(full.asked.length, 0);
+  assert.equal(full.replays(), 1);
+  const ro = direct("read-only");
+  assert.equal((await ro.run()).status, "declined");
+  assert.deepEqual([ro.asked.length, ro.replays(), [...ro.attempted]], [0, 0, ["127.0.0.1"]], "refused without asking or replaying, and the site opens for browsing");
+});
+
+test("a direct run the user declines does not replay and opens the site", async () => {
+  save();
+  const d = direct("ask-writes", false);
+  assert.equal((await d.run()).status, "declined");
+  assert.deepEqual([d.replays(), [...d.attempted], d.events], [0, ["127.0.0.1"], []]);
+});
+
+test("a direct run leaves the same attempted set and events as the tool, and returns the tool's handoff text", async () => {
+  save();
+  const t = runTool({ replay: async () => handoff("not-found") });
+  const toolText = await t.run({ path: "invoices/direct.pdf" });
+  const d = direct("full-access");
+  const r = await d.run();
+  assert.deepEqual([...d.attempted], [...t.attempted]);
+  assert.equal(r.status === "handoff" && r.text, toolText);
+  assert.ok(d.events.length > 0);
+  assert.equal(d.events.every((e) => (e as { type: string }).type === "playbook.event"), true);
 });
