@@ -163,7 +163,8 @@ test("run 3: a renamed link hands off at the download step; the model repairs it
     assert.deepEqual(toolCalls(id), ["playbook_run", "browser_snapshot", "browser_download", "playbook_save", "playbook_save"]);
     assert.match(file(path), /inv-2026-10b/);
     assert.match(results.at(-1)!, new RegExp(`Updated the playbook for 127\\.0\\.0\\.1; first changed step is ${steps}`), results.at(-1)!);
-    assert.deepEqual(playbookEvents().at(-1), { type: "playbook.event", threadId: id, kind: "updated", site: "127.0.0.1", step: steps });
+    const updated = playbookEvents().at(-1)!;
+    assert.deepEqual({ ...updated, before: typeof updated.before, after: typeof updated.after }, { type: "playbook.event", threadId: id, kind: "updated", site: "127.0.0.1", step: steps, stepCount: steps, before: "string", after: "string" });
     const pb = getPlaybook("127.0.0.1")!;
     assert.match(pb.history.at(-1)!.summary, new RegExp(`changed step ${steps}$`));
     assert.equal(pb.steps.length, steps);
