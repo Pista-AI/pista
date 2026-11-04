@@ -2847,6 +2847,23 @@ select:focus-visible {
   margin: 0;
 }
 
+.playbook-keywords { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.kw-chips { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.kw-chip { max-width: 100%; white-space: nowrap; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 12px; border-radius: 999px; padding: 2px 4px 2px 10px; }
+.kw-chip.ok { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.kw-chip.pending { border: 1px dashed var(--text-3); color: var(--text-2); }
+.kw-chip em { font-style: normal; font-size: 10.5px; color: var(--text-3); }
+.kw-chip small { white-space: normal; flex-basis: 100%; color: var(--text-3); padding-right: 6px; }
+.kw-chip button { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 4px; font-size: 13px; }
+.kw-add { display: flex; flex-wrap: wrap; gap: 6px; }
+.field .kw-add input { flex: 1 1 12rem; width: auto; min-width: 0; }
+.kw-add .pill-btn { flex: none; }
+.playbooks { min-width: 0; }
+.playbooks .login-row { flex-wrap: wrap; }
+.playbooks .login-info { flex: 1 1 10rem; }
+.playbooks .playbook-actions { flex-wrap: wrap; }
+.playbook-keywords { min-width: 0; overflow-wrap: anywhere; }
+
 /* Playbook cards: compact in-chat station cards */
 .pb { position: relative; --tone: var(--text-3); border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg-elevated); padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
 .pb[data-tone="ok"] { --tone: var(--green); }
@@ -2878,6 +2895,7 @@ select:focus-visible {
   align-items: center;
   gap: 8px;
   flex: none;
+  max-width: 100%;
 }
 .playbook-chip {
   font-size: 11.5px;
