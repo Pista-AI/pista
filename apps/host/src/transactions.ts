@@ -5,17 +5,24 @@ export type ParsedLine = { lineNo: number; raw: string; date?: string; amount?: 
 export type VendorMatch = { kind: "one"; site: string } | { kind: "none" } | { kind: "many"; sites: string[] };
 
 type Col = "date" | "amount" | "merchant" | "currency";
-const HEADER_NAMES: Record<Col, string[]> = {
-  date: ["date", "datum", "bokforingsdatum", "transaktionsdatum"],
-  amount: ["amount", "belopp"],
-  merchant: ["description", "text", "beskrivning", "mottagare", "merchant"],
-  currency: ["currency", "valuta"],
+// Lower rank wins when a header names several columns of one kind: the purchase date beats the booking date beats the value date.
+// Balance columns (saldo, balance) are not listed, so they are never read as the amount.
+const HEADER_NAMES: Record<Col, [string, number][]> = {
+  date: [["transaktionsdatum", 0], ["transaction date", 0], ["kopdatum", 0], ["purchase date", 0], ["bokforingsdatum", 1], ["booking date", 1], ["posting date", 1], ["date", 1], ["datum", 1], ["valutadatum", 2], ["value date", 2]],
+  amount: [["amount", 0], ["belopp", 0]],
+  merchant: [["description", 0], ["text", 0], ["beskrivning", 0], ["mottagare", 0], ["merchant", 0]],
+  currency: [["currency", 0], ["valuta", 0]],
 };
-const strip = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
-const colOf = (cell: string): Col | undefined => {
-  const n = strip(cell).toLowerCase().trim();
-  return (Object.keys(HEADER_NAMES) as Col[]).find((c) => HEADER_NAMES[c].includes(n));
+const strip = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const colOf = (cell: string): { col: Col; rank: number } | undefined => {
+  const n = strip(cell).toLowerCase().replace(/[_\s]+/g, " ").trim();
+  for (const col of Object.keys(HEADER_NAMES) as Col[]) {
+    const hit = HEADER_NAMES[col].find(([name]) => name === n);
+    if (hit) return { col, rank: hit[1] };
+  }
+  return undefined;
 };
+const isHeaderLine = (line: string) => ["\t", ";", ","].some((d) => new Set(splitCells(line, d).map((c) => colOf(c)?.col).filter(Boolean)).size >= 2);
 
 /** Quote-aware split; quotes may wrap a cell and "" is a literal quote. */
 function splitCells(line: string, delim: string): string[] {
@@ -32,12 +39,22 @@ function splitCells(line: string, delim: string): string[] {
   return out.map((s) => s.trim());
 }
 
-function findHeader(lines: string[]): { delim: string; cols: (Col | undefined)[]; index: number } | undefined {
+type Header = { delim: string; index: number; pick: Record<Col, number>; unclear: { date: boolean; amount: boolean } };
+function findHeader(lines: string[]): Header | undefined {
   const index = lines.findIndex((l) => l.trim());
   if (index < 0) return undefined;
   for (const delim of ["\t", ";", ","]) {
-    const cols = splitCells(lines[index]!, delim).map(colOf);
-    if (new Set(cols.filter(Boolean)).size >= 2) return { delim, cols, index };
+    const cells = splitCells(lines[index]!, delim).map(colOf);
+    if (new Set(cells.map((c) => c?.col).filter(Boolean)).size < 2) continue;
+    const pick = {} as Record<Col, number>;
+    const unclear = { date: false, amount: false };
+    for (const col of ["date", "amount", "merchant", "currency"] as Col[]) {
+      const best = Math.min(...cells.map((c) => (c?.col === col ? c.rank : 9)));
+      const at = cells.flatMap((c, i) => (c?.col === col && c.rank === best ? [i] : []));
+      pick[col] = at.length ? at[0]! : -1;
+      if ((col === "date" || col === "amount") && at.length > 1) unclear[col] = true;
+    }
+    return { delim, index, pick, unclear };
   }
   return undefined;
 }
@@ -46,7 +63,7 @@ function findHeader(lines: string[]): { delim: string; cols: (Col | undefined)[]
 function pasteOrder(texts: string[]): "dmy" | "mdy" | null {
   let dmy = false, mdy = false;
   for (const t of texts) {
-    for (const m of t.matchAll(/(?<!\d)(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?!\d)/g)) {
+    for (const m of t.matchAll(/(?<!\d)(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?!\d)/g)) {
       if (+m[1]! > 12) dmy = true;
       if (+m[2]! > 12) mdy = true;
     }
@@ -54,12 +71,14 @@ function pasteOrder(texts: string[]): "dmy" | "mdy" | null {
   return dmy === mdy ? null : dmy ? "dmy" : "mdy";
 }
 
+const TWO_DIGIT_YEAR = /^\d{1,2}[/.-]\d{1,2}[/.-]\d{2}$/;
 const iso = (d: CandidateDate) => `${String(d.y).padStart(4, "0")}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
 
 /** Dates in `text` with the paste's d/m order applied: how many, the first one, and the matched spans to remove. */
 function dates(text: string, order: "dmy" | "mdy" | null) {
   const found = parseDates(text).filter((d) => d.d !== undefined && (!d.amb || !order || d.amb === order));
-  const ambiguous = found.some((d) => d.amb && !order);
+  // A two-digit year (24-01-13, 13.01.24) cannot be told from another order, so it is never trusted.
+  const ambiguous = found.some((d) => (d.amb && !order) || TWO_DIGIT_YEAR.test(d.raw));
   const count = found.filter((d) => !d.amb || !!order).length + found.filter((d) => d.amb && !order).length / 2;
   return { count, ambiguous, date: ambiguous ? undefined : found[0] && iso(found[0]), raws: [...new Set(found.map((d) => d.raw))] };
 }
@@ -93,53 +112,71 @@ function removeAmounts(text: string): string {
 
 const cleanMerchant = (s: string) => s.replace(/["\t;|]/g, " ").replace(/\s+/g, " ").replace(/^[\s,.:\-–]+|[\s,.:\-–]+$/g, "");
 
-function finish(base: Omit<ParsedLine, "ok" | "reason">, nDates: number, nAmounts: number, ambiguous: boolean): ParsedLine {
+function finish(base: Omit<ParsedLine, "ok" | "reason">, nDates: number, nAmounts: number, unclear: string | false): ParsedLine {
   const reason = nDates !== 1 ? (nDates ? "more than one date" : "no date")
-    : ambiguous ? "ambiguous date"
+    : unclear ? unclear
     : nAmounts !== 1 ? (nAmounts ? "more than one amount" : "no amount")
-    : base.amount! < 0 ? "negative amount (refund or credit)"
     : !base.merchant ? "no merchant text" : undefined;
   return reason ? { ...base, ok: false, reason } : { ...base, ok: true };
+}
+
+/** "kr" alone does not say which krona, so the currency stays unknown. */
+const knownCurrency = (c?: string) => (c && KNOWN_CUR.has(c.toUpperCase()) ? c.toUpperCase() : undefined);
+
+/**
+ * Sign convention of the paste: the majority sign is an expense, the other sign is a refund or credit and is not ok.
+ * Expenses written as negatives are returned as positive amounts. A tie counts as positive expenses.
+ */
+function applySigns(lines: ParsedLine[]): void {
+  const ok = lines.filter((l) => l.ok);
+  const neg = ok.filter((l) => l.amount! < 0).length;
+  const expensesNegative = neg > ok.length - neg;
+  for (const l of ok) {
+    if (l.amount! < 0 === expensesNegative) l.amount = Math.abs(l.amount!);
+    else Object.assign(l, { ok: false, reason: "refund or credit (amount sign differs from the other lines)" });
+  }
 }
 
 export function parseTransactions(text: string): { lines: ParsedLine[] } {
   const rows = text.replace(/[−–]/g, "-").split(/\r?\n/);
   const header = findHeader(rows);
-  const body = rows.map((raw, i) => ({ raw, lineNo: i + 1 })).filter((r) => r.raw.trim() && (!header || r.lineNo - 1 > header.index));
-  const col = (k: Col) => header?.cols.indexOf(k) ?? -1;
+  // Blank lines and header rows (including a repeated one) are not transactions.
+  const body = rows.map((raw, i) => ({ raw, lineNo: i + 1 })).filter((r) => r.raw.trim() && (!header || r.lineNo - 1 > header.index) && !isHeaderLine(r.raw));
   const cells = (raw: string) => splitCells(raw, header!.delim);
-  const order = pasteOrder(body.map((r) => (header ? (col("date") >= 0 ? cells(r.raw)[col("date")] ?? "" : "") : r.raw)));
+  const order = pasteOrder(body.map((r) => (header ? (header.pick.date >= 0 ? cells(r.raw)[header.pick.date] ?? "" : "") : r.raw)));
   const lines: ParsedLine[] = [];
   for (const r of body) {
     if (header) {
-      const c = cells(r.raw), cell = (k: Col) => (col(k) >= 0 ? c[col(k)] ?? "" : "");
+      const c = cells(r.raw), cell = (k: Col) => (header.pick[k] >= 0 ? c[header.pick[k]] ?? "" : "");
       const d = dates(cell("date"), order), amounts = parseAmounts(cell("amount"));
-      if (!d.count && !amounts.length) continue;
-      const currency = cell("currency").toUpperCase() || (amounts[0]?.currency === "KR" ? undefined : amounts[0]?.currency);
-      lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: currency || undefined, merchant: cleanMerchant(cell("merchant")) || undefined }, d.count, amounts.length, d.ambiguous));
+      const unclear = header.unclear.date ? "ambiguous date column" : d.ambiguous ? "ambiguous date" : header.unclear.amount ? "ambiguous amount column" : false;
+      const currency = cell("currency").trim() ? knownCurrency(cell("currency")) : knownCurrency(amounts[0]?.currency);
+      lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency, merchant: cleanMerchant(cell("merchant")) || undefined }, d.count, amounts.length, unclear));
       continue;
     }
     const d = dates(r.raw, order);
     const rest = removeRaws(r.raw, d.raws);
     const amounts = parseAmounts(rest, { strict: true });
-    if (!d.count && !amounts.length) continue;
+    if (!d.count && !amounts.length) { lines.push({ lineNo: r.lineNo, raw: r.raw, ok: false, reason: "no date or amount" }); continue; }
     const merchant = cleanMerchant(removeAmounts(rest));
-    lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: amounts[0]?.currency === "KR" ? undefined : amounts[0]?.currency, merchant: merchant || undefined }, d.count, amounts.length, d.ambiguous));
+    lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: knownCurrency(amounts[0]?.currency), merchant: merchant || undefined }, d.count, amounts.length, d.ambiguous && "ambiguous date"));
   }
+  applySigns(lines);
   return { lines };
 }
 
-const PROCESSOR_PREFIX = /^(?:SQ|TST|PAYPAL|PP|SP|IZ)\s*\*\s*/;
-const normMerchant = (s: string) => strip(s).toUpperCase().replace(/\s+/g, " ").trim().replace(PROCESSOR_PREFIX, "");
+// TODO: temporary copy; replace with normaliseMerchant from ./merchants.ts once that module lands.
+const TEMP_PROCESSOR_PREFIX = /^(?:SQ|TST|PAYPAL|PP|SP|IZ)\s*\*\s*/;
+const tempNormMerchant = (s: string) => strip(s).toUpperCase().replace(/\s+/g, " ").trim().replace(TEMP_PROCESSOR_PREFIX, "");
 
 /** Whole-word keyword match against the merchant; several sites never resolve to a guess. */
 export function matchVendor(merchant: string, playbooks: { site: string; merchants?: string[] }[]): VendorMatch {
-  const m = normMerchant(merchant);
+  const m = tempNormMerchant(merchant);
   const sites = new Set<string>();
   for (const p of playbooks) {
     for (const k of p.merchants ?? []) {
-      const kw = normMerchant(k);
-      if (kw && new RegExp(`(?<![A-Z0-9])${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Z0-9])`).test(m)) sites.add(p.site);
+      const kw = tempNormMerchant(k);
+      if (kw && new RegExp(`(?<![\\p{L}\\p{N}])${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "u").test(m)) sites.add(p.site);
     }
   }
   const all = [...sites];
