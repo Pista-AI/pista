@@ -22,7 +22,7 @@ import {
 } from "@pista/protocol";
 import { setupCredentials } from "./auth-setup.ts";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
-import { deletePlaybook, getPlaybook, listPlaybooks, setMerchants } from "./playbooks.ts";
+import { deletePlaybook, getPlaybook, dismissMerchant, listPlaybooks, setMerchants } from "./playbooks.ts";
 import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
 import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
 import { extensionsSummary } from "./policy.ts";
@@ -190,6 +190,10 @@ const handlers: { [M in MethodName]: Handler<M> } = {
   "playbook.get": ({ site }) => getPlaybook(site),
   "playbook.delete": ({ site }) => {
     deletePlaybook(site);
+    return { ok: true };
+  },
+  "playbook.dismissMerchant": ({ site, merchant }) => {
+    dismissMerchant(site, merchant);
     return { ok: true };
   },
   "playbook.setMerchants": ({ site, merchants }) => {

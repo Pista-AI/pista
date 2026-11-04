@@ -4,7 +4,8 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
-import { cleanMerchant, cleanMerchants, deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, MERCHANT_STOPWORDS, recordSuccess, savePlaybook, setMerchants, siteKey, validatePlaybook } from "./playbooks.ts";
+import { MAX_MERCHANTS, merchantKeyword } from "./merchants.ts";
+import { deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -174,31 +175,6 @@ export function stepLabel(s: PlaybookStep | undefined): string {
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
-// Processor prefixes ("SQ *", "PAYPAL *", "GOOGLE *"), payment-type words in bank statements, and place names that trail a merchant.
-const PROCESSOR_PREFIX = /^\s*(?:SQ|TST|PAYPAL|PP|GOOGLE|STRIPE|SP|IZ|PAYU|ZETTLE)\s*\*\s*/;
-const LEADING_NOISE = new Set(["KORT", "KORTKOP", "KOP", "BETALNING", "AUTOGIRO", "BG", "PG", "CARD", "PURCHASE", "PAYMENT", "POS", "DEBIT", "VISA", "SWISH", "TO", "FROM", "KARTENZAHLUNG", "KARTENKAUF", "LASTSCHRIFT"]);
-const PLACES = new Set(["STOCKHOLM", "GOTEBORG", "GOTHENBURG", "MALMO", "UPPSALA", "SAN", "NEW", "LOS", "LAS", "LONDON", "DUBLIN", "AMSTERDAM", "BERLIN", "PARIS", "HELSINKI", "OSLO", "COPENHAGEN", "KOBENHAVN", "LUXEMBOURG", "SEATTLE", "MOUNTAIN", "CAMBRIDGE", "SINGAPORE", "SWEDEN", "SVERIGE", "IRELAND", "USA", "GBR", "SWE", "IRL", "NLD", "DEU", "FRA"]);
-
-/**
- * One matching keyword from a transaction's merchant text, or undefined: drops processor prefixes, `*1234` references, dates, amounts,
- * ids, company forms and trailing places, then keeps the first one or two words. "ACME CLOUD LLC*1234 SAN FRANCISCO" gives "ACME CLOUD".
- */
-export function merchantKeyword(text: string): string | undefined {
-  const upper = text.slice(0, 200).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(PROCESSOR_PREFIX, "");
-  const head = upper.split("*").map((p) => p.trim()).find(Boolean) ?? "";
-  const words: string[] = [];
-  for (const raw of head.split(/\s+/)) {
-    const w = raw.replace(/[^A-Z0-9&.'-]/g, "").replace(/^[.'-]+|[.'-]+$/g, "");
-    if (!w) continue;
-    if (!words.length) {
-      if (/^[\d.,'-]+$/.test(w) || LEADING_NOISE.has(w) || MERCHANT_STOPWORDS.has(w)) continue;
-    } else if (/^\d/.test(w) || w.length < 2 || MERCHANT_STOPWORDS.has(w) || PLACES.has(w)) break;
-    words.push(w);
-    if (words.length === 2) break;
-  }
-  return cleanMerchant(words.join(" "));
-}
-
 export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown): { message: string; event?: HostEvent } {
   try {
     const { unverified, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
@@ -206,10 +182,11 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
-    const merchants = cleanMerchants([...(old?.merchants ?? []), ...(keyword ? [keyword] : [])]);
-    const learnedKeyword = !!keyword && merchants.includes(keyword) && !old?.merchants?.includes(keyword);
-    const kwNote = learnedKeyword ? ` Remembered the merchant keyword ${keyword}.` : "";
-    const withMerchants = merchants.length ? { merchants } : {};
+    const confirmed = old?.merchants ?? [], pending = old?.merchantsPending ?? [];
+    const learnedKeyword = !!keyword && !confirmed.includes(keyword) && !pending.includes(keyword) && pending.length < MAX_MERCHANTS;
+    const nextPending = learnedKeyword ? [...pending, keyword] : pending;
+    const kwNote = learnedKeyword ? ` Suggested the merchant keyword ${keyword}; the owner confirms it before it is used.` : "";
+    const withMerchants = { ...(confirmed.length ? { merchants: confirmed } : {}), ...(nextPending.length ? { merchantsPending: nextPending } : {}) };
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
     if (!old) {
       savePlaybook({ ...fresh, ...withMerchants, history: learned });
@@ -220,7 +197,8 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const startChanged = old.startUrl !== fresh.startUrl;
     if (!changed.length && !startChanged) {
       recordSuccess(built.site); // the same path just worked again
-      if (learnedKeyword) setMerchants(built.site, merchants);
+      const cur = learnedKeyword ? getPlaybook(built.site) : null;
+      if (cur) savePlaybook({ ...cur, ...withMerchants });
       return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}${kwNote}` };
     }
     const now = new Date().toISOString();
