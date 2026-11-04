@@ -4,11 +4,13 @@ import { activeBrowserDriverConfig, createBrowserDriver, type ThreadRef } from "
 import type { ConfigStore } from "./config.ts";
 import type { HostEvent } from "@pista/protocol";
 import type { Hub } from "./hub.ts";
-import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
+import { denyToolCall, isShellTool, toolRulesDeny, type Denial, type ToolRules } from "./policy-tools.ts";
+export { denyToolCall };
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
-import { brandConsent, PLAYBOOK_DECLINED, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, type PlaybookRunConsent } from "./playbook-run.ts";
+import { PLAYBOOK_DECLINED, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
+export { hostConsent } from "./playbook-run.ts";
 
 export type { ThreadRef };
 
@@ -432,40 +434,6 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
 // ---------------------------------------------------------------------------
 // Policy gate: the managed policy's `tools` rules, enforced on every tool call
 // ---------------------------------------------------------------------------
-
-/** The managed policy's tool rules refuse this call (the approval gate and host-side runs share this). */
-export function toolRulesDeny(store: Pick<ConfigStore, "toolRules">, toolName: string, input: unknown): Denial | null {
-  return store.toolRules ? denyToolCall(store.toolRules, toolName, input) : null;
-}
-
-/**
- * The consent for a host-side playbook run (`runPlaybookForInvoice`). Host callers must use this and not build consent by hand:
- * the policy check is the gate's own (`block` is the role refusal passed to `approvalExtension`, plus the tool rules), for the playbook_run tool.
- */
-export function hostConsent(o: {
-  store: Pick<ConfigStore, "config" | "toolRules">;
-  approve: PlaybookRunConsent["approve"];
-  block?: (toolName: string, input: Record<string, unknown>) => string | undefined;
-}): PlaybookRunConsent {
-  return brandConsent({
-    approve: o.approve,
-    approvalMode: () => o.store.config.approvalMode,
-    confirmSignIns: () => o.store.config.confirmSignIns,
-    policy: () => {
-      const input = {};
-      return o.block?.("playbook_run", input) ?? toolRulesDeny(o.store, "playbook_run", input)?.reason;
-    },
-  });
-}
-
-/** The first rule that refuses this call, or null. Every tool call, including codemode's nested ones, passes through here. */
-export function denyToolCall(rules: ToolRules, toolName: string, input: unknown): Denial | null {
-  const denied = rules.checkTool(toolName) ?? rules.checkMcp(toolName, input);
-  if (denied || !isShellTool(toolName)) return denied;
-  const command = (input as { command?: unknown } | null | undefined)?.command;
-  // A shell call without a readable command cannot be checked, so it does not run.
-  return typeof command === "string" ? rules.checkBash(command) : { rule: "tools.bash", reason: "Blocked by your organisation's policy: tools.bash (no command to check)" };
-}
 
 /**
  * Must be the last inline extension: inline extensions load after user and project ones, so this handler

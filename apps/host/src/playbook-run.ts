@@ -7,6 +7,7 @@ import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/pro
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
 import { deriveShortcut, getPlaybook, LABEL_MAX, recordFailure, recordSuccess, savePlaybook, siteKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
+import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
 export const PLAYBOOK_DECLINED = "pista:playbook-declined";
@@ -201,10 +202,31 @@ export interface PlaybookRunConsent {
   approvalMode: () => ApprovalMode;
   confirmSignIns: () => boolean | undefined;
   policy: () => string | undefined;
+  /** The gate's declined/pause state: true refuses the run before it replays. */
+  paused?: () => boolean;
 }
 
-/** Brands a consent object. Called only by `hostConsent`; do not build consent anywhere else. */
-export const brandConsent = (c: Omit<PlaybookRunConsent, typeof consentBrand>): PlaybookRunConsent => c as PlaybookRunConsent;
+const brandConsent = (c: Omit<PlaybookRunConsent, typeof consentBrand>): PlaybookRunConsent => c as PlaybookRunConsent;
+
+/**
+ * The consent for a host-side playbook run (`runPlaybookForInvoice`), and the only way to get one. The policy check is the gate's own
+ * (`block` is the role refusal passed to `approvalExtension`, plus the managed tool rules), for the playbook_run tool.
+ * `paused` lets the caller report the gate's declined state so a paused thread runs nothing.
+ */
+export function hostConsent(o: {
+  store: { config: { approvalMode: ApprovalMode; confirmSignIns?: boolean }; toolRules: ToolRules | null | undefined };
+  approve: PlaybookRunConsent["approve"];
+  block?: (toolName: string, input: Record<string, unknown>) => string | undefined;
+  paused?: () => boolean;
+}): PlaybookRunConsent {
+  return brandConsent({
+    approve: o.approve,
+    approvalMode: () => o.store.config.approvalMode,
+    confirmSignIns: () => o.store.config.confirmSignIns,
+    policy: () => o.block?.("playbook_run", {}) ?? toolRulesDeny(o.store, "playbook_run", {})?.reason,
+    ...(o.paused ? { paused: o.paused } : {}),
+  });
+}
 
 /** Module-private: only the playbook_run tool wrapper may skip the consent step, because the approval gate already ran on the tool call. */
 const GATED = Symbol("gated");
@@ -244,6 +266,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
       deps.attempted.add(pb.site); // as the gate's declined event does: a refusal does not keep the site shut
       return { status: "declined", text };
     };
+    if (consent.paused?.()) return declined(`Paused: not running the playbook for ${pb.site}.`);
     const refused = consent.policy();
     if (refused) return declined(refused);
     const hasSignIn = pb.steps.some((s) => s.kind === "signIn");
