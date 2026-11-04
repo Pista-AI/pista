@@ -22,6 +22,7 @@ import type {
 } from "@pista/protocol";
 import { type AuditSink, auditHash, noopAudit } from "./audit.ts";
 import { emitPrompt, emitUsage, scopeAudit, ToolAudit } from "./audit-events.ts";
+import { abortFirstPass } from "./first-pass.ts";
 import { AgentRoles } from "./role-files.ts";
 import { CLIENT_DIR, type ConfigStore, WORKSPACE_DIR } from "./config.ts";
 import { DecisionLog } from "./decisions.ts";
@@ -718,6 +719,7 @@ export class ThreadManager {
     const live = this.live.get(threadId);
     // Also covers a stop during the judge call or prepareModel, when nothing is streaming.
     this.goals.pauseIfRunning(threadId, "Stopped by the user");
+    abortFirstPass(threadId); // an invoice first pass runs before the agent streams, so the session has nothing to abort yet
     await live?.session.abort();
   }
 

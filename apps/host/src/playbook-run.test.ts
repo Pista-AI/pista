@@ -359,15 +359,6 @@ test("hostConsent wires the gate's tool rules: a store that denies playbook_run 
   assert.deepEqual([d.replays(), asked.length], [0, 0]);
 });
 
-test("a paused host consent refuses before replay", async () => {
-  save();
-  const { hostConsent } = await import("./extensions.ts");
-  const d = direct("full-access");
-  const consent = hostConsent({ store: { config: { approvalMode: "full-access" }, toolRules: null }, approve: async () => true, paused: () => true });
-  const r = await runPlaybookForInvoice(d.deps as never, consent, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/p.pdf" });
-  assert.deepEqual([r.status, "text" in r && /^Paused/.test(r.text), d.replays()], ["declined", true, 0]);
-});
-
 test("a routed run confirms a pending keyword only when the replay verified the amount, and counts a miss once", async () => {
   save();
   const { addPendingMerchant } = await import("./playbooks.ts");

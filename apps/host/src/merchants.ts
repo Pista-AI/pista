@@ -137,16 +137,14 @@ export function merchantKeyword(text: string): string | undefined {
 /** Names of umbrella brands and payment processors that stand for many unrelated charges. Data, not a list of supported vendors. */
 export const UMBRELLA_BRANDS: ReadonlySet<string> = new Set(["GOOGLE", "APPLE", "AMAZON", "AMZN", "MICROSOFT", "META", "PAYPAL", "STRIPE", "KLARNA", "ADYEN", "SQUARE", "SHOPIFY"]);
 
-export type BroadReason = "short" | "umbrella" | "other-site" | "unsure" | "unverified-elsewhere";
-export const BROAD_REASONS: ReadonlySet<string> = new Set<BroadReason>(["short", "umbrella", "other-site", "unsure", "unverified-elsewhere"]);
+export type BroadReason = "short" | "umbrella" | "other-site" | "unsure";
+export const BROAD_REASONS: ReadonlySet<string> = new Set<BroadReason>(["short", "umbrella", "other-site", "unsure"]);
 
 export interface BroadContext {
   /** The model said it was unsure the keyword is specific. */
   unsure?: boolean;
   /** Keywords already confirmed or pending on other sites. */
   otherSites?: readonly string[];
-  /** Hook for a later rule: the keyword matched other lines in the same paste that did not verify on this site. */
-  unverifiedElsewhere?: boolean;
 }
 
 /** Why a keyword is too broad to confirm without the user, or undefined. Deterministic checks the model cannot waive. */
@@ -155,6 +153,5 @@ export function broadReason(keyword: string, ctx: BroadContext = {}): BroadReaso
   if (keyword.split(/[\s*]+/).some((w) => UMBRELLA_BRANDS.has(fold(w)))) return "umbrella";
   if (ctx.otherSites?.includes(keyword)) return "other-site";
   if (ctx.unsure) return "unsure";
-  if (ctx.unverifiedElsewhere) return "unverified-elsewhere";
   return undefined;
 }

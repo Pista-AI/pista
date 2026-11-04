@@ -9,7 +9,9 @@ export { denyToolCall };
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
-import { PLAYBOOK_DECLINED, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
+import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
+import { batchGate, endFirstPass, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
+import { getPlaybook, listPlaybooks } from "./playbooks.ts";
 export { hostConsent } from "./playbook-run.ts";
 
 export type { ThreadRef };
@@ -167,8 +169,9 @@ export function toolLimitExtension(hub: Hub, ref: ThreadRef, gate: ToolLimitGate
 /**
  * `guardPlaybooks`: the thread's role lists playbook_run, so opening a site with a saved playbook waits until playbook_run was tried there.
  * `invoicesOnly`: playbook_run saves only under `<project>/invoices/`.
+ * `firstPass`: a pasted list of transactions is first fetched by the host from known vendors (see first-pass.ts); the model starts from what is left.
  */
-export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules, opts: { guardPlaybooks?: boolean; invoicesOnly?: boolean } = {}): InlineExtension {
+export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainRules, opts: { guardPlaybooks?: boolean; invoicesOnly?: boolean; firstPass?: { store: ConfigStore } } = {}): InlineExtension {
   const driver = createBrowserDriver(activeBrowserDriverConfig(), { hub, ref, domainRules });
   const trace = new PlaybookTrace();
   const attempted = new Set<string>();
@@ -177,7 +180,55 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
     factory: (pi: ExtensionAPI) => {
       // Same condition as browser_download (downloadRoot): a playbook ends in a download.
       registerPlaybookSave(pi, trace, (e) => hub.emit(e), ref.threadId);
-      registerPlaybookRun(pi, { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, invoicesOnly: opts.invoicesOnly, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId });
+      const runDeps: PlaybookRunDeps = { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, invoicesOnly: opts.invoicesOnly, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId };
+      registerPlaybookRun(pi, runDeps);
+      const { firstPass } = opts;
+      if (firstPass) {
+        const first = firstPassOnce();
+        // Before the model's first turn: a paste that parses as transactions is routed to saved playbooks by the host; anything else passes through untouched.
+        pi.on("input", async (event, ctx) => {
+          if (event.streamingBehavior || event.source === "extension" || !first.ready(event.text)) return { action: "continue" as const };
+          const stop = startFirstPass(ref.threadId, ctx?.signal);
+          try {
+            let declined = false;
+            const signInAnswers = new Map<string, boolean>();
+            const ask = async (action: string, sites: string[]) => {
+              try {
+                const answer = await askWithCard<{ allow: boolean }>(hub, (id) => ({ type: "approval.request", approvalId: id, threadId: ref.threadId, toolName: "playbook_run", args: { sites }, reason: "follows saved playbooks in the browser (clicks and downloads)", action }), 10 * 60_000, stop.signal);
+                return answer.allow === true;
+              } catch {
+                return false; // no window connected, timeout or stop
+              }
+            };
+            // One ask covers the batch (batchGate). A run that signs in asks again for its own site, as a single playbook_run would.
+            const consent = hostConsent({
+              store: firstPass.store,
+              approve: async ({ site, hasSignIn }) => {
+                if (declined) return false;
+                if (!hasSignIn || firstPass.store.config.confirmSignIns === false) return true;
+                if (!signInAnswers.has(site)) signInAnswers.set(site, await ask(`Sign in to ${site} and fetch its invoice?`, [site]));
+                return signInAnswers.get(site)!;
+              },
+            });
+            const known = () => listPlaybooks().flatMap((m) => getPlaybook(m.site) ?? []);
+            const out = await runFirstPass(event.text, {
+              playbooks: known,
+              allow: async (routed) => !(declined = !(await batchGate(consent, routed, known(), ask))),
+              run: (req, signal) => runKeepingGuardShut(attempted, (scratch) => runPlaybookForInvoice({ ...runDeps, attempted: scratch }, consent, req, signal)),
+              writeManifest: (rows) => ref.cwd && writeManifestRows(ref.cwd, rows),
+            }, stop.signal);
+            if (stop.signal.aborted) {
+              // The user pressed Stop: the model does not start. Files already fetched stay in the manifest.
+              hub.emit({ type: "thread.event", threadId: ref.threadId, event: { type: "agent_settled" } });
+              return { action: "handled" as const };
+            }
+            if (out?.ran) first.ran();
+            return out ? { action: "transform" as const, text: summarise(out), images: event.images } : { action: "continue" as const };
+          } finally {
+            endFirstPass(ref.threadId, stop);
+          }
+        });
+      }
       if (opts.guardPlaybooks) {
         // A run the user declined at the approval gate counts as tried: the site opens, and no failure is recorded.
         pi.events?.on(PLAYBOOK_DECLINED, (site) => typeof site === "string" && attempted.add(site));
