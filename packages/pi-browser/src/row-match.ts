@@ -172,3 +172,19 @@ export function matchPeriod(labels: MatchRow[], target: { date: string }): RowMa
   }).map((l) => l.index);
   return hits.length === 0 ? { kind: "none" } : hits.length === 1 ? { kind: "one", index: hits[0]! } : { kind: "many", candidates: hits };
 }
+
+/** How many distinct full dates (with a day) a text shows. */
+export const fullDateCount = (text: string): number => new Set(parseDates(text).filter((d) => d.d).map((d) => d.raw)).size;
+
+/**
+ * The nearest level of a row chain (see pageRowChain) that shows exactly one distinct full date; "" when none does. The walk stops at
+ * the first level with two or more dates: that level and everything above it is a list, not a row.
+ */
+export function rowTextOf(chain: readonly string[] | null | undefined): string {
+  for (const t of chain ?? []) {
+    const n = fullDateCount(t);
+    if (n > 1) return "";
+    if (n === 1) return t;
+  }
+  return "";
+}

@@ -946,6 +946,32 @@ function pageRowTexts(refs: string[]): (string | null)[] {
 }
 
 /**
+ * The candidate row texts of ONE element, nearest first (each capped at 2000 chars; null when the ref is gone): its nearest tr, [role=row] or li
+ * alone, else up to 6 ancestors, stopping before one that holds another control with the same role and name (that is the whole list).
+ * The caller keeps the first that shows a full date. Page text: only ever read by the replay row check, never put in a result.
+ */
+function pageRowChain(ref: string): string[] | null {
+  const w = window as unknown as { __pistaRefs?: Map<string, WeakRef<Element>>; __pistaDescribe?: (el: Element) => { role: string; name: string } };
+  const text = (el: Element) => {
+    const t = ((el as HTMLElement).innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+    return t.length > 2000 ? t.slice(0, 2000).replace(/\s*\S*$/, "") : t;
+  };
+  const el = w.__pistaRefs?.get(ref)?.deref();
+  if (!el || !el.isConnected) return null;
+  const row = el.closest("tr,[role=row],li");
+  if (row) return [text(row)];
+  const d = w.__pistaDescribe?.(el);
+  const out: string[] = [];
+  let a: Element | null = el.parentElement;
+  for (let i = 0; i < 6 && a && a !== document.body && a !== document.documentElement; i++, a = a.parentElement) {
+    // Stop before a level that holds any other link or button (it is a list or a page), or a heading or header (a date there is not the row's).
+    if ([...a.querySelectorAll("a,button,[role=button],[role=link]")].some((x) => x !== el && !x.contains(el) && !el.contains(x)) || a.querySelector("h1,h2,h3,h4,h5,h6,header,nav,[role=heading]")) break;
+    out.push(text(a));
+  }
+  return out;
+}
+
+/**
  * The elements of the last snapshot that share the target's role, in page order: those with the same name too (the repeated
  * controls of a list) as refs, and every one's name (the sibling labels of a month selector). Null for a selector or unknown ref.
  */
@@ -1179,6 +1205,7 @@ export const scripts = {
   /** With `dryRun` it only reports the label of the banner button, without clicking. */
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),
   rowTexts: (refs: string[]) => call(pageRowTexts, refs),
+  rowChain: (ref: string) => call(pageRowChain, ref),
   elementStillMatches: (ref: string, role: string, name: string) => call(pageElementStillMatches, ref, role, name),
   frames: () => call(pageFrames),
   /** The top document's child frames (see FrameReport), or null when it has none. */

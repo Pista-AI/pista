@@ -219,7 +219,7 @@ describe("playbook_save with repeated rows and month selectors", () => {
     assert.deepEqual(steps[0], { kind: "click", target: { role: "link", name: "Details", text: "Details", row: { match: ["date"] } } });
     assert.deepEqual(steps[1], { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" });
     const byUrl = base([{ kind: "download", source: "url", url: `${B}inv-77.pdf`, path: "a.pdf" }]);
-    assert.match(savePlaybookFromTrace(byUrl, [1, 2, 3], undefined, "t", inv).message, /specific to one invoice; download it by clicking/);
+    assert.match(savePlaybookFromTrace(byUrl, [1, 2, 3], undefined, "t", inv).message, /download it by clicking the invoice/);
     const nav = base([{ kind: "navigate", url: `${B}detail-77.html` }, { kind: "download", source: "ref", locator: { role: "link", name: "Download" }, path: "a.pdf" }]);
     assert.match(savePlaybookFromTrace(nav, [1, 2, 3, 4], undefined, "t", inv).message, /record the clicks that lead there/);
   });
@@ -238,5 +238,49 @@ describe("playbook_save with repeated rows and month selectors", () => {
     t.add({ kind: "navigate", url: `${B}list-months.html` });
     t.add({ kind: "download", source: "ref", locator: link, contentType: "application/pdf", path: "a.pdf", rowContext: { texts, clickedIndex: 2 } });
     assert.match(savePlaybookFromTrace(t.list(), [1, 2], undefined, "t").message, /pass the invoice it was for/);
+  });
+});
+
+describe("playbook_save with a lone download candidate", () => {
+  const ROW = "Acme Corp INV-7731 jane@example.com";
+  const lone = (text: string) => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}list-single.html` }); // 1
+    t.add({ kind: "download", source: "ref", url: `${B}inv-2026-09.pdf`, locator: { role: "link", name: "PDF", text: "PDF" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: [text], clickedIndex: 0 } }); // 2
+    return t.list();
+  };
+
+  it("saves a click-to-download step with no row rule when the row shows the invoice date, and stores no row text", () => {
+    const r = savePlaybookFromTrace(lone(`3 Sep 2026 49.00 EUR ${ROW} PDF`), [1, 2], undefined, "t", { date: "2026-09-03", amount: 49 });
+    assert.equal(r.event?.type, "playbook.event");
+    const pb = getPlaybook("127.0.0.1")!;
+    assert.deepEqual(pb.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF" }, fileType: "pdf" }]);
+    assert.ok(!JSON.stringify(pb).includes("jane@example.com") && !JSON.stringify(r).includes("jane@example.com"));
+  });
+
+  it("saves, with a note, when the row does not show the invoice (other amount, two dates, no date, other date)", () => {
+    for (const text of [`3 Sep 2026 12.00 EUR ${ROW}`, `3 Sep 2026 3 Oct 2026 ${ROW}`, ROW, `3 Oct 2026 49.00 EUR ${ROW}`]) {
+      const r = savePlaybookFromTrace(lone(text), [1, 2], undefined, "t", { date: "2026-09-03", amount: 49 });
+      assert.match(r.message, /Saved\. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date\.$/);
+      assert.ok(!r.message.includes("jane@example.com"));
+      assert.deepEqual(getPlaybook("127.0.0.1")!.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF" }, fileType: "pdf" }]);
+    }
+  });
+
+  it("refuses a download that is only an address or a selector when an invoice is given", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}list-single.html` });
+    t.add({ kind: "download", source: "url", url: `${B}inv-2026-09.pdf`, contentType: "application/pdf", path: "a.pdf" });
+    assert.match(savePlaybookFromTrace(t.list(), [1, 2], undefined, "t", { date: "2026-09-03" }).message, /^Not saved: entry 2: .*only an address or a selector/);
+    assert.equal(getPlaybook("127.0.0.1"), null);
+  });
+
+  it("keeps today's plain download when no invoice is given", () => {
+    savePlaybookFromTrace(lone(`3 Oct 2026 ${ROW} PDF`), [1, 2], undefined, "t");
+    assert.deepEqual(getPlaybook("127.0.0.1")!.steps, [{ kind: "download", url: `${B}inv-2026-09.pdf`, fileType: "pdf" }]);
+  });
+
+  it("does not list the lone row in the trace", () => {
+    assert.doesNotMatch(describeTrace(lone(`3 Sep 2026 ${ROW}`)), /row 1 of 1|jane@/);
   });
 });

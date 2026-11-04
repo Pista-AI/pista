@@ -56,6 +56,7 @@ function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
     "sign-in-needed": "Sign-in needed",
     "row-not-found": "Couldn't find the invoice's row",
     "row-ambiguous": "More than one row matched the invoice",
+    "row-not-verified": "The download's row doesn't show the invoice",
     "needs-invoice": "The step needs the invoice's date",
     error: "The step failed",
   };

@@ -4,7 +4,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserDriver } from "../src/driver.ts";
-import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay } from "../src/replay.ts";
+import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay, verifySingleRow } from "../src/replay.ts";
+import { rowTextOf } from "../src/row-match.ts";
+
+test("a lone download is acted on only when its row shows exactly the invoice date", () => {
+  const inv = { date: "2026-10-03" };
+  assert.deepEqual(verifySingleRow("3 Oct 2026 49.00 EUR PDF", inv), { ok: true });
+  const other = verifySingleRow("3 Sep 2026 49.00 EUR PDF", inv);
+  assert.equal(other.ok, false);
+  assert.ok(!other.ok && other.detail.includes("2026-10-03") && !other.detail.includes("Sep"));
+  assert.equal(verifySingleRow("PDF", inv).ok, false);
+  assert.equal(verifySingleRow("", inv).ok, false);
+  assert.equal(verifySingleRow("3 Oct 2026 and 3 Nov 2026 PDF", inv).ok, false);
+});
+
+test("an amount shown in the row has to match too, and a row without one is judged by its date", () => {
+  const inv = { date: "2026-10-03", amount: 49, currency: "EUR" };
+  assert.equal(verifySingleRow("3 Oct 2026 49.00 EUR PDF", inv).ok, true);
+  assert.equal(verifySingleRow("3 Oct 2026 12.00 EUR PDF", inv).ok, false);
+  assert.equal(verifySingleRow("3 Oct 2026 PDF", inv).ok, true);
+});
+
+test("the row text of a lone element is the nearest level with one date, and never one above a list", () => {
+  assert.equal(rowTextOf(["PDF", "3 Sep 2026 PDF"]), "3 Sep 2026 PDF");
+  assert.equal(rowTextOf(["PDF", "Invoices PDF"]), "");
+  assert.equal(rowTextOf(["PDF", "3 Sep 2026 PDF 3 Oct 2026", "3 Nov 2026 PDF"]), "");
+  assert.equal(rowTextOf(null), "");
+});
 
 const els = [
   { ref: "e1", role: "link", name: "Billing" },

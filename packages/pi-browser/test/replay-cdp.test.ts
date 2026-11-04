@@ -52,6 +52,41 @@ after(() => {
   server?.closeAllConnections();
 });
 
+const loneStep = (): ReplayStep => ({ kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" });
+const lone = (invoice: { date: string; amount?: number; currency?: string } | undefined, path: string, page = "list-single.html") => runReplay({ startUrl: `${base}${page}`, steps: [loneStep()] }, { ...options(path), invoice });
+
+test("a download by address, a header date above a dateless row and an amount mismatch are not verified, and a detail page without a row are handed off", { skip }, async () => {
+  const byUrl = await runReplay({ startUrl: `${base}list-single.html`, steps: [{ kind: "download", url: `${base}inv-2026-09.pdf` }] }, { ...options("invoices/u1.pdf"), invoice: { date: "2026-09-03" } });
+  assert.equal(!byUrl.ok && byUrl.reason, "row-not-verified");
+  assert.throws(() => readFileSync(join(dir, "invoices/u1.pdf")));
+  const header = await lone({ date: "2026-11-03" }, "invoices/u2.pdf", "list-header.html");
+  assert.equal(!header.ok && header.reason, "row-not-verified");
+  const amount = await lone({ date: "2026-09-03", amount: 12, currency: "EUR" }, "invoices/u3.pdf");
+  assert.equal(!amount.ok && amount.reason, "row-not-verified");
+  const detail = await lone({ date: "2026-09-03", amount: 49, currency: "EUR" }, "invoices/u4.pdf", "detail-one.html");
+  assert.equal(!detail.ok && detail.reason, "row-not-verified");
+});
+
+test("a lone download without a row rule is checked against the invoice date before it is taken", { skip }, async () => {
+  const wrong = await lone({ date: "2026-10-03" }, "invoices/v1.pdf");
+  assert.equal(!wrong.ok && wrong.reason, "row-not-verified");
+  assert.ok(!wrong.ok && wrong.detail.includes("2026-10-03") && !wrong.detail.includes("Sep"), JSON.stringify(wrong));
+  assert.throws(() => readFileSync(join(dir, "invoices/v1.pdf")));
+  const right = await lone({ date: "2026-09-03" }, "invoices/v2.pdf");
+  assert.ok(right.ok, JSON.stringify(right));
+  assert.ok(readFileSync(join(dir, "invoices/v2.pdf"), "latin1").includes("inv-2026-09"));
+  const none = await lone(undefined, "invoices/v3.pdf");
+  assert.ok(none.ok, JSON.stringify(none));
+});
+
+test("the row of a lone element stops short of the list that holds its look-alikes", { skip }, async () => {
+  const { scripts } = await import("../src/page-scripts.ts");
+  await driver!.navigate(`${base}list-chain.html`);
+  const snap = (await driver!.evaluate(scripts.snapshot(50))) as { elements: { ref: string; name: string }[] };
+  const chain = (await driver!.evaluate(scripts.rowChain(snap.elements.find((e) => e.name === "PDF")!.ref))) as string[];
+  assert.deepEqual(chain, ["PDF", "PDF 3 Sep 2026"]);
+});
+
 const steps = (): ReplayStep[] => [
   { kind: "click", target: { role: "button", name: "Sign in" }, expect: { urlIncludes: "/home.html", text: "Welcome back" } },
   { kind: "click", target: { role: "link", name: "Billing" }, expect: { urlIncludes: "/billing.html" } },

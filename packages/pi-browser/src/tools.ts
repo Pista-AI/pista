@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
 import { isPeriodLabel } from "./row-match.ts";
+import { loneRowText } from "./replay.ts";
 import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
@@ -321,10 +322,13 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           // Resolved before the click: the element may be gone afterwards.
           // A link repeated in a list is traced by its place in the list, not by this row's address.
           const located = options.onTrace && ref ? await locateTarget(d, ref) : undefined;
-          const { rowContext } = located && ref ? await contextOf(d, ref) : {};
+          const listContext = located && ref ? (await contextOf(d, ref)).rowContext : undefined;
+          // A lone candidate gets its own row text too, so the host can check the invoice's date on it (see TraceRowContext).
+          const single = located && ref && !listContext ? await loneRowText(d, ref) : undefined;
+          const rowContext = listContext ?? (single !== undefined ? { texts: [single], clickedIndex: 0 } : undefined);
           const saved = await saveDownload(d, { root: folder, path, overwrite }, url ? { url } : fromRef!);
           const replaced = saved.replaced;
-          const direct = url ?? (href && !rowContext ? href : undefined);
+          const direct = url ?? (href && !listContext ? href : undefined);
           if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : {}), ...(located ? { locator: located } : {}), ...(rowContext ? { rowContext } : {}), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };

@@ -1,7 +1,7 @@
 // Captures what the browser tools did in a thread and turns the model's chosen subset into a stored playbook.
 // The model only picks entry numbers from what the host recorded, so it cannot invent URLs or selectors.
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchPeriod, pickRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
+import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookStep } from "@pista/protocol";
 import { getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
@@ -29,7 +29,7 @@ const clip = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n)}...` : s);
 const where = (l: { role?: string; name?: string; text?: string }) => [l.role, l.name || l.text ? JSON.stringify(clip(l.name || l.text || "")) : ""].filter(Boolean).join(" ");
 
 /** Where a repeated-list entry sits, never the row's text. */
-const place = (r: TraceRow) => ("rowContext" in r && r.rowContext ? ` (row ${r.rowContext.clickedIndex + 1} of ${r.rowContext.texts.length})` : "");
+const place = (r: TraceRow) => ("rowContext" in r && r.rowContext && r.rowContext.texts.length > 1 ? ` (row ${r.rowContext.clickedIndex + 1} of ${r.rowContext.texts.length})` : "");
 
 const navigatesByInvoice = (n: number) => `entry ${n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`;
 
@@ -61,7 +61,9 @@ export function checkInvoice(v: unknown): InvoiceParams {
 }
 
 /** The columns that make the replay rule pick the row that was clicked, checked with the same picker replay uses; throws when none does. */
-function rowRule(ctx: TraceRowContext, invoice: InvoiceParams | undefined): { match: ("date" | "amount")[] } {
+function rowRule(ctx: TraceRowContext, invoice: InvoiceParams | undefined): { match: ("date" | "amount")[] } | undefined {
+  // A lone download candidate has no list to pick from, so no row rule is stored: replay checks its row against the invoice every time.
+  if (ctx.texts.length === 1) return undefined;
   if (!invoice) throw new Error("this step picks one row of a list; pass the invoice it was for (invoice: { date, amount? })");
   const refs = ctx.texts.map((_, i) => String(i));
   const rules: ("date" | "amount")[][] = invoice.amount !== undefined ? [["date"], ["date", "amount"]] : [["date"]];
@@ -83,7 +85,7 @@ function isPeriodClick(ctx: TracePeriodContext, invoice: InvoiceParams | undefin
 const urlOf = (r: TraceRow): string | undefined => (r.kind === "navigate" ? r.url : r.kind === "click" ? r.urlAfter : r.kind === "download" ? r.url : r.kind === "signIn" ? r.origin : undefined);
 
 /** Builds the playbook for the chosen entry numbers, or throws a short reason. Not yet validated; the caller runs validatePlaybook. */
-export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> = {}, invoice?: InvoiceParams): { site: string; startUrl: string; steps: PlaybookStep[] } {
+export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> = {}, invoice?: InvoiceParams): { site: string; startUrl: string; steps: PlaybookStep[]; unverified?: boolean } {
   if (!chosen.length) throw new Error("steps is empty");
   if (chosen.some((n, i) => !Number.isInteger(n) || (i > 0 && n <= chosen[i - 1]!))) throw new Error("steps must be whole entry numbers in increasing order");
   const picked = chosen.map((n) => {
@@ -104,6 +106,8 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
   const clean = (v?: string) => (v && !isOpaque(v) ? v : undefined);
   // Once a step depends on the invoice, nothing after it may be a fixed address: those are specific to one invoice.
   let byInvoice = false;
+  // A lone download whose row does not show the invoice: saved, but replay hands the step back every time.
+  let unverified = false;
   const steps: PlaybookStep[] = picked.slice(1).map((r, i): PlaybookStep => {
     const text = clean(waitFor[String(r.n)]?.slice(0, MAX_TEXT));
     const expect: PlaybookExpect = text ? { text } : {};
@@ -139,14 +143,16 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
       case "download": {
         const fileType = r.contentType?.split(";")[0]?.split("/")[1];
         const row = r.rowContext ? rowRule(r.rowContext, invoice) : undefined;
+        if (invoice && !r.locator?.role && !r.locator?.name && !r.locator?.text) throw new Error(`entry ${r.n}: this download has no button or link that can be found again (only an address or a selector), so its row can't be checked against the invoice; download it by clicking the invoice's button or link`);
+        if (invoice && r.rowContext?.texts.length === 1 && !verifySingleRow(r.rowContext.texts[0] ?? "", invoice).ok) unverified = true;
         if (row) byInvoice = true;
         if (byInvoice && !r.locator) throw new Error(`entry ${r.n}: this download address is specific to one invoice; download it by clicking`);
-        const asClick = row || byInvoice;
+        const asClick = row || byInvoice || !!invoice;
         return { kind: "download", ...(!asClick && r.url ? { url: r.url } : { target: { ...r.locator, ...(row ? { row } : {}) } }), ...(fileType ? { fileType } : {}) };
       }
     }
   });
-  return { site, startUrl: first.url, steps };
+  return { site, startUrl: first.url, steps, ...(unverified ? { unverified } : {}) };
 }
 
 const cap = (s: string, n = LABEL_MAX) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -169,25 +175,26 @@ const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => J
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
 export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown): { message: string; event?: HostEvent } {
   try {
-    const built = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
+    const { unverified, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
+    const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : "";
     const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
     if (!old) {
       savePlaybook(fresh);
-      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
+      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
     const startChanged = old.startUrl !== fresh.startUrl;
     if (!changed.length && !startChanged) {
       recordSuccess(built.site); // the same path just worked again
-      return { message: `The playbook for ${built.site} already matches this path; nothing changed.` };
+      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}` };
     }
     const now = new Date().toISOString();
     savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
     const first = startChanged ? 1 : changed[0]! + 1;
     const [before, after] = startChanged ? ["Open the start page", "Open a different start page"] : [stepLabel(old.steps[first - 1]), stepLabel(fresh.steps[first - 1])];
-    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
+    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.${note}`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
   } catch (e) {
     return { message: `Not saved: ${e instanceof Error ? e.message : String(e)}` };
   }

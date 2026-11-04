@@ -10,7 +10,7 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { isPeriodLabel, matchPeriod, matchRows, parseDates } from "./row-match.ts";
+import { fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 /** What a row is matched on. Mirrors the protocol type; pi-browser does not depend on protocol (the host test checks they agree). */
@@ -24,7 +24,7 @@ export type ReplayStep =
   | { kind: "wait"; expect: ReplayExpect }
   | { kind: "download"; target?: ReplayLocator; url?: string; fileType?: string };
 
-export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "row-not-found" | "row-ambiguous" | "needs-invoice" | "error";
+export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "row-not-found" | "row-ambiguous" | "row-not-verified" | "needs-invoice" | "error";
 
 /**
  * Either the saved file, or a handoff at the first step that failed. `failedIndex` numbers steps from 1 like the stored playbook;
@@ -115,6 +115,25 @@ export function pickRow(refs: readonly string[], rowTexts: readonly (string | nu
   if (m.kind === "one") return { target: refs[m.index]! };
   if (m.kind === "none") return { reason: "row-not-found", detail: `No row of ${refs.length} matches ${looking}.` };
   return { reason: "row-ambiguous", detail: `${m.candidates.length} rows match ${looking}.` };
+}
+
+/**
+ * A single element found without a row rule, checked against the invoice before it is acted on: its row (see rowTextOf) must show
+ * the invoice's date and no more than 3 distinct dates. The detail never quotes the row's text.
+ */
+export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true } | { ok: false; detail: string } {
+  const fail = (why: string) => ({ ok: false as const, detail: why });
+  const date = invoice.date.slice(0, 10);
+  if (fullDateCount(rowText) !== 1) return fail(`row doesn't show exactly one date to compare with the invoice date ${date}`);
+  // The amount counts whenever the text shows one; a text without any amount is judged by its date alone.
+  const byAmount = invoice.amount !== undefined && parseAmounts(rowText).length > 0;
+  const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
+  return m.kind === "one" ? { ok: true } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
+}
+
+/** The text a lone element is verified on: the row it sits in (see rowTextOf), "" when no level shows exactly one date. */
+export async function loneRowText(d: BrowserDriver, ref: string): Promise<string> {
+  return rowTextOf((await d.evaluate(scripts.rowChain(ref)).catch(() => null)) as string[] | null);
 }
 
 /**
@@ -310,10 +329,17 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       case "download": {
         let source: { url: string } | { trigger: () => Promise<void> };
         if (step.url) {
+          // An address cannot be tied to an invoice's row, so with an invoice it is never taken.
+          if (o.invoice) throw new Handoff("row-not-verified", "This step downloads a fixed address, which can't be checked against the invoice's row.");
           source = { url: new URL(step.url, (await d.state()).url || undefined).href };
         } else if (step.target) {
           const r = await locate(d, step.target, [], o.invoice);
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
+          // A download found without a row rule must still sit in the invoice's row: a list showing one invoice is not proof it is the wanted one.
+          if (o.invoice && !step.target.row && !step.target.period) {
+            const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
+            if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
+          }
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");
         if ("url" in source) guardUrl(source.url, "The download address");
