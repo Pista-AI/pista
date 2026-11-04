@@ -50,6 +50,8 @@ export function cleanMerchant(v: unknown, wildcards = false): string | undefined
   const stars = s.split("*").length - 1;
   if (s.length < 4 || s.length > 40 || stars > MAX_WILDCARDS || s.startsWith("*") || s.endsWith("*")) return undefined;
   if (stars ? literalLetters(s) < MIN_LITERAL_LETTERS : !/\p{L}{3}/u.test(s)) return undefined;
+  // each `*`-separated segment must itself be a real name part: not empty, not only generic words
+  if (stars && s.split("*").some((seg) => !seg.trim() || seg.trim().split(" ").every(isStopword) || !/\p{L}/u.test(seg))) return undefined;
   const words = s.split(" ");
   if (words.some((w) => w.length < 2 || (w.length >= 20 && /\d/.test(w) && /\p{L}/u.test(w))) || words.every(isStopword)) return undefined;
   return s;
@@ -58,13 +60,23 @@ export function cleanMerchant(v: unknown, wildcards = false): string | undefined
 /** Letters a keyword spells out (wildcards and punctuation not counted). */
 export const literalLetters = (keyword: string): number => (keyword.match(/\p{L}/gu) ?? []).length;
 
+/** A transaction's text for matching: upper case, processor prefix removed, every `*` a space (so `ADOBE*CREATIVE` is `ADOBE CREATIVE`). */
+export function matchText(text: string): string {
+  return text.slice(0, 200).normalize("NFKC").toUpperCase().replace(PROCESSOR_PREFIX, "").replace(/\*/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Of the keywords that match, the most specific one (most literal letters), or undefined. */
+export function mostSpecificKeyword(keywords: readonly string[], merchantText: string): string | undefined {
+  return keywords.filter((k) => keywordMatches(k, merchantText)).sort((a, b) => literalLetters(b) - literalLetters(a))[0];
+}
+
 /**
  * Whether a keyword is in a merchant's text: whole words at both ends (Unicode letters and digits), and each `*` matches any run of characters.
  * Plain scanning with `indexOf`, no regular expression, so no input can make it slow (the text is cut to 200 characters).
  */
 export function keywordMatches(keyword: string, merchantText: string): boolean {
-  const text = normaliseMerchant(merchantText).replace(/\s+/g, " ").trim();
-  const kw = keyword.includes("*") ? keyword : normaliseMerchant(keyword).replace(/\s+/g, " ").trim();
+  const text = matchText(merchantText);
+  const kw = keyword.includes("*") ? keyword : matchText(keyword);
   if (!kw || !text) return false;
   const parts = kw.split("*");
   const isWord = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);

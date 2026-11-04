@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 // Playbook content is untrusted data (it may be model-written or edited on disk): validate it, never inject it as instructions.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDomain } from "tldts";
 import type { Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
-import { BROAD_REASONS, broadReason, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
+import { BROAD_REASONS, broadReason, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, mostSpecificKeyword, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Consecutive failures after which a playbook is flagged "needs-attention". */
@@ -219,6 +220,8 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
   const why = Object.fromEntries(pending.flatMap((m) => (typeof whyIn[m] === "string" && BROAD_REASONS.has(whyIn[m] as string) ? [[m, whyIn[m]]] : []))) as NonNullable<Playbook["merchantsPendingWhy"]>;
   const missIn = o.merchantMisses && typeof o.merchantMisses === "object" ? (o.merchantMisses as Record<string, unknown>) : {};
   const misses = Object.fromEntries(merchants.flatMap((m) => (typeof missIn[m] === "number" && Number.isInteger(missIn[m]) && (missIn[m] as number) > 0 ? [[m, Math.min(missIn[m] as number, KEYWORD_MISS_LIMIT - 1)]] : [])));
+  const lastIn = o.merchantLastMiss && typeof o.merchantLastMiss === "object" ? (o.merchantLastMiss as Record<string, unknown>) : {};
+  const lastMiss = Object.fromEntries(Object.keys(misses).flatMap((m) => (typeof lastIn[m] === "string" && /^[0-9a-f]{12}$/.test(lastIn[m] as string) ? [[m, lastIn[m]]] : [])));
   return {
     version: 1,
     site,
@@ -229,6 +232,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
     ...(pending.length ? { merchantsPending: pending } : {}),
     ...(Object.keys(why).length ? { merchantsPendingWhy: why } : {}),
     ...(Object.keys(misses).length ? { merchantMisses: misses } : {}),
+    ...(Object.keys(lastMiss).length ? { merchantLastMiss: lastMiss } : {}),
     createdAt: date(o.createdAt) ?? now,
     updatedAt: date(o.updatedAt) ?? now,
     ...(date(o.lastSucceeded) ? { lastSucceeded: date(o.lastSucceeded) } : {}),
@@ -333,6 +337,10 @@ export function setMerchants(site: string, merchants: unknown): void {
     const rest = (p.merchantsPending ?? []).filter((m) => !list.includes(m));
     if (rest.length) p.merchantsPending = rest;
     else delete p.merchantsPending;
+    for (const k of list) {
+      delete p.merchantMisses?.[k];
+      delete p.merchantLastMiss?.[k];
+    }
     pruneMerchantNotes(p);
   });
   if (!pb) throw new Error("no playbook for this site");
@@ -355,7 +363,7 @@ export const KEYWORD_MISS_LIMIT = 2;
 
 /** Keeps `merchantsPendingWhy` and `merchantMisses` to keywords that are still pending or confirmed. */
 function pruneMerchantNotes(p: Playbook): void {
-  for (const [field, keep] of [["merchantsPendingWhy", p.merchantsPending], ["merchantMisses", p.merchants]] as const) {
+  for (const [field, keep] of [["merchantsPendingWhy", p.merchantsPending], ["merchantMisses", p.merchants], ["merchantLastMiss", p.merchants]] as const) {
     const cur = p[field] as Record<string, unknown> | undefined;
     if (!cur) continue;
     for (const k of Object.keys(cur)) if (!keep?.includes(k)) delete cur[k];
@@ -388,7 +396,7 @@ export function addPendingMerchant(site: string, keyword: string, ctx: BroadCont
 
 /**
  * A verified download (the invoice's row matched on the site) for a transaction whose merchant text matches pending keywords of the site:
- * promotes those that are not broad to confirmed `merchants`. Broad ones stay pending for the user. Returns the promoted keywords.
+ * promotes those that are not broad to confirmed `merchants`. Callers must only use this when the amount was verified as well as the date. Broad ones stay pending for the user. Returns the promoted keywords.
  * `merchantText` is only compared, never stored.
  */
 export function confirmByProof(site: string, merchantText: string, ctx: BroadContext = {}): string[] {
@@ -416,18 +424,27 @@ export function recordKeywordHit(site: string, keyword: string): void {
   if (!getPlaybook(site)?.merchantMisses?.[keyword]) return;
   mutate(site, (p) => {
     delete p.merchantMisses?.[keyword];
+    delete p.merchantLastMiss?.[keyword];
     pruneMerchantNotes(p);
   });
 }
 
-/** A routed run ended with the row not found or not verified. At 2 in a row the confirmed keyword is removed. Returns whether it was removed. */
-export function recordKeywordMiss(site: string, keyword: string): boolean {
+/** A short hash of a transaction's date and amount, so a retry of the same one is recognised without storing either. */
+export const transactionKey = (inv: { date: string; amount?: number }): string => createHash("sha256").update(`${inv.date}|${inv.amount ?? ""}`).digest("hex").slice(0, 12);
+
+/**
+ * A routed run ended with the row not found or not verified. A keyword is removed after misses on 2 different transactions (`txKey`, from
+ * `transactionKey`); a repeat of the last missed transaction is not counted again. Returns whether it was removed.
+ */
+export function recordKeywordMiss(site: string, keyword: string, txKey?: string): boolean {
   let dropped = false;
   mutate(site, (p, now) => {
     if (!p.merchants?.includes(keyword)) return;
+    if (txKey && p.merchantLastMiss?.[keyword] === txKey) return;
     const n = (p.merchantMisses?.[keyword] ?? 0) + 1;
     if (n < KEYWORD_MISS_LIMIT) {
       p.merchantMisses = { ...p.merchantMisses, [keyword]: n };
+      if (txKey) p.merchantLastMiss = { ...p.merchantLastMiss, [keyword]: txKey };
       return;
     }
     p.merchants = p.merchants.filter((m) => m !== keyword);
@@ -439,8 +456,19 @@ export function recordKeywordMiss(site: string, keyword: string): boolean {
   return dropped;
 }
 
-/** A routed run's outcome for a transaction's merchant text: a hit confirms matching pending keywords and resets matching confirmed ones; a miss counts against the confirmed ones that matched. */
-export function noteMerchantOutcome(site: string, merchantText: string, outcome: "hit" | "miss", ctx: BroadContext = {}): void {
-  if (outcome === "hit") confirmByProof(site, merchantText, ctx);
-  for (const k of getPlaybook(site)?.merchants ?? []) if (keywordMatches(k, merchantText)) (outcome === "hit" ? recordKeywordHit : recordKeywordMiss)(site, k);
+/**
+ * A routed run's outcome for a transaction's merchant text. A hit resets the matching confirmed keywords and, only when `amountVerified`
+ * (the row check compared the amount as well as the date), confirms matching pending ones. A miss counts once, against the single most
+ * specific matching confirmed keyword; `txKey` (from `transactionKey`) keeps a retry of the same transaction from counting twice.
+ */
+export function noteMerchantOutcome(site: string, merchantText: string, outcome: "hit" | "miss", opts: BroadContext & { amountVerified?: boolean; txKey?: string } = {}): void {
+  const { amountVerified, txKey, ...ctx } = opts;
+  const confirmed = getPlaybook(site)?.merchants ?? [];
+  if (outcome === "miss") {
+    const k = mostSpecificKeyword(confirmed, merchantText);
+    if (k) recordKeywordMiss(site, k, txKey);
+    return;
+  }
+  if (amountVerified) confirmByProof(site, merchantText, ctx);
+  for (const k of confirmed) if (keywordMatches(k, merchantText)) recordKeywordHit(site, k);
 }
