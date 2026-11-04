@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
 import { PlaybookTrace, TRACE_LIMIT, describeTrace, savePlaybookFromTrace } from "./playbook-capture.ts";
-import { getPlaybook, recordFailure, savePlaybook } from "./playbooks.ts";
+import { dismissMerchant, getPlaybook, recordFailure, savePlaybook, setMerchants } from "./playbooks.ts";
 
 const B = "http://127.0.0.1:8765/invoices/";
 function trace(extra: Parameters<PlaybookTrace["add"]>[0][] = []) {
@@ -329,5 +329,64 @@ describe("playbook_save: shortcut", () => {
     t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["2026-09-03 49.00 EUR", "2026-10-03 49.00 EUR"], clickedIndex: 1 } });
     savePlaybookFromTrace(t.list(), [1, 2, 3, 4], undefined, "t", { date: "2026-10-03" });
     assert.deepEqual(getPlaybook("127.0.0.1")?.shortcut, { url: url("billing.html"), afterStep: 1 });
+  });
+});
+
+describe("playbook_save merchant suggestions", () => {
+  const save = (steps: number[], merchant?: string) => savePlaybookFromTrace(trace().list(), steps, undefined, "t", undefined, merchant);
+  it("stores one suggested keyword, never the raw text, and never as a confirmed one", () => {
+    save([2, 4, 5, 6], "ACME ROBOTICS LLC*1234 SAN FRANCISCO");
+    const pb = getPlaybook("127.0.0.1")!;
+    assert.deepEqual(pb.merchantsPending, ["ACME ROBOTICS"]);
+    assert.equal(pb.merchants, undefined);
+    assert.doesNotMatch(JSON.stringify(pb), /1234|FRANCISCO/);
+  });
+  it("keeps confirmed and pending keywords on re-record, and does not duplicate", () => {
+    save([2, 4, 5, 6], "Acme Robotics AB");
+    setMerchants("127.0.0.1", ["ACME ROBOTICS"]);
+    const r = save([2, 5, 6], "SQ *OTHER VENDOR");
+    assert.match(r.message, /Suggested the merchant keyword OTHER VENDOR/);
+    save([2, 5, 6], "ACME ROBOTICS LLC");
+    save([2, 5, 6], "Other Vendor AB");
+    const pb = getPlaybook("127.0.0.1")!;
+    assert.deepEqual(pb.merchants, ["ACME ROBOTICS"]);
+    assert.deepEqual(pb.merchantsPending, ["OTHER VENDOR"]);
+  });
+  it("suggests on an unchanged playbook", () => {
+    save([2, 4, 5, 6]);
+    assert.equal(getPlaybook("127.0.0.1")?.merchantsPending, undefined);
+    save([2, 4, 5, 6], "Acme Robotics AB");
+    assert.deepEqual(getPlaybook("127.0.0.1")?.merchantsPending, ["ACME ROBOTICS"]);
+  });
+  it("ignores unusable merchant text, including Swish and transfer lines", () => {
+    for (const m of ["PAYPAL *", "Swish betalning Anna Svensson", "Överföring Erik Berg", "Betalning till Orsted", "Autogiro Vattenfall", "BANKGIRO 123-4567 Foo Bar", "Transfer to Acme Robotics", "Payment to Acme Robotics", "Anna Svensson", "Åsa Öberg-Lind"]) save([2, 4, 5, 6], m);
+    assert.equal(getPlaybook("127.0.0.1")?.merchantsPending, undefined);
+  });
+});
+
+describe("setMerchants", () => {
+  it("confirms, cleans, clears pending ones it confirms, and dismisses; fails without a playbook", () => {
+    assert.throws(() => setMerchants("127.0.0.1", ["ACME"]), /no playbook/);
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Acme Robotics AB");
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Beta Works AB");
+    setMerchants("127.0.0.1", ["acme robotics", "ACME ROBOTICS", "LLC", "12345", "ab", "CLOUD HOSTING"]);
+    let pb = getPlaybook("127.0.0.1")!;
+    assert.deepEqual(pb.merchants, ["ACME ROBOTICS"]);
+    assert.deepEqual(pb.merchantsPending, ["BETA WORKS"]);
+    assert.throws(() => setMerchants("127.0.0.1", "ACME" as unknown as string[]), /array of strings/);
+    assert.throws(() => setMerchants("127.0.0.1", [1] as unknown as string[]), /array of strings/);
+    dismissMerchant("127.0.0.1", "beta works");
+    assert.equal(getPlaybook("127.0.0.1")?.merchantsPending, undefined);
+    setMerchants("127.0.0.1", []);
+    assert.equal(getPlaybook("127.0.0.1")?.merchants, undefined);
+  });
+  it("looks at no more than 10 items of 80 characters", () => {
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t");
+    const items = ["LONGNAME".repeat(11), ...Array.from({ length: 12 }, (_, i) => `Vendor ${"abcdefghijkl"[i]}${"xyz"}`)];
+    setMerchants("127.0.0.1", items);
+    // the long one is dropped; of the 10 looked at, 9 remain and the list is capped at 5
+    assert.deepEqual(getPlaybook("127.0.0.1")?.merchants, ["VENDOR AXYZ", "VENDOR BXYZ", "VENDOR CXYZ", "VENDOR DXYZ", "VENDOR EXYZ"]);
+    setMerchants("127.0.0.1", [...Array.from({ length: 10 }, () => "AAA"), "Late Vendor"]);
+    assert.equal(getPlaybook("127.0.0.1")?.merchants, undefined);
   });
 });

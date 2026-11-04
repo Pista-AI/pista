@@ -871,6 +871,10 @@ export interface Playbook {
   shortcutCandidate?: PlaybookShortcut;
   /** Consecutive runs where the shortcut did not check out and the full path then worked; the shortcut is dropped at 2. */
   shortcutFails?: number;
+  /** Upper-case keywords (at most 5) that a bank or card transaction's merchant text contains when it belongs to this site. Never raw merchant text. */
+  merchants?: string[];
+  /** Keywords the model suggested when saving; they are never used for matching until the user confirms them (`playbook.setMerchants`). */
+  merchantsPending?: string[];
   createdAt: string;
   updatedAt: string;
   lastSucceeded?: string;
@@ -886,6 +890,8 @@ export interface PlaybookMeta {
   startUrl: string;
   /** Where replay opens the list directly, when a shortcut is known. */
   shortcutUrl?: string;
+  merchants?: string[];
+  merchantsPending?: string[];
   stepCount: number;
   status: Playbook["status"];
   lastSucceeded?: string;
@@ -962,6 +968,10 @@ export interface Methods {
   "playbook.list": { params: {}; result: PlaybookMeta[] };
   "playbook.get": { params: { site: string }; result: Playbook | null };
   "playbook.delete": { params: { site: string }; result: { ok: true } };
+  /** Drops one suggested keyword. */
+  "playbook.dismissMerchant": { params: { site: string; merchant: string }; result: { ok: true } };
+  /** Replaces the site's confirmed merchant keywords (cleaned and capped by the host). Fails when the site has no playbook. */
+  "playbook.setMerchants": { params: { site: string; merchants: string[] }; result: { ok: true } };
 
   "mcp.status": { params: { threadId?: string }; result: McpServerStatus[] };
 
