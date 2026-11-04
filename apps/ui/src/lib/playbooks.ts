@@ -43,3 +43,20 @@ const WHY: Record<string, string> = {
 export function describePendingWhy(why: string | undefined): string | undefined {
   return why ? WHY[why] : undefined;
 }
+
+/** Plain words for why a saved site's run stopped. */
+const RUN_WHY: Record<string, string> = {
+  "not-found": "could not find the download button",
+  ambiguous: "found more than one match",
+  "expectation-timeout": "the page did not load in time",
+  blocked: "the site is not allowed",
+  declined: "you declined",
+  aborted: "stopped",
+  "sign-in-needed": "needs you to sign in",
+  "row-not-found": "did not find that invoice in the list",
+  "row-ambiguous": "found more than one matching invoice",
+  "row-not-verified": "found an invoice but could not confirm it is the right one",
+  "needs-invoice": "needs the invoice date",
+  error: "something went wrong",
+};
+export const runWhy = (r?: string): string => (r ? (RUN_WHY[r] ?? "could not finish") : "could not finish");

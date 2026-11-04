@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { Check, CornerDownRight, Square } from "lucide-react";
 import { host } from "../lib/host.ts";
-import { ASK_WHY, askText, firstPassHeader, firstPassRows, learnedText, type FirstPassEvent, type RowIcon } from "../lib/playbook-card.ts";
+import { describePendingWhy, describeRefusal } from "../lib/playbooks.ts";
+import { askText, firstPassHeader, firstPassRows, learnedText, type FirstPassEvent, type RowIcon } from "../lib/playbook-card.ts";
 
 const ICON: Record<RowIcon, typeof Check> = { check: Check, forward: CornerDownRight, stop: Square };
 
-type Answer = "busy" | "undone" | "yes" | "no" | string;
+/** "busy", "undone", "yes", "no", a refusal in plain words ("refused:…"), or a save error. */
+type Answer = string;
+const REFUSED = "refused:";
 const key = (a: { site: string; keyword: string }) => `${a.site}|${a.keyword}`;
 
 /** In-chat card for what the host did with pasted transactions before the model started. Every string is untrusted and rendered as text. */
@@ -13,22 +16,23 @@ export function FirstPassCard({ event }: { event: FirstPassEvent }) {
   const head = firstPassHeader(event);
   const rows = firstPassRows(event);
   const [done, setDone] = useState<Record<string, Answer>>({});
-  const settle = async (k: string, run: () => Promise<void>, result: Answer) => {
+  const settle = async (k: string, run: () => Promise<string | void>, result: Answer) => {
     setDone((d) => ({ ...d, [k]: "busy" }));
     try {
-      await run();
-      setDone((d) => ({ ...d, [k]: result }));
+      const refused = await run();
+      setDone((d) => ({ ...d, [k]: refused || result }));
     } catch (e) {
       setDone((d) => ({ ...d, [k]: `Couldn't save: ${e instanceof Error ? e.message : String(e)}` }));
     }
   };
   const undo = (a: { site: string; keyword: string }) => settle(`l|${key(a)}`, async () => void (await host.call("playbook.removeMerchant", { site: a.site, merchant: a.keyword })), "undone");
   const yes = (a: { site: string; keyword: string }) => settle(`a|${key(a)}`, async () => {
-    const pb = await host.call("playbook.get", { site: a.site });
-    await host.call("playbook.setMerchants", { site: a.site, merchants: [...new Set([...(pb?.merchants ?? []), a.keyword])] });
+    const r = await host.call("playbook.confirmMerchant", { site: a.site, merchant: a.keyword });
+    return r.refused ? REFUSED + describeRefusal(a.keyword, r.refused) : undefined;
   }, "yes");
   const no = (a: { site: string; keyword: string }) => settle(`a|${key(a)}`, async () => void (await host.call("playbook.dismissMerchant", { site: a.site, merchant: a.keyword })), "no");
-  const failed = (v?: Answer) => (v && v !== "busy" && v !== "undone" && v !== "yes" && v !== "no" ? v : undefined);
+  const refusal = (v?: Answer) => (v?.startsWith(REFUSED) ? v.slice(REFUSED.length) : undefined);
+  const failed = (v?: Answer) => (v && !refusal(v) && v !== "busy" && v !== "undone" && v !== "yes" && v !== "no" ? v : undefined);
   return (
     <div className="pb fp" data-tone={event.fetchedCount > 0 ? "ok" : "learn"}>
       <div className="pb-t"><span className="fp-title">{head.title}</span>{head.aside && <span className="fp-aside">{head.aside}</span>}</div>
@@ -37,8 +41,10 @@ export function FirstPassCard({ event }: { event: FirstPassEvent }) {
         return (
           <div className="fp-row" data-tone={r.tone} key={r.key}>
             <Icon size={14} />
-            <span className="fp-text">{r.text}</span>
-            {(r.detail ?? r.note) && <span className="fp-detail">{r.detail ?? r.note}</span>}
+            <span className="fp-body">
+              <span className="fp-text">{r.text}</span>
+              {(r.detail ?? r.note) && <span className="fp-detail">{r.detail ?? r.note}</span>}
+            </span>
           </div>
         );
       })}
@@ -56,14 +62,21 @@ export function FirstPassCard({ event }: { event: FirstPassEvent }) {
           })}
           {event.ask.map((a) => {
             const v = done[`a|${key(a)}`];
+            const refused = refusal(v);
             return (
               <div className="fp-q" key={`a${key(a)}`}>
-                <span>{v === "yes" ? `Will use "${a.keyword}" for ${a.site}` : v === "no" ? `Won't use "${a.keyword}" for ${a.site}` : askText(a)}</span>
-                {v !== "yes" && v !== "no" && (
+                {refused ? <span className="pb-s flush danger">{refused}</span> : (
                   <>
-                    <span className="fp-why">{ASK_WHY[a.why]}</span>
-                    <button className="link" disabled={v === "busy"} onClick={() => void yes(a)}>Yes</button>
-                    <button className="link mute" disabled={v === "busy"} onClick={() => void no(a)}>No</button>
+                    <span>{v === "yes" ? `Will use "${a.keyword}" for ${a.site}` : v === "no" ? `Won't use "${a.keyword}" for ${a.site}` : askText(a)}</span>
+                    {v !== "yes" && v !== "no" && (
+                      <>
+                        <span className="fp-why">{describePendingWhy(a.why)}</span>
+                        <span className="fp-btns">
+                          <button className="link" disabled={v === "busy"} onClick={() => void yes(a)}>Yes</button>
+                          <button className="link mute" disabled={v === "busy"} onClick={() => void no(a)}>No</button>
+                        </span>
+                      </>
+                    )}
                   </>
                 )}
                 {failed(v) && <span className="pb-s flush danger">{failed(v)}</span>}

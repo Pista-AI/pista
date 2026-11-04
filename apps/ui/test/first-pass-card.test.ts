@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { askText, firstPassHeader, firstPassRows, learnedText, runWhy, type FirstPassEvent } from "../src/lib/playbook-card.ts";
+import { askText, firstPassHeader, firstPassRows, learnedText, type FirstPassEvent } from "../src/lib/playbook-card.ts";
+import { describeRefusal, describePendingWhy, runWhy } from "../src/lib/playbooks.ts";
 
 const event: FirstPassEvent = {
   threadId: "t",
@@ -39,9 +40,20 @@ test("rows: fetched with file, handed off in plain words, declined, and unmatche
   ]);
 });
 
-test("rows: stopped lines say so, and lines with different reasons are not grouped", () => {
-  const rows = firstPassRows({ ...event, lines: [{ lineNo: 1, status: "stopped", site: "a.test" }, { lineNo: 2, status: "unmatched", reason: "no date" }, { lineNo: 3, status: "unmatched" }] });
-  assert.deepEqual(rows.map((r) => r.text), ["Line 1 · a.test · stopped before it ran", "Line 2 · no known site · no date", "Line 3 · no known site"]);
+test("rows: stopped lines say so, and every unmatched line joins one last row", () => {
+  const rows = firstPassRows({ ...event, lines: [{ lineNo: 1, status: "stopped", site: "a.test" }, { lineNo: 2, status: "unmatched" }, { lineNo: 3, status: "fetched", site: "b.test" }, { lineNo: 4, status: "unmatched" }, { lineNo: 5, status: "unmatched" }, { lineNo: 7, status: "unmatched" }, { lineNo: 9, status: "unmatched" }] });
+  assert.deepEqual(rows.map((r) => r.text), ["Line 1 · a.test · stopped before it ran", "Line 3 · b.test", "Lines 2, 4–5, 7, 9 · no known site"]);
+});
+
+test("rows: one unmatched line reads in the singular, and a shared reason is kept", () => {
+  assert.deepEqual(firstPassRows({ ...event, lines: [{ lineNo: 6, status: "unmatched", reason: "no date" }] }).map((r) => r.text), ["Line 6 · no known site · no date"]);
+  assert.deepEqual(firstPassRows({ ...event, lines: [{ lineNo: 2, status: "unmatched", reason: "no date" }, { lineNo: 6, status: "unmatched" }] }).map((r) => r.text), ["Lines 2, 6 · no known site"]);
+});
+
+test("the keyword reasons and refusals read the same on the card and in Settings", () => {
+  assert.equal(describePendingWhy("short"), "Short keyword: it could match other vendors.");
+  assert.equal(describeRefusal("GAMMA", "too-short"), '"GAMMA" is too short. Add a word that names the vendor.');
+  assert.equal(describeRefusal("GAMMA", "not-pending"), '"GAMMA" is no longer waiting for a decision.');
 });
 
 test("unknown run reasons fall back to plain words", () => {
