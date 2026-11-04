@@ -283,7 +283,7 @@ function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true,
     replay: (async (...a: unknown[]) => (replays++, replay(...a))) as never,
   };
   const consent = { approve: async (s: unknown) => (asked.push(s), answer), approvalMode: () => mode, confirmSignIns: () => undefined, policy: () => policy };
-  return { attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}, over: Record<string, unknown> = {}, signal?: AbortSignal) => runPlaybookForInvoice(deps as never, { ...consent, ...over } as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }, signal) };
+  return { deps, attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}, over: Record<string, unknown> = {}, signal?: AbortSignal) => runPlaybookForInvoice(deps as never, { ...consent, ...over } as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }, signal) };
 }
 
 test("the consent decision is shared: read-only refuses, ask mode asks, full access passes, a sign-in step asks", () => {
@@ -344,4 +344,17 @@ test("an abort while waiting for approval ends the run as aborted without replay
   setTimeout(() => ac.abort(), 10);
   assert.equal(((await Promise.race([pending, new Promise((r) => setTimeout(() => r({ status: "hung" }), 2000))])) as { status: string }).status, "aborted");
   assert.equal(d.replays(), 0);
+});
+
+test("hostConsent wires the gate's tool rules: a store that denies playbook_run refuses a host call", async () => {
+  save();
+  const { hostConsent } = await import("./extensions.ts");
+  const store = { config: { approvalMode: "full-access" }, toolRules: { checkTool: (n: string) => (n === "playbook_run" ? { rule: "tools.deny", reason: "Blocked by your organisation's policy: tools.deny" } : null), checkMcp: () => null, checkBash: () => null } } as never;
+  const d = direct("full-access");
+  const asked: unknown[] = [];
+  const consent = hostConsent({ store, approve: async (s) => (asked.push(s), true) });
+  const r = await runPlaybookForInvoice(d.deps as never, consent, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/hc.pdf" });
+  assert.equal(r.status, "declined");
+  assert.match("text" in r ? r.text : "", /tools\.deny/);
+  assert.deepEqual([d.replays(), asked.length], [0, 0]);
 });

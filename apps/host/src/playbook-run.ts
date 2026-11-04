@@ -187,17 +187,24 @@ export interface PlaybookRunDeps {
   replay?: typeof runReplay;
 }
 
+declare const consentBrand: unique symbol;
+
 /**
  * Consent for a host caller, required so it cannot be left out (fail closed). The core asks `approve` where `playbookConsent` says the
  * approval gate would ask, and refuses where the gate refuses. `policy` is the gate's own refusals (a role's block, managed policy,
- * tool rules): return the reason to refuse, or undefined. `approve` gets the run's signal; an abort while it waits ends the run as "aborted".
+ * tool rules): return the reason to refuse, or undefined. Host callers MUST get this from `hostConsent` (extensions.ts), which wires
+ * `policy` to the approval gate's own checks; the type is branded so a hand-built object does not compile. `approve` gets the run's signal; an abort while it waits ends the run as "aborted".
  */
 export interface PlaybookRunConsent {
+  readonly [consentBrand]: true;
   approve: (summary: { site: string; stepCount: number; hasSignIn: boolean }, signal?: AbortSignal) => Promise<boolean>;
   approvalMode: () => ApprovalMode;
   confirmSignIns: () => boolean | undefined;
   policy: () => string | undefined;
 }
+
+/** Brands a consent object. Called only by `hostConsent`; do not build consent anywhere else. */
+export const brandConsent = (c: Omit<PlaybookRunConsent, typeof consentBrand>): PlaybookRunConsent => c as PlaybookRunConsent;
 
 /** Module-private: only the playbook_run tool wrapper may skip the consent step, because the approval gate already ran on the tool call. */
 const GATED = Symbol("gated");

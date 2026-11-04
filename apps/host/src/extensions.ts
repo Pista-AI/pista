@@ -8,7 +8,7 @@ import { isShellTool, type Denial, type ToolRules } from "./policy-tools.ts";
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, registerPlaybookSave } from "./playbook-capture.ts";
-import { PLAYBOOK_DECLINED, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun } from "./playbook-run.ts";
+import { brandConsent, PLAYBOOK_DECLINED, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, type PlaybookRunConsent } from "./playbook-run.ts";
 
 export type { ThreadRef };
 
@@ -378,7 +378,7 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         // The policy gate (last in line) refuses this call anyway; do not ask the user about it.
         // A playbook run that read-only mode or the policy refuses counts as declined, so the site does not stay shut for browsing.
         const refusedRun = () => playbook && pi.events?.emit(PLAYBOOK_DECLINED, playbook.site);
-        if (store.toolRules && denyToolCall(store.toolRules, event.toolName, event.input)) return void refusedRun();
+        if (toolRulesDeny(store, event.toolName, event.input)) return void refusedRun();
         const reason = isWrite(event.toolName);
         if (!reason) return undefined;
         if (consent ? consent.decision === "refuse" : mode === "read-only") {
@@ -432,6 +432,31 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
 // ---------------------------------------------------------------------------
 // Policy gate: the managed policy's `tools` rules, enforced on every tool call
 // ---------------------------------------------------------------------------
+
+/** The managed policy's tool rules refuse this call (the approval gate and host-side runs share this). */
+export function toolRulesDeny(store: Pick<ConfigStore, "toolRules">, toolName: string, input: unknown): Denial | null {
+  return store.toolRules ? denyToolCall(store.toolRules, toolName, input) : null;
+}
+
+/**
+ * The consent for a host-side playbook run (`runPlaybookForInvoice`). Host callers must use this and not build consent by hand:
+ * the policy check is the gate's own (`block` is the role refusal passed to `approvalExtension`, plus the tool rules), for the playbook_run tool.
+ */
+export function hostConsent(o: {
+  store: Pick<ConfigStore, "config" | "toolRules">;
+  approve: PlaybookRunConsent["approve"];
+  block?: (toolName: string, input: Record<string, unknown>) => string | undefined;
+}): PlaybookRunConsent {
+  return brandConsent({
+    approve: o.approve,
+    approvalMode: () => o.store.config.approvalMode,
+    confirmSignIns: () => o.store.config.confirmSignIns,
+    policy: () => {
+      const input = {};
+      return o.block?.("playbook_run", input) ?? toolRulesDeny(o.store, "playbook_run", input)?.reason;
+    },
+  });
+}
 
 /** The first rule that refuses this call, or null. Every tool call, including codemode's nested ones, passes through here. */
 export function denyToolCall(rules: ToolRules, toolName: string, input: unknown): Denial | null {
