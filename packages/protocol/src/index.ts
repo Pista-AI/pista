@@ -1060,7 +1060,7 @@ export type HostEvent =
     }
   /**
    * What the host did with a pasted list of transactions before the model started. Sites and keywords are untrusted display text. No raw line or merchant text is ever included.
-   * `ask` lists broad pending keywords that matched a pasted line: the user may confirm them (`playbook.setMerchants`) or drop them (`playbook.dismissMerchant`). `learned` keywords can be undone (`playbook.removeMerchant`).
+   * `ask` lists broad pending keywords that matched a pasted line: the user may confirm them (`playbook.confirmMerchant`, which refuses one that is no longer pending, too broad, or does not fit) or drop them (`playbook.dismissMerchant`). `learned` keywords can be undone (`playbook.removeMerchant`).
    */
   | {
       type: "playbook.firstPass";
