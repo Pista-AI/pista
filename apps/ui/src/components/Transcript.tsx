@@ -18,7 +18,11 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ChatMessage, ToolCallBlock } from "@pista/protocol";
+import { FirstPassCard } from "./FirstPassCard.tsx";
 import { PlaybookCard } from "./PlaybookCard.tsx";
+import type { PlaybookCardItem } from "../lib/store.ts";
+
+const CardItem = ({ item }: { item: PlaybookCardItem }) => (item.firstPass ? <FirstPassCard event={item.firstPass} /> : item.event ? <PlaybookCard event={item.event} /> : null);
 import { RoleBadge } from "./RoleBadge.tsx";
 import { describeTurnError } from "../lib/errors.ts";
 import { actions, childrenOf, type Approval, type ThreadView, type ToolRun, useApp } from "../lib/store.ts";
@@ -340,11 +344,11 @@ export function Transcript({ view, threadId, footer, hideErrors }: { view: Threa
                 live={view.isStreaming && last}
                 liveStartedAt={view.turnStartedAt}
               />
-              {cards.map((c) => <PlaybookCard key={c.id} event={c.event} />)}
+              {cards.map((c) => <CardItem key={c.id} item={c} />)}
             </Fragment>
           );
         })}
-        {turns.length === 0 && (pbItems ?? []).map((c) => <PlaybookCard key={c.id} event={c.event} />)}
+        {turns.length === 0 && (pbItems ?? []).map((c) => <CardItem key={c.id} item={c} />)}
         {view.retry && <div className="msg-note">{view.retry}</div>}
         {view.compacting && <div className="msg-note">Compacting context…</div>}
         {approvals.map(({ approval, from }) => (
