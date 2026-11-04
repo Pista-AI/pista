@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { askText, firstPassHeader, firstPassRows, learnedText, type FirstPassEvent } from "../src/lib/playbook-card.ts";
+import { askText, firstPassHeader, firstPassRows, learnedText, refusalView, undoText, type FirstPassEvent } from "../src/lib/playbook-card.ts";
 import { describeRefusal, describePendingWhy, runWhy } from "../src/lib/playbooks.ts";
 
 const event: FirstPassEvent = {
@@ -48,6 +48,22 @@ test("rows: stopped lines say so, and every unmatched line joins one last row", 
 test("rows: one unmatched line reads in the singular, and a shared reason is kept", () => {
   assert.deepEqual(firstPassRows({ ...event, lines: [{ lineNo: 6, status: "unmatched", reason: "no date" }] }).map((r) => r.text), ["Line 6 · no known site · no date"]);
   assert.deepEqual(firstPassRows({ ...event, lines: [{ lineNo: 2, status: "unmatched", reason: "no date" }, { lineNo: 6, status: "unmatched" }] }).map((r) => r.text), ["Lines 2, 6 · no known site"]);
+});
+
+test("rows: unmatched line numbers are sorted before they are grouped", () => {
+  const rows = firstPassRows({ ...event, lines: [{ lineNo: 6, status: "unmatched" }, { lineNo: 2, status: "unmatched" }, { lineNo: 5, status: "unmatched" }] });
+  assert.deepEqual(rows.map((r) => r.text), ["Lines 2, 5–6 · no known site"]);
+});
+
+test("a refused Yes keeps No for broad keywords, and shows the message alone when it is no longer pending", () => {
+  assert.deepEqual(refusalView("GAMMA", "too-short"), { text: '"GAMMA" is too short. Add a word that names the vendor.', canDismiss: true });
+  assert.deepEqual(refusalView("GAMMA", "too-many"), { text: '"GAMMA" does not fit. Remove a keyword first.', canDismiss: true });
+  assert.deepEqual(refusalView("GAMMA", "not-pending"), { text: '"GAMMA" is no longer waiting for a decision.', canDismiss: false });
+});
+
+test("undo says so when the keyword was already removed", () => {
+  assert.equal(undoText(event.learned[0]!, true), 'Forgot "ACME" for acme.test');
+  assert.equal(undoText(event.learned[0]!, false), "Already removed");
 });
 
 test("the keyword reasons and refusals read the same on the card and in Settings", () => {

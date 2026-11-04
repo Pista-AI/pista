@@ -1,6 +1,7 @@
 import type { HostEvent } from "@pista/protocol";
 import type { PlaybookCardEvent } from "./store.ts";
-import { runWhy } from "./playbooks.ts";
+import { describeRefusal, runWhy } from "./playbooks.ts";
+import type { MerchantRefusal } from "@pista/protocol";
 
 type PlaybookEvent = PlaybookCardEvent;
 export type CardTone = "ok" | "learn" | "warn" | "bad";
@@ -97,6 +98,7 @@ export function firstPassRows(e: FirstPassEvent): FirstPassRow[] {
   }
   flush();
   if (unmatched.length) {
+    unmatched.sort((x, y) => x.lineNo - y.lineNo);
     const reasons = new Set(unmatched.map((l) => l.reason));
     const reason = reasons.size === 1 ? unmatched[0]!.reason : undefined;
     rows.push({ key: `u${unmatched[0]!.lineNo}`, icon: "forward", tone: "muted", text: `${lineWord(unmatched.map((l) => l.lineNo))} · no known site${reason ? ` · ${reason}` : ""}`, note: "passed to the model" });
@@ -112,3 +114,9 @@ export function firstPassHeader(e: FirstPassEvent): { title: string; aside?: str
 
 export const askText = (a: { site: string; keyword: string }): string => `Use "${a.keyword}" for ${a.site} next time?`;
 export const learnedText = (a: { site: string; keyword: string }): string => `Learned "${a.keyword}" for ${a.site}`;
+
+/** What the card shows after Yes was refused: the wording, and whether No (dismiss) still makes sense. A keyword that is no longer pending has nothing left to dismiss. */
+export const refusalView = (keyword: string, reason: MerchantRefusal): { text: string; canDismiss: boolean } => ({ text: describeRefusal(keyword, reason), canDismiss: reason !== "not-pending" });
+
+/** The note after Undo: removeMerchant says `found: false` when the keyword was already gone. */
+export const undoText = (a: { site: string; keyword: string }, found: boolean): string => (found ? `Forgot "${a.keyword}" for ${a.site}` : "Already removed");
