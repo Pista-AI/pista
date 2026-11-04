@@ -971,12 +971,6 @@ function pageRowChain(ref: string): string[] | null {
   return out;
 }
 
-/** The page's visible text (whitespace squeezed), or null when it is longer than 20000 characters. Read only by the replay download check. */
-function pageMainText(): string | null {
-  const t = ((document.body as HTMLElement | null)?.innerText ?? "").replace(/\s+/g, " ").trim();
-  return t.length > 20000 ? null : t;
-}
-
 /**
  * The elements of the last snapshot that share the target's role, in page order: those with the same name too (the repeated
  * controls of a list) as refs, and every one's name (the sibling labels of a month selector). Null for a selector or unknown ref.
@@ -1212,7 +1206,6 @@ export const scripts = {
   declineCookies: (dryRun = false) => call(pageDeclineCookies, dryRun),
   rowTexts: (refs: string[]) => call(pageRowTexts, refs),
   rowChain: (ref: string) => call(pageRowChain, ref),
-  mainText: () => call(pageMainText),
   elementStillMatches: (ref: string, role: string, name: string) => call(pageElementStillMatches, ref, role, name),
   frames: () => call(pageFrames),
   /** The top document's child frames (see FrameReport), or null when it has none. */

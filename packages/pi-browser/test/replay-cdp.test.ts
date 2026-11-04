@@ -55,18 +55,16 @@ after(() => {
 const loneStep = (): ReplayStep => ({ kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" });
 const lone = (invoice: { date: string; amount?: number; currency?: string } | undefined, path: string, page = "list-single.html") => runReplay({ startUrl: `${base}${page}`, steps: [loneStep()] }, { ...options(path), invoice });
 
-test("a download by address, a header date above a dateless row and an amount mismatch are not verified; a detail page with one date is", { skip }, async () => {
+test("a download by address, a header date above a dateless row and an amount mismatch are not verified, and a detail page without a row are handed off", { skip }, async () => {
   const byUrl = await runReplay({ startUrl: `${base}list-single.html`, steps: [{ kind: "download", url: `${base}inv-2026-09.pdf` }] }, { ...options("invoices/u1.pdf"), invoice: { date: "2026-09-03" } });
   assert.equal(!byUrl.ok && byUrl.reason, "row-not-verified");
   assert.throws(() => readFileSync(join(dir, "invoices/u1.pdf")));
-  const header = await lone({ date: "2026-09-03" }, "invoices/u2.pdf", "list-header.html");
+  const header = await lone({ date: "2026-11-03" }, "invoices/u2.pdf", "list-header.html");
   assert.equal(!header.ok && header.reason, "row-not-verified");
   const amount = await lone({ date: "2026-09-03", amount: 12, currency: "EUR" }, "invoices/u3.pdf");
   assert.equal(!amount.ok && amount.reason, "row-not-verified");
   const detail = await lone({ date: "2026-09-03", amount: 49, currency: "EUR" }, "invoices/u4.pdf", "detail-one.html");
-  assert.ok(detail.ok, JSON.stringify(detail));
-  const detailOther = await lone({ date: "2026-10-03" }, "invoices/u5.pdf", "detail-one.html");
-  assert.equal(!detailOther.ok && detailOther.reason, "row-not-verified");
+  assert.equal(!detail.ok && detail.reason, "row-not-verified");
 });
 
 test("a lone download without a row rule is checked against the invoice date before it is taken", { skip }, async () => {

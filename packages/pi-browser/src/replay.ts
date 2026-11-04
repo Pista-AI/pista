@@ -124,19 +124,16 @@ export function pickRow(refs: readonly string[], rowTexts: readonly (string | nu
 export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true } | { ok: false; detail: string } {
   const fail = (why: string) => ({ ok: false as const, detail: why });
   const date = invoice.date.slice(0, 10);
-  if (fullDateCount(rowText) !== 1) return fail(`row (or page) doesn't show exactly one date to compare with the invoice date ${date}`);
+  if (fullDateCount(rowText) !== 1) return fail(`row doesn't show exactly one date to compare with the invoice date ${date}`);
   // The amount counts whenever the text shows one; a text without any amount is judged by its date alone.
   const byAmount = invoice.amount !== undefined && parseAmounts(rowText).length > 0;
   const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
   return m.kind === "one" ? { ok: true } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
 }
 
-/** The text a lone element is verified on: its row (see rowTextOf), else the page's own text, which fits an invoice's detail page. "" for neither. */
+/** The text a lone element is verified on: the row it sits in (see rowTextOf), "" when no level shows exactly one date. */
 export async function loneRowText(d: BrowserDriver, ref: string): Promise<string> {
-  const row = rowTextOf((await d.evaluate(scripts.rowChain(ref)).catch(() => null)) as string[] | null);
-  if (row) return row;
-  const page = (await d.evaluate(scripts.mainText()).catch(() => null)) as string | null;
-  return page && fullDateCount(page) === 1 ? page : "";
+  return rowTextOf((await d.evaluate(scripts.rowChain(ref)).catch(() => null)) as string[] | null);
 }
 
 /**

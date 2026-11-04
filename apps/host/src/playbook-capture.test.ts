@@ -258,13 +258,13 @@ describe("playbook_save with a lone download candidate", () => {
     assert.ok(!JSON.stringify(pb).includes("jane@example.com") && !JSON.stringify(r).includes("jane@example.com"));
   });
 
-  it("refuses an amount that differs, two dates, and a row with no date", () => {
-    for (const text of [`3 Sep 2026 12.00 EUR ${ROW}`, `3 Sep 2026 3 Oct 2026 ${ROW}`, ROW]) {
+  it("saves, with a note, when the row does not show the invoice (other amount, two dates, no date, other date)", () => {
+    for (const text of [`3 Sep 2026 12.00 EUR ${ROW}`, `3 Sep 2026 3 Oct 2026 ${ROW}`, ROW, `3 Oct 2026 49.00 EUR ${ROW}`]) {
       const r = savePlaybookFromTrace(lone(text), [1, 2], undefined, "t", { date: "2026-09-03", amount: 49 });
-      assert.match(r.message, /^Not saved: the download's row/);
-      assert.ok(!r.message.includes("jane@example.com"));
+      assert.match(r.message, /Saved\. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date\.$/);
+      assert.ok(!r.message.includes("jane@example.com") && r.event);
+      assert.deepEqual(getPlaybook("127.0.0.1")!.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF" }, fileType: "pdf" }]);
     }
-    assert.equal(getPlaybook("127.0.0.1"), null);
   });
 
   it("refuses a download that is only an address or a selector when an invoice is given", () => {
@@ -272,13 +272,6 @@ describe("playbook_save with a lone download candidate", () => {
     t.add({ kind: "navigate", url: `${B}list-single.html` });
     t.add({ kind: "download", source: "url", url: `${B}inv-2026-09.pdf`, contentType: "application/pdf", path: "a.pdf" });
     assert.match(savePlaybookFromTrace(t.list(), [1, 2], undefined, "t", { date: "2026-09-03" }).message, /^Not saved: entry 2: .*only an address or a selector/);
-    assert.equal(getPlaybook("127.0.0.1"), null);
-  });
-
-  it("refuses to save when the row shows another date, without quoting the row", () => {
-    const r = savePlaybookFromTrace(lone(`3 Oct 2026 ${ROW} PDF`), [1, 2], undefined, "t", { date: "2026-09-03" });
-    assert.match(r.message, /^Not saved: the download's row doesn't show the invoice date 2026-09-03/);
-    assert.ok(!r.message.includes("jane@example.com") && !r.event);
     assert.equal(getPlaybook("127.0.0.1"), null);
   });
 
