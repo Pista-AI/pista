@@ -155,11 +155,14 @@ export function Playbooks() {
                     <span key={k} className="kw-chip pending" title={why}>{k} <em>pending</em>
                       <button type="button" aria-label={`Confirm ${k}`} disabled={busy} onClick={() => changeKeywords(p.site, () => setList(p.site, [...(p.merchants ?? []), k], k))}>✓</button>
                       <button type="button" aria-label={`Dismiss ${k}`} disabled={busy} onClick={() => changeKeywords(p.site, async () => { await host.call("playbook.dismissMerchant", { site: p.site, merchant: k }); return null; })}>×</button>
-                      {why && <small>{why}</small>}
                     </span>
                   );
                 })}
               </div>
+              {(p.merchantsPending ?? []).map((k) => {
+                const why = describePendingWhy(p.merchantsPendingWhy?.[k]);
+                return why ? <small key={k} className="kw-why">{k}: {why}</small> : null;
+              })}
               <form className="kw-add" onSubmit={(e) => { e.preventDefault(); const t = kwInput.trim(); if (t) void changeKeywords(p.site, () => setList(p.site, [...(p.merchants ?? []), t], t)); }}>
                 <input value={kwInput} placeholder="paypal*telnyx" aria-label={`Add a bank keyword for ${p.site}`} onChange={(e) => { setKwInput(e.target.value); setKwError(null); }} />
                 <button type="submit" className="pill-btn" disabled={busy || !kwInput.trim()}>Add</button>
