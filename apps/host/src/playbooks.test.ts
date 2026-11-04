@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ReplayStep } from "@pista/pi-browser";
 import type { Playbook, PlaybookStep } from "@pista/protocol";
-import { FAIL_THRESHOLD, deletePlaybook, getPlaybook, listPlaybooks, recordFailure, recordSuccess, sanitizeUrl, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { FAIL_THRESHOLD, deletePlaybook, getPlaybook, listPlaybooks, recordFailure, recordSuccess, MERCHANT_STOPWORDS, sanitizeUrl, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 // Stored steps must stay replayable: the runner in pi-browser types them structurally (checked by pnpm typecheck).
 export const replayable: (steps: Playbook["steps"]) => ReplayStep[] = (steps) => steps;
@@ -182,5 +182,22 @@ describe("shortcut", () => {
     assert.equal(validatePlaybook({ startUrl: "https://example.com/", steps, shortcutCandidate: { ...ok, afterStep: 3 } }, "example.com").shortcutCandidate, undefined);
     const both = validatePlaybook({ startUrl: "https://example.com/", steps, shortcut: ok, shortcutCandidate: ok }, "example.com");
     assert.deepEqual([both.shortcut, both.shortcutCandidate], [ok, undefined]);
+  });
+});
+
+describe("validatePlaybook merchants", () => {
+  const merchants = (m: unknown) => validatePlaybook(base({ merchants: m }), "example.com").merchants;
+  it("upper-cases, strips other characters, collapses spaces and dedupes", () => {
+    assert.deepEqual(merchants(["acme  cloud", "ACME CLOUD", " Åhléns ", "a<b>c;d", "O'Reilly & Co"]), ["ACME CLOUD", "AHLENS", "ABCD", "O'REILLY & CO"]);
+  });
+  it("enforces length, digits-only, opaque and generic words", () => {
+    assert.equal(merchants(["AB", "x".repeat(41), "1234567", "0123abcd".repeat(5), "LLC", "PayPal", "Card Payment", ...MERCHANT_STOPWORDS]), undefined);
+    assert.ok(MERCHANT_STOPWORDS.has("STRIPE") && MERCHANT_STOPWORDS.has("GMBH"));
+    assert.deepEqual(merchants(["PAYPAL SPOTIFY"]), ["PAYPAL SPOTIFY"]);
+  });
+  it("keeps at most 5, ignores non-strings and non-arrays", () => {
+    assert.deepEqual(merchants(["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]), ["AAA", "BBB", "CCC", "DDD", "EEE"]);
+    assert.deepEqual(merchants(["AAA", 5, null, { x: 1 }]), ["AAA"]);
+    assert.equal(merchants("AAA"), undefined);
   });
 });

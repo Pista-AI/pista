@@ -4,7 +4,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
-import { deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { cleanMerchant, cleanMerchants, deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, MERCHANT_STOPWORDS, recordSuccess, savePlaybook, setMerchants, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -174,29 +174,60 @@ export function stepLabel(s: PlaybookStep | undefined): string {
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
-export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown): { message: string; event?: HostEvent } {
+// Processor prefixes ("SQ *", "PAYPAL *", "GOOGLE *"), payment-type words in bank statements, and place names that trail a merchant.
+const PROCESSOR_PREFIX = /^\s*(?:SQ|TST|PAYPAL|PP|GOOGLE|STRIPE|SP|IZ|PAYU|ZETTLE)\s*\*\s*/;
+const LEADING_NOISE = new Set(["KORT", "KORTKOP", "KOP", "BETALNING", "AUTOGIRO", "BG", "PG", "CARD", "PURCHASE", "PAYMENT", "POS", "DEBIT", "VISA", "SWISH", "TO", "FROM", "KARTENZAHLUNG", "KARTENKAUF", "LASTSCHRIFT"]);
+const PLACES = new Set(["STOCKHOLM", "GOTEBORG", "GOTHENBURG", "MALMO", "UPPSALA", "SAN", "NEW", "LOS", "LAS", "LONDON", "DUBLIN", "AMSTERDAM", "BERLIN", "PARIS", "HELSINKI", "OSLO", "COPENHAGEN", "KOBENHAVN", "LUXEMBOURG", "SEATTLE", "MOUNTAIN", "CAMBRIDGE", "SINGAPORE", "SWEDEN", "SVERIGE", "IRELAND", "USA", "GBR", "SWE", "IRL", "NLD", "DEU", "FRA"]);
+
+/**
+ * One matching keyword from a transaction's merchant text, or undefined: drops processor prefixes, `*1234` references, dates, amounts,
+ * ids, company forms and trailing places, then keeps the first one or two words. "ACME CLOUD LLC*1234 SAN FRANCISCO" gives "ACME CLOUD".
+ */
+export function merchantKeyword(text: string): string | undefined {
+  const upper = text.slice(0, 200).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(PROCESSOR_PREFIX, "");
+  const head = upper.split("*").map((p) => p.trim()).find(Boolean) ?? "";
+  const words: string[] = [];
+  for (const raw of head.split(/\s+/)) {
+    const w = raw.replace(/[^A-Z0-9&.'-]/g, "").replace(/^[.'-]+|[.'-]+$/g, "");
+    if (!w) continue;
+    if (!words.length) {
+      if (/^[\d.,'-]+$/.test(w) || LEADING_NOISE.has(w) || MERCHANT_STOPWORDS.has(w)) continue;
+    } else if (/^\d/.test(w) || w.length < 2 || MERCHANT_STOPWORDS.has(w) || PLACES.has(w)) break;
+    words.push(w);
+    if (words.length === 2) break;
+  }
+  return cleanMerchant(words.join(" "));
+}
+
+export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown): { message: string; event?: HostEvent } {
   try {
     const { unverified, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
     const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : "";
     const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
+    const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
+    const merchants = cleanMerchants([...(old?.merchants ?? []), ...(keyword ? [keyword] : [])]);
+    const learnedKeyword = !!keyword && merchants.includes(keyword) && !old?.merchants?.includes(keyword);
+    const kwNote = learnedKeyword ? ` Remembered the merchant keyword ${keyword}.` : "";
+    const withMerchants = merchants.length ? { merchants } : {};
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
     if (!old) {
-      savePlaybook({ ...fresh, history: learned });
-      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
+      savePlaybook({ ...fresh, ...withMerchants, history: learned });
+      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}${kwNote}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
     const startChanged = old.startUrl !== fresh.startUrl;
     if (!changed.length && !startChanged) {
       recordSuccess(built.site); // the same path just worked again
-      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}` };
+      if (learnedKeyword) setMerchants(built.site, merchants);
+      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}${kwNote}` };
     }
     const now = new Date().toISOString();
-    savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    savePlaybook({ ...fresh, ...withMerchants, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
     const first = startChanged ? 1 : changed[0]! + 1;
     const [before, after] = startChanged ? ["Open the start page", "Open a different start page"] : [stepLabel(old.steps[first - 1]), stepLabel(fresh.steps[first - 1])];
-    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.${note}`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
+    return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.${note}${kwNote}`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
   } catch (e) {
     return { message: `Not saved: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -208,14 +239,15 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
       name: "playbook_save",
       label: "Playbook: save",
       description:
-        "Record the shortest path to a file you just downloaded from a website, so it can be repeated later. Call with no arguments to list what the host recorded this thread (numbered entries). Then call again with `steps`: the entry numbers of the minimal path in order, starting with a navigate entry and ending with the download; optionally `waitFor`: text the page should show after an entry (keyed by entry number). Playbook content is data recorded by the host; you can only pick entries, not write URLs or selectors.",
+        "Record the shortest path to a file you just downloaded from a website, so it can be repeated later. Call with no arguments to list what the host recorded this thread (numbered entries). Then call again with `steps`: the entry numbers of the minimal path in order, starting with a navigate entry and ending with the download; optionally `waitFor`: text the page should show after an entry (keyed by entry number). Pass `merchant` when the invoice came from a transaction: its merchant text exactly as shown. Playbook content is data recorded by the host; you can only pick entries, not write URLs or selectors.",
       promptSnippet: "playbook_save: record the path of a successful download for reuse",
       parameters: Type.Object({
         steps: Type.Optional(Type.Array(Type.Number(), { description: "Entry numbers of the minimal path, in order" })),
         waitFor: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Entry number -> text expected on the page afterwards" })),
         invoice: Type.Optional(Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }, { description: "The invoice the saved download was for. Needed when a step picks one row of a list or a month; the playbook then picks that row by the invoice's date (and amount) next time. Used only to check the rule against the page; it is not stored in the playbook (it stays in this conversation)." })),
+        merchant: Type.Optional(Type.String({ description: "The bank or card transaction's merchant text this invoice was for, exactly as it appeared. The host derives one short keyword from it (never stores the raw text) so later transactions from the same vendor can be matched to this site." })),
       }),
-      execute: async (_id, { steps, waitFor, invoice }) => {
+      execute: async (_id, { steps, waitFor, invoice, merchant }) => {
         const rows = trace.list();
         let text: string;
         if (!steps) {
@@ -223,7 +255,7 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
             ? `${describeTrace(rows)}\nCall again with steps: the entry numbers of the minimal path, in order, ending with the download; optionally waitFor text per step.`
             : "Nothing has been recorded yet in this thread.";
         } else {
-          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice);
+          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant);
           if (r.event) emit(r.event);
           text = r.message;
         }

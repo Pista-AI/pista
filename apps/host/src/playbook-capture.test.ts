@@ -3,8 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
-import { PlaybookTrace, TRACE_LIMIT, describeTrace, savePlaybookFromTrace } from "./playbook-capture.ts";
-import { getPlaybook, recordFailure, savePlaybook } from "./playbooks.ts";
+import { PlaybookTrace, TRACE_LIMIT, describeTrace, merchantKeyword, savePlaybookFromTrace } from "./playbook-capture.ts";
+import { getPlaybook, recordFailure, savePlaybook, setMerchants } from "./playbooks.ts";
 
 const B = "http://127.0.0.1:8765/invoices/";
 function trace(extra: Parameters<PlaybookTrace["add"]>[0][] = []) {
@@ -329,5 +329,63 @@ describe("playbook_save: shortcut", () => {
     t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["2026-09-03 49.00 EUR", "2026-10-03 49.00 EUR"], clickedIndex: 1 } });
     savePlaybookFromTrace(t.list(), [1, 2, 3, 4], undefined, "t", { date: "2026-10-03" });
     assert.deepEqual(getPlaybook("127.0.0.1")?.shortcut, { url: url("billing.html"), afterStep: 1 });
+  });
+});
+
+describe("merchantKeyword", () => {
+  const cases: [string, string | undefined][] = [
+    ["ACME CLOUD LLC*1234 SAN FRANCISCO CA", "ACME CLOUD"],
+    ["SQ *BLUE BOTTLE COFFEE 0123", "BLUE BOTTLE"],
+    ["PAYPAL *SPOTIFY 35314369001", "SPOTIFY"],
+    ["Notion Labs Inc. San Francisco", "NOTION LABS"],
+    ["Figma 2026-10-03 49.00 USD", "FIGMA"],
+    ["KORTKÖP 241103 SPOTIFY AB STOCKHOLM", "SPOTIFY"],
+    ["Kortköp 24-11-03 Åhléns City Stockholm", "AHLENS CITY"],
+    ["Lastschrift 03.11. ACME GMBH BERLIN DE", "ACME"],
+    ["TST* Cafe Roma", "CAFE ROMA"],
+    ["12345 6789", undefined],
+    ["PAYPAL *", undefined],
+    ["INC LLC", undefined],
+  ];
+  for (const [text, want] of cases) it(`${JSON.stringify(text)} -> ${JSON.stringify(want)}`, () => assert.equal(merchantKeyword(text), want));
+  it("returns at most two words from the allowed characters", () => {
+    const k = merchantKeyword("Some Very Long Vendor Name Here*9999")!;
+    assert.equal(k, "SOME VERY");
+    assert.match(k, /^[A-Z0-9&.' -]+$/);
+  });
+});
+
+describe("playbook_save merchant keyword", () => {
+  it("stores one keyword on a new playbook, never the raw text, and keeps it on re-record", () => {
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "ACME CLOUD LLC*1234 SAN FRANCISCO");
+    assert.deepEqual(getPlaybook("127.0.0.1")?.merchants, ["ACME CLOUD"]);
+    assert.doesNotMatch(JSON.stringify(getPlaybook("127.0.0.1")), /1234|FRANCISCO/);
+    const r = savePlaybookFromTrace(trace().list(), [2, 5, 6], undefined, "t", undefined, "SQ *OTHER VENDOR");
+    assert.match(r.message, /Remembered the merchant keyword OTHER VENDOR/);
+    assert.deepEqual(getPlaybook("127.0.0.1")?.merchants, ["ACME CLOUD", "OTHER VENDOR"]);
+  });
+  it("adds to an unchanged playbook without duplicating", () => {
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t");
+    assert.equal(getPlaybook("127.0.0.1")?.merchants, undefined);
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Acme Cloud");
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "ACME CLOUD LLC");
+    assert.deepEqual(getPlaybook("127.0.0.1")?.merchants, ["ACME CLOUD"]);
+  });
+  it("ignores unusable merchant text", () => {
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "PAYPAL *");
+    assert.equal(getPlaybook("127.0.0.1")?.merchants, undefined);
+  });
+});
+
+describe("setMerchants", () => {
+  it("round-trips, cleans and clears; fails without a playbook", () => {
+    assert.throws(() => setMerchants("127.0.0.1", ["ACME"]), /no playbook/);
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t");
+    setMerchants("127.0.0.1", ["acme cloud", "ACME CLOUD", "LLC", "12345", "ab"]);
+    assert.deepEqual(getPlaybook("127.0.0.1")?.merchants, ["ACME CLOUD"]);
+    assert.throws(() => setMerchants("127.0.0.1", "ACME" as unknown as string[]), /array of strings/);
+    assert.throws(() => setMerchants("127.0.0.1", [1] as unknown as string[]), /array of strings/);
+    setMerchants("127.0.0.1", []);
+    assert.equal(getPlaybook("127.0.0.1")?.merchants, undefined);
   });
 });
