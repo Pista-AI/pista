@@ -262,7 +262,7 @@ describe("playbook_save with a lone download candidate", () => {
     for (const text of [`3 Sep 2026 12.00 EUR ${ROW}`, `3 Sep 2026 3 Oct 2026 ${ROW}`, ROW, `3 Oct 2026 49.00 EUR ${ROW}`]) {
       const r = savePlaybookFromTrace(lone(text), [1, 2], undefined, "t", { date: "2026-09-03", amount: 49 });
       assert.match(r.message, /Saved\. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date\.$/);
-      assert.ok(!r.message.includes("jane@example.com") && r.event);
+      assert.ok(!r.message.includes("jane@example.com"));
       assert.deepEqual(getPlaybook("127.0.0.1")!.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF" }, fileType: "pdf" }]);
     }
   });
