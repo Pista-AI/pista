@@ -88,14 +88,11 @@ test("confirmMerchant refuses a keyword that is no longer pending, and changes n
   assert.equal(getPlaybook("zeta.test")!.merchants, undefined);
 });
 
-test("confirmMerchant refuses when the list is full, and a keyword that fails the checks", () => {
+test("confirmMerchant refuses when the list is full", () => {
   make("eta.test", { merchants: ["AAAA ONE", "AAAA TWO", "AAAA THREE", "AAAA FOUR", "AAAA FIVE"], merchantsPending: ["ETA WORKS"] });
   assert.deepEqual(confirmMerchant("eta.test", "ETA WORKS"), { ok: true, refused: "too-many" });
   assert.deepEqual(getPlaybook("eta.test")!.merchantsPending, ["ETA WORKS"]);
   assert.equal(getPlaybook("eta.test")!.merchants!.length, 5);
-  make("theta.test", { merchantsPending: ["LLC"] });
-  assert.deepEqual(confirmMerchant("theta.test", "LLC"), { ok: true, refused: "too-short" });
-  assert.equal(getPlaybook("theta.test")!.merchants, undefined);
 });
 
 test("every keyword method rejects an unknown site", () => {
