@@ -1,7 +1,7 @@
 // Captures what the browser tools did in a thread and turns the model's chosen subset into a stored playbook.
 // The model only picks entry numbers from what the host recorded, so it cannot invent URLs or selectors.
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchPeriod, pickRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
+import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookStep } from "@pista/protocol";
 import { getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
@@ -29,7 +29,7 @@ const clip = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n)}...` : s);
 const where = (l: { role?: string; name?: string; text?: string }) => [l.role, l.name || l.text ? JSON.stringify(clip(l.name || l.text || "")) : ""].filter(Boolean).join(" ");
 
 /** Where a repeated-list entry sits, never the row's text. */
-const place = (r: TraceRow) => ("rowContext" in r && r.rowContext ? ` (row ${r.rowContext.clickedIndex + 1} of ${r.rowContext.texts.length})` : "");
+const place = (r: TraceRow) => ("rowContext" in r && r.rowContext && r.rowContext.texts.length > 1 ? ` (row ${r.rowContext.clickedIndex + 1} of ${r.rowContext.texts.length})` : "");
 
 const navigatesByInvoice = (n: number) => `entry ${n} opens an address that follows from the invoice you chose; record the clicks that lead there instead of navigating`;
 
@@ -61,7 +61,13 @@ export function checkInvoice(v: unknown): InvoiceParams {
 }
 
 /** The columns that make the replay rule pick the row that was clicked, checked with the same picker replay uses; throws when none does. */
-function rowRule(ctx: TraceRowContext, invoice: InvoiceParams | undefined): { match: ("date" | "amount")[] } {
+function rowRule(ctx: TraceRowContext, invoice: InvoiceParams | undefined): { match: ("date" | "amount")[] } | undefined {
+  // A lone download candidate: the rule is added when its row shows the invoice, and the save is refused when it does not.
+  if (ctx.texts.length === 1) {
+    if (!invoice) return undefined;
+    for (const by of [["date"], ["date", "amount"]] as const) if (verifySingleRow(ctx.texts[0] ?? "", invoice, by).ok) return { match: [...by] };
+    throw new Error(`the download's row doesn't show the invoice date ${invoice.date}, so it could not be checked that this is the right invoice; pick the row of the invoice in the list (or a page that shows it) and download from there`);
+  }
   if (!invoice) throw new Error("this step picks one row of a list; pass the invoice it was for (invoice: { date, amount? })");
   const refs = ctx.texts.map((_, i) => String(i));
   const rules: ("date" | "amount")[][] = invoice.amount !== undefined ? [["date"], ["date", "amount"]] : [["date"]];

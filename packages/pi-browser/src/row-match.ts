@@ -172,3 +172,8 @@ export function matchPeriod(labels: MatchRow[], target: { date: string }): RowMa
   }).map((l) => l.index);
   return hits.length === 0 ? { kind: "none" } : hits.length === 1 ? { kind: "one", index: hits[0]! } : { kind: "many", candidates: hits };
 }
+
+/** The nearest of a row chain (see pageRowChain) that shows a full date; the first one when none does, "" for no chain. */
+export function rowTextOf(chain: readonly string[] | null | undefined): string {
+  return (chain ?? []).find((t) => parseDates(t).some((d) => d.d)) ?? chain?.[0] ?? "";
+}

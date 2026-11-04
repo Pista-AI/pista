@@ -240,3 +240,37 @@ describe("playbook_save with repeated rows and month selectors", () => {
     assert.match(savePlaybookFromTrace(t.list(), [1, 2], undefined, "t").message, /pass the invoice it was for/);
   });
 });
+
+describe("playbook_save with a lone download candidate", () => {
+  const ROW = "Acme Corp INV-7731 jane@example.com";
+  const lone = (text: string) => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: `${B}list-single.html` }); // 1
+    t.add({ kind: "download", source: "ref", url: `${B}inv-2026-09.pdf`, locator: { role: "link", name: "PDF", text: "PDF" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: [text], clickedIndex: 0 } }); // 2
+    return t.list();
+  };
+
+  it("adds a date rule when the row shows the invoice date, and stores no row text", () => {
+    const r = savePlaybookFromTrace(lone(`3 Sep 2026 ${ROW} PDF`), [1, 2], undefined, "t", { date: "2026-09-03" });
+    assert.equal(r.event?.type, "playbook.event");
+    const pb = getPlaybook("127.0.0.1")!;
+    assert.deepEqual(pb.steps, [{ kind: "download", target: { role: "link", name: "PDF", text: "PDF", row: { match: ["date"] } }, fileType: "pdf" }]);
+    assert.ok(!JSON.stringify(pb).includes("jane@example.com") && !JSON.stringify(r).includes("jane@example.com"));
+  });
+
+  it("refuses to save when the row shows another date, without quoting the row", () => {
+    const r = savePlaybookFromTrace(lone(`3 Oct 2026 ${ROW} PDF`), [1, 2], undefined, "t", { date: "2026-09-03" });
+    assert.match(r.message, /^Not saved: the download's row doesn't show the invoice date 2026-09-03/);
+    assert.ok(!r.message.includes("jane@example.com") && !r.event);
+    assert.equal(getPlaybook("127.0.0.1"), null);
+  });
+
+  it("keeps today's plain download when no invoice is given", () => {
+    savePlaybookFromTrace(lone(`3 Oct 2026 ${ROW} PDF`), [1, 2], undefined, "t");
+    assert.deepEqual(getPlaybook("127.0.0.1")!.steps, [{ kind: "download", url: `${B}inv-2026-09.pdf`, fileType: "pdf" }]);
+  });
+
+  it("does not list the lone row in the trace", () => {
+    assert.doesNotMatch(describeTrace(lone(`3 Sep 2026 ${ROW}`)), /row 1 of 1|jane@/);
+  });
+});
