@@ -873,8 +873,12 @@ export interface Playbook {
   shortcutFails?: number;
   /** Upper-case keywords (at most 5) that a bank or card transaction's merchant text contains when it belongs to this site. Never raw merchant text. */
   merchants?: string[];
-  /** Keywords the model suggested when saving; they are never used for matching until the user confirms them (`playbook.setMerchants`). */
+  /** Keywords the model suggested when saving; they are never used for matching until a verified download of a matching transaction confirms them, or, when broad (`merchantsPendingWhy`), the user does (`playbook.setMerchants`). `*` is only allowed in keywords the user set. */
   merchantsPending?: string[];
+  /** Why a pending keyword waits for the user instead of being confirmed by a verified download (it is broad). Keyed by keyword. */
+  merchantsPendingWhy?: Record<string, "short" | "umbrella" | "other-site" | "unsure" | "unverified-elsewhere">;
+  /** Consecutive routed runs that ended without the invoice's row; a confirmed keyword is dropped at 2. Keyed by keyword. */
+  merchantMisses?: Record<string, number>;
   createdAt: string;
   updatedAt: string;
   lastSucceeded?: string;
@@ -892,6 +896,7 @@ export interface PlaybookMeta {
   shortcutUrl?: string;
   merchants?: string[];
   merchantsPending?: string[];
+  merchantsPendingWhy?: Playbook["merchantsPendingWhy"];
   stepCount: number;
   status: Playbook["status"];
   lastSucceeded?: string;

@@ -4,8 +4,8 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
-import { MAX_MERCHANTS, merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { broadReason, MAX_MERCHANTS, merchantKeyword } from "./merchants.ts";
+import { deriveShortcut, getPlaybook, isOpaque, keywordsOnOtherSites, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -175,7 +175,7 @@ export function stepLabel(s: PlaybookStep | undefined): string {
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
-export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown): { message: string; event?: HostEvent } {
+export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown, unsure?: boolean): { message: string; event?: HostEvent } {
   try {
     const { unverified, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
     const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : "";
@@ -185,8 +185,10 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const confirmed = old?.merchants ?? [], pending = old?.merchantsPending ?? [];
     const learnedKeyword = !!keyword && !confirmed.includes(keyword) && !pending.includes(keyword) && pending.length < MAX_MERCHANTS;
     const nextPending = learnedKeyword ? [...pending, keyword] : pending;
-    const kwNote = learnedKeyword ? ` Suggested the merchant keyword ${keyword}; the owner confirms it before it is used.` : "";
-    const withMerchants = { ...(confirmed.length ? { merchants: confirmed } : {}), ...(nextPending.length ? { merchantsPending: nextPending } : {}) };
+    const why = learnedKeyword ? broadReason(keyword, { unsure, otherSites: keywordsOnOtherSites(built.site) }) : undefined;
+    const kwNote = learnedKeyword ? ` Suggested the merchant keyword ${keyword}; ${why ? "it is broad, so the owner confirms it" : "a later verified download for a matching transaction confirms it"} before it is used.` : "";
+    const nextWhy = { ...old?.merchantsPendingWhy, ...(why ? { [keyword!]: why } : {}) };
+    const withMerchants = { ...(confirmed.length ? { merchants: confirmed } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(nextPending.length ? { merchantsPending: nextPending } : {}), ...(Object.keys(nextWhy).length ? { merchantsPendingWhy: nextWhy } : {}) };
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
     if (!old) {
       savePlaybook({ ...fresh, ...withMerchants, history: learned });
@@ -223,9 +225,10 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
         steps: Type.Optional(Type.Array(Type.Number(), { description: "Entry numbers of the minimal path, in order" })),
         waitFor: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Entry number -> text expected on the page afterwards" })),
         invoice: Type.Optional(Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }, { description: "The invoice the saved download was for. Needed when a step picks one row of a list or a month; the playbook then picks that row by the invoice's date (and amount) next time. Used only to check the rule against the page; it is not stored in the playbook (it stays in this conversation)." })),
+        unsure: Type.Optional(Type.Boolean({ description: "Set true when the merchant text is generic or could belong to several vendors, so the keyword is not confirmed without the owner." })),
         merchant: Type.Optional(Type.String({ description: "The bank or card transaction's merchant text this invoice was for, exactly as it appeared. The host derives one short keyword from it (never stores the raw text) so later transactions from the same vendor can be matched to this site." })),
       }),
-      execute: async (_id, { steps, waitFor, invoice, merchant }) => {
+      execute: async (_id, { steps, waitFor, invoice, merchant, unsure }) => {
         const rows = trace.list();
         let text: string;
         if (!steps) {
@@ -233,7 +236,7 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
             ? `${describeTrace(rows)}\nCall again with steps: the entry numbers of the minimal path, in order, ending with the download; optionally waitFor text per step.`
             : "Nothing has been recorded yet in this thread.";
         } else {
-          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant);
+          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant, unsure);
           if (r.event) emit(r.event);
           text = r.message;
         }
