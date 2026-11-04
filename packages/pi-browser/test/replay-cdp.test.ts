@@ -75,8 +75,12 @@ test("a lone download without a row rule is checked against the invoice date bef
   const right = await lone({ date: "2026-09-03" }, "invoices/v2.pdf");
   assert.ok(right.ok, JSON.stringify(right));
   assert.ok(readFileSync(join(dir, "invoices/v2.pdf"), "latin1").includes("inv-2026-09"));
+  assert.deepEqual(right.verified, { date: true, amount: false }); // no amount given: nothing claimed about it
+  const withAmount = await lone({ date: "2026-09-03", amount: 49, currency: "EUR" }, "invoices/v4.pdf");
+  assert.ok(withAmount.ok && withAmount.verified.amount && withAmount.verified.date, JSON.stringify(withAmount));
   const none = await lone(undefined, "invoices/v3.pdf");
   assert.ok(none.ok, JSON.stringify(none));
+  assert.deepEqual(none.verified, { date: false, amount: false });
 });
 
 test("the row of a lone element stops short of the list that holds its look-alikes", { skip }, async () => {

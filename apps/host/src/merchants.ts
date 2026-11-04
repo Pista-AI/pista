@@ -50,8 +50,9 @@ export function cleanMerchant(v: unknown, wildcards = false): string | undefined
   const stars = s.split("*").length - 1;
   if (s.length < 4 || s.length > 40 || stars > MAX_WILDCARDS || s.startsWith("*") || s.endsWith("*")) return undefined;
   if (stars ? literalLetters(s) < MIN_LITERAL_LETTERS : !/\p{L}{3}/u.test(s)) return undefined;
-  // each `*`-separated segment must itself be a real name part: not empty, not only generic words
-  if (stars && s.split("*").some((seg) => !seg.trim() || seg.trim().split(" ").every(isStopword) || !/\p{L}/u.test(seg))) return undefined;
+  // a wildcard keyword needs one distinctive segment: 3+ literal letters that are not only generic or umbrella words
+  if (stars && s.split("*").some((seg) => !seg.trim())) return undefined;
+  if (stars && !s.split("*").some((seg) => literalLetters(seg) >= MIN_LITERAL_LETTERS && !seg.trim().split(" ").every((w) => isStopword(w) || UMBRELLA_BRANDS.has(fold(w))))) return undefined;
   const words = s.split(" ");
   if (words.some((w) => w.length < 2 || (w.length >= 20 && /\d/.test(w) && /\p{L}/u.test(w))) || words.every(isStopword)) return undefined;
   return s;

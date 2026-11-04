@@ -10,7 +10,7 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf } from "./row-match.ts";
+import { amountShown, fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 /** What a row is matched on. Mirrors the protocol type; pi-browser does not depend on protocol (the host test checks they agree). */
@@ -31,7 +31,7 @@ export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; shortcut?: ReplayShortcutOutcome }
+  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean }; shortcut?: ReplayShortcutOutcome }
   | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
 /** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
@@ -123,14 +123,14 @@ export function pickRow(refs: readonly string[], rowTexts: readonly (string | nu
  * A single element found without a row rule, checked against the invoice before it is acted on: its row (see rowTextOf) must show
  * the invoice's date and no more than 3 distinct dates. The detail never quotes the row's text.
  */
-export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true } | { ok: false; detail: string } {
+export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true; amount: boolean } | { ok: false; detail: string } {
   const fail = (why: string) => ({ ok: false as const, detail: why });
   const date = invoice.date.slice(0, 10);
   if (fullDateCount(rowText) !== 1) return fail(`row doesn't show exactly one date to compare with the invoice date ${date}`);
   // The amount counts whenever the text shows one; a text without any amount is judged by its date alone.
   const byAmount = invoice.amount !== undefined && parseAmounts(rowText).length > 0;
   const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
-  return m.kind === "one" ? { ok: true } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
+  return m.kind === "one" ? { ok: true, amount: byAmount && amountShown(rowText, invoice.amount!, invoice.currency) } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
 }
 
 /** The text a lone element is verified on: the row it sits in (see rowTextOf), "" when no level shows exactly one date. */
@@ -218,7 +218,7 @@ const countMatches = (selector: string): number => {
 };
 
 /** Snapshots the page and resolves the locator to a ref (or a selector the page has). */
-async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], invoice?: ReplayOptions["invoice"]): Promise<Resolution> {
+async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], invoice?: ReplayOptions["invoice"], seen?: { amount: boolean }): Promise<Resolution> {
   if (target.period && target.role) {
     if (!invoice) throw new Handoff("needs-invoice", "This step picks a period (month) by the invoice, and the job gave no invoice date.");
     const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
@@ -235,7 +235,10 @@ async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readon
     const refs = resolveAll(snap.elements, target, fallbacks);
     if (!refs.length) return { reason: "not-found", detail: `nothing on the page matches ${describeLocator(target)}` };
     const texts = (await d.evaluate(scripts.rowTexts(refs))) as (string | null)[];
-    return pickRow(refs, texts, invoice, target.row.match);
+    const picked = pickRow(refs, texts, invoice, target.row.match);
+    // A row without any amount passes an amount rule, so only a row that shows the invoice's amount counts as compared.
+    if (seen && "target" in picked && target.row.match.includes("amount") && invoice.amount !== undefined) seen.amount = amountShown(texts[refs.indexOf(picked.target)] ?? "", invoice.amount, invoice.currency);
+    return picked;
   }
   const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
   // Link addresses by ref, from the refs this snapshot just set, so identical links can be told apart.
@@ -286,6 +289,13 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   };
   const stillOnSite = async () => guardUrl((await d.state()).url, "The page moved to");
   let saved: { path: string; bytes: number; contentType?: string } | undefined;
+  const verified = { date: false, amount: false };
+  /** Notes what a located step's row or period rule compared against the invoice. */
+  const noteRule = (t: ReplayLocator, seen: { amount: boolean }) => {
+    if (!o.invoice || !(t.row || t.period)) return;
+    verified.date = true;
+    if (seen.amount) verified.amount = true;
+  };
 
   const click = async (target: string, what: string) => {
     const r = await runPageAction(d, { action: "click", target }, riskApprove);
@@ -305,8 +315,10 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         break;
       }
       case "click": {
-        const r = await locate(d, step.target, step.fallbacks, o.invoice);
+        const seen = { amount: false };
+        const r = await locate(d, step.target, step.fallbacks, o.invoice, seen);
         if (!("target" in r)) throw new Handoff(r.reason, r.detail);
+        noteRule(step.target, seen);
         await click(r.target, "click");
         await stillOnSite();
         break;
@@ -335,12 +347,16 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           if (o.invoice) throw new Handoff("row-not-verified", "This step downloads a fixed address, which can't be checked against the invoice's row.");
           source = { url: new URL(step.url, (await d.state()).url || undefined).href };
         } else if (step.target) {
-          const r = await locate(d, step.target, [], o.invoice);
+          const seen = { amount: false };
+          const r = await locate(d, step.target, [], o.invoice, seen);
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
+          noteRule(step.target, seen);
           // A download found without a row rule must still sit in the invoice's row: a list showing one invoice is not proof it is the wanted one.
           if (o.invoice && !step.target.row && !step.target.period) {
             const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
             if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
+            verified.date = true;
+            if (v.amount) verified.amount = true;
           }
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");
@@ -440,5 +456,5 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   }
   if (failure) return { ...failure, ...(shortcut ? { shortcut } : {}) };
   if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "", ...(shortcut ? { shortcut } : {}) };
-  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), ...(shortcut ? { shortcut } : {}) };
+  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), verified, ...(shortcut ? { shortcut } : {}) };
 }

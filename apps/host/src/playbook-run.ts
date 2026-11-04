@@ -304,9 +304,8 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
   for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
   // A replay that passed the row check proves the keyword; a missing or unverified row counts against it.
   if (req.merchant) {
-    // Only a run whose row check compared the amount too (the invoice has one and a row step matches on it) can confirm a keyword.
-    const amountVerified = invoice.amount !== undefined && pb.steps.some((st) => "target" in st && !!st.target?.row?.match.includes("amount"));
-    if (r.ok) noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified });
+    // Only a run whose row check compared the amount as well as the date can confirm a keyword.
+    if (r.ok) noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount });
     else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
   }
   if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps };

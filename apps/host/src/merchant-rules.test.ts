@@ -8,16 +8,16 @@ import { addPendingMerchant, confirmByProof, getPlaybook, noteMerchantOutcome, r
 
 describe("wildcard keywords", () => {
   it("matches an inner * across any run, anchored at word boundaries", () => {
-    assert.ok(keywordMatches("ACME*DEPOT", "ACME EU DEPOT INC"));
-    assert.ok(keywordMatches("ACME*DEPOT", "ACMEDEPOT"));
-    assert.ok(!keywordMatches("ACME*DEPOT", "XACME DEPOT"));
-    assert.ok(!keywordMatches("ACME*DEPOT", "ACME DEPOTS"));
+    assert.ok(keywordMatches("ACME*CLOUD", "ACME EU CLOUD INC"));
+    assert.ok(keywordMatches("ACME*CLOUD", "ACMECLOUD"));
+    assert.ok(!keywordMatches("ACME*CLOUD", "XACME CLOUD"));
+    assert.ok(!keywordMatches("ACME*CLOUD", "ACME CLOUDS"));
     assert.ok(keywordMatches("ABC*DEF*CORP", "ABC DEF CORP"));
     assert.ok(!keywordMatches("ABC*DEF*CORP", "ABC CORP DEF"));
   });
   it("matches text that has a * in it", () => {
-    assert.ok(keywordMatches("ADOBE CREATIVE", "ADOBE *CREATIVE DEPOT"));
-    assert.ok(keywordMatches("ADOBE*CREATIVE", "ADOBE *CREATIVE DEPOT"));
+    assert.ok(keywordMatches("ADOBE CREATIVE", "ADOBE *CREATIVE CLOUD"));
+    assert.ok(keywordMatches("ADOBE*CREATIVE", "ADOBE *CREATIVE CLOUD"));
     assert.ok(keywordMatches("TELNYX", "PAYPAL *TELNYX"));
     assert.ok(!keywordMatches("ADOBE", "ADOBEX*CREATIVE"));
   });
@@ -33,16 +33,17 @@ describe("wildcard keywords", () => {
     assert.ok(Date.now() - t < 200);
   });
   it("only allows wildcards for the user, with limits", () => {
-    assert.equal(cleanMerchant("ACME*DEPOT"), "ACMEDEPOT");
-    assert.equal(cleanMerchant("ACME*DEPOT", true), "ACME*DEPOT");
+    assert.equal(cleanMerchant("ACME*CLOUD"), "ACMECLOUD");
+    assert.equal(cleanMerchant("ACME*CLOUD", true), "ACME*CLOUD");
     assert.equal(cleanMerchant("*ACME", true), undefined);
     assert.equal(cleanMerchant("ACME*", true), undefined);
     assert.equal(cleanMerchant("ABC*DEF*GHI*JKL", true), undefined);
     assert.equal(cleanMerchant("A*B 1", true), undefined);
-    assert.equal(cleanMerchant("ACME**DEPOT", true), undefined);
+    assert.equal(cleanMerchant("ACME**CLOUD", true), undefined);
     assert.equal(cleanMerchant("THE*INC", true), undefined);
-    assert.equal(cleanMerchant("ACME*INC", true), undefined);
-    assert.equal(cleanMerchant("ACME*DEPOT", true), "ACME*DEPOT");
+    assert.equal(cleanMerchant("ACME*INC", true), "ACME*INC");
+    assert.equal(cleanMerchant("INC*LTD", true), undefined);
+    assert.equal(cleanMerchant("ACME*CLOUD", true), "ACME*CLOUD");
   });
 });
 
@@ -88,9 +89,9 @@ describe("keyword proof and misses", () => {
   });
   it("the user confirming a broad keyword clears its reason; wildcards survive", () => {
     addPendingMerchant("example.com", "GOOGLE CLOUD");
-    setMerchants("example.com", ["GOOGLE CLOUD", "ACME*DEPOT"]);
+    setMerchants("example.com", ["GOOGLE CLOUD", "ACME*CLOUD"]);
     const pb = getPlaybook("example.com")!;
-    assert.deepEqual([pb.merchants, pb.merchantsPendingWhy], [["GOOGLE CLOUD", "ACME*DEPOT"], undefined]);
+    assert.deepEqual([pb.merchants, pb.merchantsPendingWhy], [["GOOGLE CLOUD", "ACME*CLOUD"], undefined]);
   });
   it("drops a confirmed keyword after 2 consecutive misses; a hit resets", () => {
     setMerchants("example.com", ["ACME ROBOTICS"]);
