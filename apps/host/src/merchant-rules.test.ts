@@ -4,16 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { broadReason, cleanMerchant, keywordMatches } from "./merchants.ts";
-import { addPendingMerchant, confirmByProof, getPlaybook, noteMerchantOutcome, recordKeywordHit, recordKeywordMiss, savePlaybook, setMerchants, validatePlaybook } from "./playbooks.ts";
+import { addPendingMerchant, confirmByProof, getPlaybook, noteMerchantOutcome, recordKeywordHit, recordKeywordMiss, transactionKey, savePlaybook, setMerchants, validatePlaybook } from "./playbooks.ts";
 
 describe("wildcard keywords", () => {
   it("matches an inner * across any run, anchored at word boundaries", () => {
-    assert.ok(keywordMatches("ACME*CLOUD", "ACME EU CLOUD INC"));
-    assert.ok(keywordMatches("ACME*CLOUD", "ACMECLOUD"));
-    assert.ok(!keywordMatches("ACME*CLOUD", "XACME CLOUD"));
-    assert.ok(!keywordMatches("ACME*CLOUD", "ACME CLOUDS"));
+    assert.ok(keywordMatches("ACME*DEPOT", "ACME EU DEPOT INC"));
+    assert.ok(keywordMatches("ACME*DEPOT", "ACMEDEPOT"));
+    assert.ok(!keywordMatches("ACME*DEPOT", "XACME DEPOT"));
+    assert.ok(!keywordMatches("ACME*DEPOT", "ACME DEPOTS"));
     assert.ok(keywordMatches("ABC*DEF*CORP", "ABC DEF CORP"));
     assert.ok(!keywordMatches("ABC*DEF*CORP", "ABC CORP DEF"));
+  });
+  it("matches text that has a * in it", () => {
+    assert.ok(keywordMatches("ADOBE CREATIVE", "ADOBE *CREATIVE DEPOT"));
+    assert.ok(keywordMatches("ADOBE*CREATIVE", "ADOBE *CREATIVE DEPOT"));
+    assert.ok(keywordMatches("TELNYX", "PAYPAL *TELNYX"));
+    assert.ok(!keywordMatches("ADOBE", "ADOBEX*CREATIVE"));
   });
   it("keeps plain keywords whole-word", () => {
     assert.ok(keywordMatches("ACME", "SQ *Acme AB"));
@@ -27,12 +33,16 @@ describe("wildcard keywords", () => {
     assert.ok(Date.now() - t < 200);
   });
   it("only allows wildcards for the user, with limits", () => {
-    assert.equal(cleanMerchant("ACME*CLOUD"), "ACMECLOUD");
-    assert.equal(cleanMerchant("ACME*CLOUD", true), "ACME*CLOUD");
+    assert.equal(cleanMerchant("ACME*DEPOT"), "ACMEDEPOT");
+    assert.equal(cleanMerchant("ACME*DEPOT", true), "ACME*DEPOT");
     assert.equal(cleanMerchant("*ACME", true), undefined);
     assert.equal(cleanMerchant("ACME*", true), undefined);
     assert.equal(cleanMerchant("ABC*DEF*GHI*JKL", true), undefined);
     assert.equal(cleanMerchant("A*B 1", true), undefined);
+    assert.equal(cleanMerchant("ACME**DEPOT", true), undefined);
+    assert.equal(cleanMerchant("THE*INC", true), undefined);
+    assert.equal(cleanMerchant("ACME*INC", true), undefined);
+    assert.equal(cleanMerchant("ACME*DEPOT", true), "ACME*DEPOT");
   });
 });
 
@@ -78,9 +88,9 @@ describe("keyword proof and misses", () => {
   });
   it("the user confirming a broad keyword clears its reason; wildcards survive", () => {
     addPendingMerchant("example.com", "GOOGLE CLOUD");
-    setMerchants("example.com", ["GOOGLE CLOUD", "ACME*CLOUD"]);
+    setMerchants("example.com", ["GOOGLE CLOUD", "ACME*DEPOT"]);
     const pb = getPlaybook("example.com")!;
-    assert.deepEqual([pb.merchants, pb.merchantsPendingWhy], [["GOOGLE CLOUD", "ACME*CLOUD"], undefined]);
+    assert.deepEqual([pb.merchants, pb.merchantsPendingWhy], [["GOOGLE CLOUD", "ACME*DEPOT"], undefined]);
   });
   it("drops a confirmed keyword after 2 consecutive misses; a hit resets", () => {
     setMerchants("example.com", ["ACME ROBOTICS"]);
@@ -92,11 +102,33 @@ describe("keyword proof and misses", () => {
     const pb = getPlaybook("example.com")!;
     assert.deepEqual([pb.merchants, pb.merchantMisses], [undefined, undefined]);
   });
-  it("noteMerchantOutcome counts misses for matching keywords only", () => {
-    setMerchants("example.com", ["ACME ROBOTICS"]);
-    noteMerchantOutcome("example.com", "ACME ROBOTICS", "miss");
-    noteMerchantOutcome("example.com", "UNRELATED", "miss");
+  it("counts a miss once, for the most specific matching keyword", () => {
+    setMerchants("example.com", ["ACME", "ACME ROBOTICS"]);
+    noteMerchantOutcome("example.com", "ACME ROBOTICS", "miss", { txKey: "aaaaaaaaaaaa" });
+    noteMerchantOutcome("example.com", "UNRELATED", "miss", { txKey: "bbbbbbbbbbbb" });
     assert.deepEqual(getPlaybook("example.com")!.merchantMisses, { "ACME ROBOTICS": 1 });
+  });
+  it("ignores a retry of the same transaction and drops after 2 different ones", () => {
+    setMerchants("example.com", ["ACME ROBOTICS"]);
+    const a = transactionKey({ date: "2026-10-01", amount: 10 }), b = transactionKey({ date: "2026-10-02", amount: 10 });
+    assert.match(a, /^[0-9a-f]{12}$/);
+    for (let i = 0; i < 3; i++) assert.equal(recordKeywordMiss("example.com", "ACME ROBOTICS", a), false);
+    assert.deepEqual(getPlaybook("example.com")!.merchantMisses, { "ACME ROBOTICS": 1 });
+    assert.equal(recordKeywordMiss("example.com", "ACME ROBOTICS", b), true);
+    assert.equal(getPlaybook("example.com")!.merchants, undefined);
+  });
+  it("re-saving a keyword resets its misses", () => {
+    setMerchants("example.com", ["ACME ROBOTICS"]);
+    recordKeywordMiss("example.com", "ACME ROBOTICS", "aaaaaaaaaaaa");
+    setMerchants("example.com", ["ACME ROBOTICS"]);
+    assert.equal(getPlaybook("example.com")!.merchantMisses, undefined);
+  });
+  it("confirms by proof only when the amount was verified", () => {
+    addPendingMerchant("example.com", "ACME ROBOTICS");
+    noteMerchantOutcome("example.com", "ACME ROBOTICS", "hit", { amountVerified: false });
+    assert.equal(getPlaybook("example.com")!.merchants, undefined);
+    noteMerchantOutcome("example.com", "ACME *ROBOTICS", "hit", { amountVerified: true });
+    assert.deepEqual(getPlaybook("example.com")!.merchants, ["ACME ROBOTICS"]);
   });
   it("validates stored fields", () => {
     const pb = validatePlaybook({ startUrl: "https://example.com/", steps: [], merchants: ["ACME ROBOTICS"], merchantsPending: ["BAD*ONE KEY", "TELNYX"], merchantsPendingWhy: { TELNYX: "unsure", "NOT PENDING": "short", "BADONE KEY": "bogus" }, merchantMisses: { "ACME ROBOTICS": 99, X: 3 } }, "example.com");

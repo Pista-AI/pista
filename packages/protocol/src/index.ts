@@ -877,8 +877,10 @@ export interface Playbook {
   merchantsPending?: string[];
   /** Why a pending keyword waits for the user instead of being confirmed by a verified download (it is broad). Keyed by keyword. */
   merchantsPendingWhy?: Record<string, "short" | "umbrella" | "other-site" | "unsure" | "unverified-elsewhere">;
-  /** Consecutive routed runs that ended without the invoice's row; a confirmed keyword is dropped at 2. Keyed by keyword. */
+  /** Consecutive routed runs that ended without the invoice's row; a confirmed keyword is dropped at 2 misses on different transactions. Keyed by keyword. */
   merchantMisses?: Record<string, number>;
+  /** Short hash of the last transaction that missed, per keyword, so a retry of it is not counted twice. */
+  merchantLastMiss?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
   lastSucceeded?: string;

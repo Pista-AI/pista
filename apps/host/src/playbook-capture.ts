@@ -4,8 +4,8 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
-import { broadReason, MAX_MERCHANTS, merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, isOpaque, keywordsOnOtherSites, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { merchantKeyword } from "./merchants.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -182,29 +182,28 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
-    const confirmed = old?.merchants ?? [], pending = old?.merchantsPending ?? [];
-    const learnedKeyword = !!keyword && !confirmed.includes(keyword) && !pending.includes(keyword) && pending.length < MAX_MERCHANTS;
-    const nextPending = learnedKeyword ? [...pending, keyword] : pending;
-    const why = learnedKeyword ? broadReason(keyword, { unsure, otherSites: keywordsOnOtherSites(built.site) }) : undefined;
-    const kwNote = learnedKeyword ? ` Suggested the merchant keyword ${keyword}; ${why ? "it is broad, so the owner confirms it" : "a later verified download for a matching transaction confirms it"} before it is used.` : "";
-    const nextWhy = { ...old?.merchantsPendingWhy, ...(why ? { [keyword!]: why } : {}) };
-    const withMerchants = { ...(confirmed.length ? { merchants: confirmed } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(nextPending.length ? { merchantsPending: nextPending } : {}), ...(Object.keys(nextWhy).length ? { merchantsPendingWhy: nextWhy } : {}) };
+    // Keywords on file carry over; a new one is added (pending, with the reason when broad) once the playbook is saved.
+    const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}) };
+    const learnKeyword = (): string => {
+      if (!keyword || !addPendingMerchant(built.site, keyword, { unsure })) return "";
+      const why = getPlaybook(built.site)?.merchantsPendingWhy?.[keyword];
+      return ` Suggested the merchant keyword ${keyword}; ${why ? "it is broad, so the owner confirms it" : "a later verified download for a matching transaction confirms it"} before it is used.`;
+    };
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
     if (!old) {
-      savePlaybook({ ...fresh, ...withMerchants, history: learned });
-      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}${kwNote}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
+      savePlaybook({ ...fresh, history: learned });
+      return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}${learnKeyword()}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
     const changed = Array.from({ length: max }, (_, i) => i).filter((i) => !sameStep(old.steps[i], fresh.steps[i]));
     const startChanged = old.startUrl !== fresh.startUrl;
     if (!changed.length && !startChanged) {
       recordSuccess(built.site); // the same path just worked again
-      const cur = learnedKeyword ? getPlaybook(built.site) : null;
-      if (cur) savePlaybook({ ...cur, ...withMerchants });
-      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}${kwNote}` };
+      return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}${learnKeyword()}` };
     }
     const now = new Date().toISOString();
-    savePlaybook({ ...fresh, ...withMerchants, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    savePlaybook({ ...fresh, ...carry, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    const kwNote = learnKeyword();
     const first = startChanged ? 1 : changed[0]! + 1;
     const [before, after] = startChanged ? ["Open the start page", "Open a different start page"] : [stepLabel(old.steps[first - 1]), stepLabel(fresh.steps[first - 1])];
     return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.${note}${kwNote}`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };
