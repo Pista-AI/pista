@@ -236,22 +236,32 @@ test("a playbook_run refused by read-only mode or the policy still opens the sit
   }
 });
 
-test("a shortcut is learned once two successful runs saw the same address, and dropped when it did not check out", () => {
-  save([{ kind: "click", target: { role: "link", name: "Billing" } }, { kind: "download", target: { role: "link", name: "Download invoice", row: { match: ["date"] } } }]);
+test("a shortcut is learned once two successful runs saw the same address", () => {
+  save([{ kind: "click", target: { role: "link", name: "Billing" }, expect: { urlIncludes: "/billing" } }, { kind: "download", target: { role: "link", name: "Download invoice", row: { match: ["date"] } } }]);
   const done = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2 };
   const run = (page: string, shortcut?: "used" | "failed") => recordRun("127.0.0.1", { ...done, urls: ["", page, ""], ...(shortcut ? { shortcut } : {}) }, "t");
-  const seen = () => [getPlaybook("127.0.0.1")!.shortcut, getPlaybook("127.0.0.1")!.shortcutCandidate];
+  const seen = () => {
+    const pb = getPlaybook("127.0.0.1")!;
+    return [pb.shortcut, pb.shortcutCandidate, pb.shortcutFails];
+  };
+  const last = () => getPlaybook("127.0.0.1")!.history.map((h) => h.summary).filter((x) => x.startsWith("shortcut"));
   const billing = { url: `${B}billing.html`, afterStep: 1 };
   run(`${B}billing.html`);
-  assert.deepEqual(seen(), [undefined, billing]);
+  assert.deepEqual(seen(), [undefined, billing, undefined]);
   run(`${B}other.html`);
-  assert.deepEqual(seen(), [undefined, { url: `${B}other.html`, afterStep: 1 }], "a different address starts over");
+  assert.deepEqual(seen(), [undefined, { url: `${B}other.html`, afterStep: 1 }, undefined], "a different address starts over");
   run(`${B}billing.html`);
   run(`${B}billing.html`);
-  assert.deepEqual(seen(), [billing, undefined]);
-  run(`${B}elsewhere.html`, "used");
-  assert.deepEqual(seen(), [billing, undefined], "a run that used the shortcut leaves it alone");
-  assert.equal(getPlaybook("127.0.0.1")!.failCount, 0);
+  assert.deepEqual(seen(), [billing, undefined, undefined]);
+  assert.deepEqual(last(), ["shortcut learned", "shortcut learned", "shortcut learned", "shortcut confirmed"]);
+  // One failure (the full path then worked) keeps it; a run that used it resets the count; the second in a row drops it.
   run(`${B}billing.html`, "failed");
-  assert.deepEqual(seen(), [undefined, undefined], "a shortcut that failed is removed, and not learned again on that run");
+  assert.deepEqual(seen(), [billing, undefined, 1], "a single transient failure keeps the shortcut");
+  run(`${B}billing.html`, "used");
+  assert.deepEqual(seen(), [billing, undefined, undefined]);
+  run(`${B}billing.html`, "failed");
+  run(`${B}billing.html`, "failed");
+  assert.deepEqual(seen(), [undefined, undefined, undefined]);
+  assert.equal(last().at(-1), "shortcut dropped");
+  assert.equal(getPlaybook("127.0.0.1")!.failCount, 0, "a failed shortcut is not a playbook failure");
 });

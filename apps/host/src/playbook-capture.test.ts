@@ -304,6 +304,23 @@ describe("playbook_save: shortcut", () => {
     assert.equal(learn([click("Menu", url("login.html")), click("Invoices", url(`acct/${"0123abcd".repeat(8)}/invoices`))])?.shortcut, undefined);
     assert.deepEqual(learn([click("Billing", url("billing.html")), click("Invoices", `${url("invoices.html")}?sid=abc`)])?.shortcut, { url: url("billing.html"), afterStep: 1 });
   });
+  it("skips an address with a number or a UUID in its path, or any query", () => {
+    const uuid = "123e4567-e89b-12d3-a456-426614174000";
+    for (const bad of [url("accounts/12345/invoices"), url(`orgs/${uuid}/invoices`), url("a/deadbeef01/invoices"), `${url("invoices")}?account=12345`]) {
+      assert.equal(learn([click("Invoices", bad)])?.shortcut, undefined, bad);
+    }
+    assert.deepEqual(learn([click("Invoices", url("accounts/overview/invoices"))])?.shortcut?.afterStep, 1);
+  });
+  it("never skips a sign-in, or a step that chooses an account", () => {
+    assert.equal(learn([click("Switch account", url("account.html")), click("Invoices", url("invoices.html"))])?.shortcut, undefined);
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: url("login.html") });
+    t.add({ kind: "signIn", origin: "http://127.0.0.1:8765" });
+    t.add(click("Invoices", url("invoices.html")));
+    t.add({ kind: "download", source: "url", url: url("inv-001.pdf"), contentType: "application/pdf", path: "invoices/a.pdf" });
+    savePlaybookFromTrace(t.list(), [1, 2, 3, 4], undefined, "t");
+    assert.equal(getPlaybook("127.0.0.1")?.shortcut, undefined);
+  });
   it("never reaches past a step that picks the invoice's row", () => {
     const t = new PlaybookTrace();
     t.add({ kind: "navigate", url: url("login.html") });

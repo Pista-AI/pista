@@ -180,8 +180,9 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : "";
     const fresh = validatePlaybook(built, built.site);
     const old = getPlaybook(built.site);
+    const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
     if (!old) {
-      savePlaybook(fresh);
+      savePlaybook({ ...fresh, history: learned });
       return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
@@ -192,7 +193,7 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
       return { message: `The playbook for ${built.site} already matches this path; nothing changed.${note}` };
     }
     const now = new Date().toISOString();
-    savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
+    savePlaybook({ ...fresh, createdAt: old.createdAt, updatedAt: now, lastSucceeded: old.lastSucceeded, successCount: old.successCount, status: "ok", failCount: 0, history: [...old.history, ...learned, { at: now, summary: `path re-recorded from entries ${chosen.join(",")}; ${startChanged ? "start URL changed" : `changed step${changed.length > 1 ? "s" : ""} ${changed.map((i) => i + 1).join(",")}`}` }] });
     const first = startChanged ? 1 : changed[0]! + 1;
     const [before, after] = startChanged ? ["Open the start page", "Open a different start page"] : [stepLabel(old.steps[first - 1]), stepLabel(fresh.steps[first - 1])];
     return { message: `Updated the playbook for ${built.site}; first changed step is ${first}.${note}`, event: { type: "playbook.event", threadId, kind: "updated", site: built.site, step: first, stepCount: fresh.steps.length, before, after } };

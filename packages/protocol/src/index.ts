@@ -869,6 +869,8 @@ export interface Playbook {
   shortcut?: PlaybookShortcut;
   /** A shortcut seen on one successful run; it becomes `shortcut` when the next successful run shows the same one. */
   shortcutCandidate?: PlaybookShortcut;
+  /** Consecutive runs where the shortcut did not check out and the full path then worked; the shortcut is dropped at 2. */
+  shortcutFails?: number;
   createdAt: string;
   updatedAt: string;
   lastSucceeded?: string;

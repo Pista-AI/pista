@@ -131,6 +131,28 @@ function step(v: unknown, site: string): PlaybookStep | null {
 /** A step whose target depends on the invoice, or the download itself: nothing at or after it may be skipped. */
 const byInvoice = (s: PlaybookStep): boolean => s.kind === "download" || ("target" in s && !!(s.target?.row || s.target?.period));
 
+const CHOOSER_ROLES = new Set(["menuitem", "option", "radio"]);
+const CHOOSER_NAME = /account|workspace|organi[sz]ation|company|profile/i;
+const locators = (s: PlaybookStep): PlaybookLocator[] => (s.kind === "click" ? [s.target, ...(s.fallbacks ?? [])] : []);
+/** A step that picks which account, workspace or company the session works in: skipping it could land on the wrong one. */
+const choosesContext = (s: PlaybookStep): boolean => locators(s).some((l) => (l.role && CHOOSER_ROLES.has(l.role)) || CHOOSER_NAME.test(`${l.name ?? ""} ${l.text ?? ""}`));
+const hasExpect = (s: PlaybookStep | undefined): boolean => !!s && "expect" in s && !!s.expect && !!(s.expect.urlIncludes || s.expect.text || s.expect.element);
+
+/**
+ * Whether skipping stored steps 1..afterStep is safe: the step at `afterStep` expects something recognisable on the landing page, and
+ * none of the skipped steps is a sign-in, an account/workspace chooser, or depends on the invoice (or is the download). When in doubt, no.
+ */
+export function canSkipTo(steps: readonly PlaybookStep[], afterStep: number): boolean {
+  if (!Number.isInteger(afterStep) || afterStep < 1 || afterStep > steps.length || !hasExpect(steps[afterStep - 1])) return false;
+  return !steps.slice(0, afterStep).some((s) => byInvoice(s) || s.kind === "signIn" || choosesContext(s));
+}
+
+/** An address that names one thing: no query at all, and no path segment that is all digits, a UUID, or 8+ hex characters. */
+function stableAddress(url: string): boolean {
+  const u = new URL(url);
+  return !u.search && !u.pathname.split("/").some((seg) => /^\d+$/.test(seg) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg) || /^[0-9a-f]{8,}$/i.test(seg));
+}
+
 /**
  * The address to open directly instead of the clicks before it: the last click before the first invoice-dependent step or download
  * whose page address (`urlsAfter[i]`, for stored step i + 1) differs from the start, is same-site and carries no id, token or secret
@@ -140,13 +162,10 @@ export function deriveShortcut(startUrl: string, steps: readonly PlaybookStep[],
   let found: PlaybookShortcut | undefined;
   for (let i = 0; i < steps.length && !byInvoice(steps[i]!); i++) {
     const raw = urlsAfter[i];
-    if (steps[i]!.kind !== "click" || !raw) continue;
+    if (steps[i]!.kind !== "click" || !raw || !canSkipTo(steps, i + 1)) continue;
     try {
       const url = sanitizeUrl(raw, site);
-      const u = new URL(raw);
-      u.hash = "";
-      // A query that had to be stripped means the page needs it: not a stable address.
-      if (url === u.toString() && url !== sanitizeUrl(startUrl, site)) found = { url, afterStep: i + 1 };
+      if (stableAddress(raw) && url !== sanitizeUrl(startUrl, site)) found = { url, afterStep: i + 1 };
     } catch {}
   }
   return found;
@@ -157,7 +176,7 @@ function shortcutOf(v: unknown, site: string, steps: readonly PlaybookStep[]): P
   if (!v || typeof v !== "object") return undefined;
   const { url, afterStep } = v as { url?: unknown; afterStep?: unknown };
   if (typeof url !== "string" || typeof afterStep !== "number" || !Number.isInteger(afterStep) || afterStep < 1 || afterStep > steps.length) return undefined;
-  if (steps.slice(0, afterStep).some(byInvoice)) return undefined;
+  if (!canSkipTo(steps, afterStep)) return undefined;
   try {
     return { url: sanitizeUrl(url, site), afterStep };
   } catch {
@@ -192,7 +211,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
     site,
     startUrl: sanitizeUrl(String(o.startUrl), site),
     steps,
-    ...(shortcut ? { shortcut } : candidate ? { shortcutCandidate: candidate } : {}),
+    ...(shortcut ? { shortcut, ...(count(o.shortcutFails) ? { shortcutFails: count(o.shortcutFails) } : {}) } : candidate ? { shortcutCandidate: candidate } : {}),
     createdAt: date(o.createdAt) ?? now,
     updatedAt: date(o.updatedAt) ?? now,
     ...(date(o.lastSucceeded) ? { lastSucceeded: date(o.lastSucceeded) } : {}),

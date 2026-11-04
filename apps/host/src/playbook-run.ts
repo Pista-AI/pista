@@ -64,14 +64,28 @@ function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
   return t.length > LABEL_MAX ? `${t.slice(0, LABEL_MAX - 1)}…` : t;
 }
 
-/** After a successful run: drops a shortcut that did not check out, or learns one. It is kept only once two successful runs saw the same address. */
+/** Shortcut failures in a row (the full path then worked) after which the shortcut is dropped: one slow page must not lose it. */
+const SHORTCUT_FAILS = 2;
+
+/** After a successful run: counts a failed shortcut (dropping it at the second in a row), or learns one; seen on two successful runs it is kept. */
 function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): void {
   const pb = getPlaybook(site);
-  if (!pb || r.shortcut === "used" || (pb.shortcut && r.shortcut !== "failed")) return;
-  const { shortcut: _s, shortcutCandidate: c, ...rest } = pb;
+  if (!pb) return;
+  const at = new Date().toISOString();
+  const { shortcut, shortcutCandidate: c, shortcutFails, ...rest } = pb;
+  const log = (summary: string) => [...pb.history, { at, summary }];
+  if (shortcut) {
+    if (r.shortcut === "used" && shortcutFails) savePlaybook({ ...rest, shortcut });
+    else if (r.shortcut === "failed") {
+      const fails = (shortcutFails ?? 0) + 1;
+      savePlaybook(fails >= SHORTCUT_FAILS ? { ...rest, history: log("shortcut dropped") } : { ...rest, shortcut, shortcutFails: fails });
+    }
+    return;
+  }
   const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), site);
-  if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found });
-  else if (_s || found?.url !== c?.url || found?.afterStep !== c?.afterStep) savePlaybook({ ...rest, ...(found ? { shortcutCandidate: found } : {}) });
+  if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found, history: log("shortcut confirmed") });
+  else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) savePlaybook({ ...rest, shortcutCandidate: found, history: log("shortcut learned") });
+  else if (!found && c) savePlaybook(rest);
 }
 
 /** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
@@ -200,7 +214,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
             approve: async () => !signal?.aborted,
             confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
             signal,
-            onStep: (i, status) => status === "done" && done.push(i),
+            onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
           });
         });
         for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);

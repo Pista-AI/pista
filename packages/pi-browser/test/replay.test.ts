@@ -93,7 +93,7 @@ test("expectations are polled until they hold, and give up at the timeout", asyn
 });
 
 /** A scriptless page at `url` (navigate moves it there, `redirect` overrides where it lands), with optional saved logins and a download writer. */
-function fakeDriver(o: { redirect?: string; logins?: { id: string; label: string; origin: string }[]; file?: { body: string; contentType?: string } } = {}) {
+function fakeDriver(o: { redirect?: string; logins?: { id: string; label: string; origin: string }[]; file?: { body: string; contentType?: string }; secret?: boolean } = {}) {
   let url = "about:blank";
   let opened = 0;
   const driver = {
@@ -101,6 +101,7 @@ function fakeDriver(o: { redirect?: string; logins?: { id: string; label: string
     state: async () => ({ url, title: "", loading: false }),
     evaluate: async () => "",
     input: async () => false,
+    ...(o.secret ? { probe: async () => ({ url, documentId: "d", secret: true }) } : {}),
     ...(o.logins ? { loginList: async () => o.logins!, loginFill: async () => ({ ok: true, note: "Signed in." }) } : {}),
     ...(o.file ? { download: async ({ path }: { path: string }) => (writeFileSync(path, o.file!.body), { bytes: o.file!.body.length, contentType: o.file!.contentType }) } : {}),
   } as unknown as BrowserDriver;
@@ -298,4 +299,44 @@ test("a shortcut opens the list directly and skips the earlier steps; a page wit
   assert.equal(reasonOf(gone), "0:blocked");
   assert.equal(!gone.ok && gone.shortcut, "failed");
   assert.equal(reasonOf(await runReplay({ startUrl: "https://ok.test/", steps: steps.slice(1), shortcut: { url: "https://ok.test/billing", afterStep: 1 } }, { ...opts(fakeDriver({ file }), []), signal: AbortSignal.abort() })), "0:aborted");
+});
+
+test("a shortcut is not used without an expectation, and a sign-in page after it falls back to the full path", async () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-"));
+  const file = { body: "%PDF-1.7 x", contentType: "application/pdf" };
+  const dl = { kind: "download" as const, url: "https://ok.test/a.pdf", fileType: "pdf" };
+  const o = (f: ReturnType<typeof fakeDriver>) => ({ ...base, downloadRoot: root, overwrite: true, driver: f.driver });
+  const plain = fakeDriver({ file });
+  const r = await runReplay({ startUrl: "https://ok.test/", steps: [{ kind: "navigate", url: "https://ok.test/billing" }, dl], shortcut: { url: "https://ok.test/billing", afterStep: 1 } }, o(plain));
+  assert.ok(r.ok && r.shortcut === undefined, JSON.stringify(r));
+  assert.equal(plain.opened(), 2, "the start page was opened: no shortcut without an expectation");
+  const wall = fakeDriver({ file, secret: true });
+  const w = await runReplay({ startUrl: "https://ok.test/", steps: [{ kind: "navigate", url: "https://ok.test/billing", expect: { urlIncludes: "/billing" } }, dl], shortcut: { url: "https://ok.test/billing", afterStep: 1 } }, o(wall));
+  assert.ok(w.ok && w.shortcut === "failed", JSON.stringify(w));
+  assert.equal(wall.opened(), 3, "shortcut, then the full path");
+});
+
+test("a step that fails after the shortcut is retried once from the full path; if that works the shortcut failed, if not it is a handoff", async () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-"));
+  const file = { body: "%PDF-1.7 x", contentType: "application/pdf" };
+  const steps = [
+    { kind: "navigate" as const, url: "https://ok.test/billing", expect: { urlIncludes: "/billing" } },
+    { kind: "navigate" as const, url: "https://ok.test/list" },
+    { kind: "download" as const, url: "https://ok.test/a.pdf", fileType: "pdf" },
+  ];
+  const run = async (failures: number) => {
+    const f = fakeDriver({ file });
+    const nav = f.driver.navigate.bind(f.driver);
+    let left = failures;
+    f.driver.navigate = async (u: string) => (u.endsWith("/list") && left-- > 0 ? ({ url: u, title: "", loading: false, note: "boom" } as never) : nav(u));
+    const seen: string[] = [];
+    const r = await runReplay({ startUrl: "https://ok.test/", steps, shortcut: { url: "https://ok.test/billing", afterStep: 1 } }, { ...base, downloadRoot: root, overwrite: true, driver: f.driver, onStep: (i, s) => seen.push(`${i}:${s}`) });
+    return { r, seen };
+  };
+  const once = await run(1);
+  assert.ok(once.r.ok && once.r.shortcut === "failed", JSON.stringify(once.r));
+  assert.deepEqual(once.seen.slice(0, 4), ["0:done", "1:done", "2:start", "2:failed"]);
+  const twice = await run(2);
+  assert.equal(reasonOf(twice.r), "2:error");
+  assert.equal(twice.r.shortcut, undefined);
 });
