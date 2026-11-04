@@ -68,7 +68,7 @@ test("a playbook_run the user declines at the approval gate still opens the site
 test("failures count towards needs-attention at three; declines and stops do not count; a success resets", () => {
   save();
   const inv = { date: "2026-10-03", amount: 12.5, currency: "EUR" };
-  const run = (r: ReturnType<typeof handoff> | { ok: true; download: { path: string; bytes: number }; steps: number; urls: string[] }) => recordRun("127.0.0.1", r, "t", inv, 2);
+  const run = (r: ReturnType<typeof handoff> | { ok: true; download: { path: string; bytes: number }; steps: number; urls: string[]; verified: { date: boolean; amount: boolean } }) => recordRun("127.0.0.1", r, "t", inv, 2);
   const repairing = (reason: string) => ({ type: "playbook.event", threadId: "t", kind: "repairing", site: "127.0.0.1", step: 2, reason, stepCount: 2, invoice: inv });
   assert.deepEqual(run(handoff("declined")), []);
   assert.deepEqual(run(handoff("aborted")), []);
@@ -82,7 +82,7 @@ test("failures count towards needs-attention at three; declines and stops do not
   assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link"), { type: "playbook.event", threadId: "t", kind: "needs-attention", site: "127.0.0.1", step: 2, stepCount: 2 }]);
   assert.equal(getPlaybook("127.0.0.1")!.status, "needs-attention");
   assert.equal(run(handoff("not-found")).length, 1, "flagged once");
-  const ok = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2, urls: [] as string[] };
+  const ok = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2, urls: [] as string[], verified: { date: false, amount: false } };
   assert.deepEqual(run(ok), [{ type: "playbook.event", threadId: "t", kind: "followed", site: "127.0.0.1", stepCount: 2, invoice: inv }]);
   assert.deepEqual([getPlaybook("127.0.0.1")!.status, getPlaybook("127.0.0.1")!.failCount], ["ok", 0]);
 });
@@ -238,7 +238,7 @@ test("a playbook_run refused by read-only mode or the policy still opens the sit
 
 test("a shortcut is learned once two successful runs saw the same address", () => {
   save([{ kind: "click", target: { role: "link", name: "Billing" }, expect: { urlIncludes: "/billing" } }, { kind: "download", target: { role: "link", name: "Download invoice", row: { match: ["date"] } } }]);
-  const done = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2 };
+  const done = { ok: true as const, download: { path: "invoices/a.pdf", bytes: 10 }, steps: 2, verified: { date: false, amount: false } };
   const run = (page: string, shortcut?: "used" | "failed") => recordRun("127.0.0.1", { ...done, urls: ["", page, ""], ...(shortcut ? { shortcut } : {}) }, "t");
   const seen = () => {
     const pb = getPlaybook("127.0.0.1")!;
@@ -366,4 +366,20 @@ test("a paused host consent refuses before replay", async () => {
   const consent = hostConsent({ store: { config: { approvalMode: "full-access" }, toolRules: null }, approve: async () => true, paused: () => true });
   const r = await runPlaybookForInvoice(d.deps as never, consent, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/p.pdf" });
   assert.deepEqual([r.status, "text" in r && /^Paused/.test(r.text), d.replays()], ["declined", true, 0]);
+});
+
+test("a routed run confirms a pending keyword only when the replay verified the amount, and counts a miss once", async () => {
+  save();
+  const { addPendingMerchant } = await import("./playbooks.ts");
+  addPendingMerchant("127.0.0.1", "ACME ROBOTICS");
+  const ok = (verified: { date: boolean; amount: boolean }) => async () => ({ ok: true as const, download: { path: "invoices/direct.pdf", bytes: 1 }, steps: 2, urls: [] as string[], verified });
+  const merchant = "SQ *ACME ROBOTICS LLC";
+  await direct("full-access", true, ok({ date: true, amount: false })).run({ merchant, overwrite: true });
+  assert.equal(getPlaybook("127.0.0.1")!.merchants, undefined);
+  await direct("full-access", true, ok({ date: true, amount: true })).run({ merchant, overwrite: true });
+  assert.deepEqual(getPlaybook("127.0.0.1")!.merchants, ["ACME ROBOTICS"]);
+  const miss = direct("full-access", true, async () => handoff("row-not-found"));
+  await miss.run({ merchant });
+  await miss.run({ merchant }); // the same transaction retried
+  assert.deepEqual(getPlaybook("127.0.0.1")!.merchantMisses, { "ACME ROBOTICS": 1 });
 });

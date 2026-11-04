@@ -108,6 +108,9 @@ const agrees = (a: string | undefined, t: string | undefined) => {
   return !x || !y || x === y || (KRONA.has(x) && KRONA.has(y));
 };
 
+/** Whether the text shows an amount equal to `amount` (a row without one is not evidence about it). */
+export const amountShown = (text: string, amount: number, currency?: string): boolean => parseAmounts(text, { strict: true }).some((a) => Math.abs(a.value - amount) <= 0.01 && agrees(a.currency, currency));
+
 const dayNum = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400000);
 const isoParts = (iso: string) => iso.split("-").map(Number) as [number, number, number];
 
