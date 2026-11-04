@@ -267,7 +267,7 @@ test("a shortcut is learned once two successful runs saw the same address", () =
 });
 
 /** runPlaybookForInvoice called directly, as host code does, with the replay stubbed. */
-function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true, replay: (...a: unknown[]) => Promise<unknown> = async () => handoff("not-found")) {
+function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true, replay: (...a: unknown[]) => Promise<unknown> = async () => handoff("not-found"), policy?: string) {
   const attempted = new Set<string>();
   const events: unknown[] = [];
   const asked: unknown[] = [];
@@ -281,9 +281,9 @@ function direct(mode: "ask-writes" | "full-access" | "read-only", answer = true,
     emit: (e: unknown) => events.push(e),
     threadId: "t",
     replay: (async (...a: unknown[]) => (replays++, replay(...a))) as never,
-    consent: { approve: async (s: unknown) => (asked.push(s), answer), approvalMode: () => mode, confirmSignIns: () => undefined },
   };
-  return { attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}) => runPlaybookForInvoice(deps as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }) };
+  const consent = { approve: async (s: unknown) => (asked.push(s), answer), approvalMode: () => mode, confirmSignIns: () => undefined, policy: () => policy };
+  return { attempted, events, asked, replays: () => replays, run: (p: Record<string, unknown> = {}, over: Record<string, unknown> = {}, signal?: AbortSignal) => runPlaybookForInvoice(deps as never, { ...consent, ...over } as never, { site: B, invoice: { date: "2026-10-03" }, path: "invoices/direct.pdf", ...p }, signal) };
 }
 
 test("the consent decision is shared: read-only refuses, ask mode asks, full access passes, a sign-in step asks", () => {
@@ -325,4 +325,23 @@ test("a direct run leaves the same attempted set and events as the tool, and ret
   assert.equal(r.status === "handoff" && r.text, toolText);
   assert.ok(d.events.length > 0);
   assert.equal(d.events.every((e) => (e as { type: string }).type === "playbook.event"), true);
+});
+
+test("a direct run is bound by policy and tool rules, and read-only says so", async () => {
+  save();
+  const d = direct("full-access", true, undefined, "Blocked by policy: playbook_run is denied.");
+  const r = await d.run();
+  assert.deepEqual([r.status, "text" in r && r.text, d.replays(), d.asked.length, [...d.attempted]], ["declined", "Blocked by policy: playbook_run is denied.", 0, 0, ["127.0.0.1"]]);
+  const ro = await direct("read-only").run();
+  assert.equal("text" in ro && ro.text, "Read-only mode: not running the playbook for 127.0.0.1.");
+});
+
+test("an abort while waiting for approval ends the run as aborted without replaying", async () => {
+  save();
+  const d = direct("ask-writes");
+  const ac = new AbortController();
+  const pending = d.run({}, { approve: (_s: unknown, sig?: AbortSignal) => (assert.equal(sig, ac.signal), new Promise<boolean>(() => {})) }, ac.signal);
+  setTimeout(() => ac.abort(), 10);
+  assert.equal(((await Promise.race([pending, new Promise((r) => setTimeout(() => r({ status: "hung" }), 2000))])) as { status: string }).status, "aborted");
+  assert.equal(d.replays(), 0);
 });

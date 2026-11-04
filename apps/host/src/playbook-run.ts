@@ -188,15 +188,19 @@ export interface PlaybookRunDeps {
 }
 
 /**
- * Consent for a run, required so a caller cannot leave it out (fail closed).
- * "gated": only the playbook_run tool wrapper, because the approval gate in extensions.ts already ran on the tool call.
- * Otherwise (host callers): the core asks `approve` where `playbookConsent` says the gate would ask, and refuses where the gate refuses.
+ * Consent for a host caller, required so it cannot be left out (fail closed). The core asks `approve` where `playbookConsent` says the
+ * approval gate would ask, and refuses where the gate refuses. `policy` is the gate's own refusals (a role's block, managed policy,
+ * tool rules): return the reason to refuse, or undefined. `approve` gets the run's signal; an abort while it waits ends the run as "aborted".
  */
-export type PlaybookRunConsent =
-  | "gated"
-  | { approve: (summary: { site: string; stepCount: number; hasSignIn: boolean }) => Promise<boolean>; approvalMode: () => ApprovalMode; confirmSignIns: () => boolean | undefined };
+export interface PlaybookRunConsent {
+  approve: (summary: { site: string; stepCount: number; hasSignIn: boolean }, signal?: AbortSignal) => Promise<boolean>;
+  approvalMode: () => ApprovalMode;
+  confirmSignIns: () => boolean | undefined;
+  policy: () => string | undefined;
+}
 
-export type PlaybookRunCoreDeps = PlaybookRunDeps & { consent: PlaybookRunConsent };
+/** Module-private: only the playbook_run tool wrapper may skip the consent step, because the approval gate already ran on the tool call. */
+const GATED = Symbol("gated");
 
 export type PlaybookRunResult =
   | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number }
@@ -214,7 +218,11 @@ export interface PlaybookRunRequest {
  * Follows the saved playbook for one invoice. Everything the playbook_run tool does, callable from host code.
  * Throws on a bad invoice, no project folder, or a path outside invoices/ (as the tool does).
  */
-export async function runPlaybookForInvoice(deps: PlaybookRunCoreDeps, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
+export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRunConsent, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
+  return runCore(deps, consent, req, signal);
+}
+
+async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
   const pb = playbookFor(req.site);
   if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
   const invoice = checkInvoice(req.invoice);
@@ -224,14 +232,22 @@ export async function runPlaybookForInvoice(deps: PlaybookRunCoreDeps, req: Play
   if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
   const overwrite = req.overwrite;
   if (!overwrite && existsSync(confineToFolder(root, path))) return { status: "exists", text: `A file already exists at ${path}. Pass overwrite: true to replace it, or another path.` };
-  if (deps.consent !== "gated") {
-    const consent = deps.consent;
+  if (consent !== GATED) {
+    const declined = (text: string): PlaybookRunResult => {
+      deps.attempted.add(pb.site); // as the gate's declined event does: a refusal does not keep the site shut
+      return { status: "declined", text };
+    };
+    const refused = consent.policy();
+    if (refused) return declined(refused);
     const hasSignIn = pb.steps.some((s) => s.kind === "signIn");
     const { decision } = playbookConsent(consent.approvalMode(), consent.confirmSignIns(), hasSignIn);
-    const allowed = decision === "allow" || (decision === "ask" && (await consent.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn })));
-    if (!allowed) {
-      deps.attempted.add(pb.site); // as the gate's declined event does: a decline does not keep the site shut
-      return { status: "declined", text: `The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.` };
+    if (decision === "refuse") return declined(`Read-only mode: not running the playbook for ${pb.site}.`);
+    if (decision === "ask") {
+      if (signal?.aborted) return { status: "aborted", text: `Stopped before the playbook for ${pb.site} ran.` };
+      const aborted = new Promise<"aborted">((resolve) => signal?.addEventListener("abort", () => resolve("aborted"), { once: true }));
+      const answer = await Promise.race([consent.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn }, signal), aborted]);
+      if (answer === "aborted") return { status: "aborted", text: `Stopped while waiting for approval of the playbook for ${pb.site}.` };
+      if (!answer) return declined(`The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.`);
     }
   }
   const driver = deps.driver();
@@ -276,7 +292,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
       }),
       execute: async (_id, { site, invoice, path, overwrite }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const r = await runPlaybookForInvoice({ ...deps, consent: "gated" }, { site, invoice, path, overwrite }, signal);
+        const r = await runCore(deps, GATED, { site, invoice, path, overwrite }, signal);
         if (r.status === "downloaded") return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).` }, null, 2));
         return text(r.text);
       },
