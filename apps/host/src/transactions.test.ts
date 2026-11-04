@@ -43,6 +43,17 @@ describe("parseTransactions", () => {
     assert.deepEqual(lines.map((l) => l.date), ["2026-10-13", "2026-10-03"]);
   });
 
+  it("marks a lone numeric date that could be either order as ambiguous", () => {
+    const l = one("03/11/2026 ACME 25.00 USD");
+    assert.deepEqual([l.ok, l.reason, l.date], [false, "ambiguous date", undefined]);
+    assert.equal(one("2026-11-03 ACME 25.00 USD").ok, true);
+  });
+
+  it("leaves a bare kr currency undefined", () => {
+    const l = one("2026-10-03 ACME 250,00 kr");
+    assert.deepEqual([l.amount, l.currency, l.ok], [250, undefined, true]);
+  });
+
   it("marks refunds not ok with a reason", () => {
     const l = one("2026-10-03 ACME REFUND -25.00 USD");
     assert.equal(l.ok, false);

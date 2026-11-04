@@ -42,8 +42,8 @@ function findHeader(lines: string[]): { delim: string; cols: (Col | undefined)[]
   return undefined;
 }
 
-/** Numeric d/m order the whole paste uses, when some date can only be read one way. Defaults to day-first. */
-function pasteOrder(texts: string[]): "dmy" | "mdy" {
+/** Numeric d/m order the whole paste uses, when some date can only be read one way; null when nothing says (never guessed). */
+function pasteOrder(texts: string[]): "dmy" | "mdy" | null {
   let dmy = false, mdy = false;
   for (const t of texts) {
     for (const m of t.matchAll(/(?<!\d)(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?!\d)/g)) {
@@ -51,15 +51,17 @@ function pasteOrder(texts: string[]): "dmy" | "mdy" {
       if (+m[2]! > 12) mdy = true;
     }
   }
-  return mdy && !dmy ? "mdy" : "dmy";
+  return dmy === mdy ? null : dmy ? "dmy" : "mdy";
 }
 
 const iso = (d: CandidateDate) => `${String(d.y).padStart(4, "0")}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
 
 /** Dates in `text` with the paste's d/m order applied: how many, the first one, and the matched spans to remove. */
-function dates(text: string, order: "dmy" | "mdy") {
-  const found = parseDates(text).filter((d) => d.d !== undefined && (!d.amb || d.amb === order));
-  return { count: found.length, date: found[0] && iso(found[0]), raws: [...new Set(found.map((d) => d.raw))] };
+function dates(text: string, order: "dmy" | "mdy" | null) {
+  const found = parseDates(text).filter((d) => d.d !== undefined && (!d.amb || !order || d.amb === order));
+  const ambiguous = found.some((d) => d.amb && !order);
+  const count = found.filter((d) => !d.amb || !!order).length + found.filter((d) => d.amb && !order).length / 2;
+  return { count, ambiguous, date: ambiguous ? undefined : found[0] && iso(found[0]), raws: [...new Set(found.map((d) => d.raw))] };
 }
 
 /** Removes `raws` (matched on the accent-stripped, lower-cased text, as parseDates reports them) from `text`. */
@@ -91,8 +93,9 @@ function removeAmounts(text: string): string {
 
 const cleanMerchant = (s: string) => s.replace(/["\t;|]/g, " ").replace(/\s+/g, " ").replace(/^[\s,.:\-–]+|[\s,.:\-–]+$/g, "");
 
-function finish(base: Omit<ParsedLine, "ok" | "reason">, nDates: number, nAmounts: number): ParsedLine {
+function finish(base: Omit<ParsedLine, "ok" | "reason">, nDates: number, nAmounts: number, ambiguous: boolean): ParsedLine {
   const reason = nDates !== 1 ? (nDates ? "more than one date" : "no date")
+    : ambiguous ? "ambiguous date"
     : nAmounts !== 1 ? (nAmounts ? "more than one amount" : "no amount")
     : base.amount! < 0 ? "negative amount (refund or credit)"
     : !base.merchant ? "no merchant text" : undefined;
@@ -112,8 +115,8 @@ export function parseTransactions(text: string): { lines: ParsedLine[] } {
       const c = cells(r.raw), cell = (k: Col) => (col(k) >= 0 ? c[col(k)] ?? "" : "");
       const d = dates(cell("date"), order), amounts = parseAmounts(cell("amount"));
       if (!d.count && !amounts.length) continue;
-      const currency = cell("currency").toUpperCase() || amounts[0]?.currency;
-      lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: currency || undefined, merchant: cleanMerchant(cell("merchant")) || undefined }, d.count, amounts.length));
+      const currency = cell("currency").toUpperCase() || (amounts[0]?.currency === "KR" ? undefined : amounts[0]?.currency);
+      lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: currency || undefined, merchant: cleanMerchant(cell("merchant")) || undefined }, d.count, amounts.length, d.ambiguous));
       continue;
     }
     const d = dates(r.raw, order);
@@ -121,7 +124,7 @@ export function parseTransactions(text: string): { lines: ParsedLine[] } {
     const amounts = parseAmounts(rest, { strict: true });
     if (!d.count && !amounts.length) continue;
     const merchant = cleanMerchant(removeAmounts(rest));
-    lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: amounts[0]?.currency, merchant: merchant || undefined }, d.count, amounts.length));
+    lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: amounts[0]?.currency === "KR" ? undefined : amounts[0]?.currency, merchant: merchant || undefined }, d.count, amounts.length, d.ambiguous));
   }
   return { lines };
 }
