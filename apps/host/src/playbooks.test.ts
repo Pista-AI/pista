@@ -190,7 +190,13 @@ describe("validatePlaybook merchants", () => {
   const pb = (m: unknown, pending?: unknown) => validatePlaybook(base({ merchants: m, merchantsPending: pending }), "example.com");
   const merchants = (m: unknown) => pb(m).merchants;
   it("upper-cases, strips other characters, collapses spaces and dedupes", () => {
-    assert.deepEqual(merchants(["acme  robotics", "ACME ROBOTICS", " Åhléns ", "a<b>c;d", "O'Reilly Media"]), ["ACME ROBOTICS", "AHLENS", "ABCD", "O'REILLY MEDIA"]);
+    assert.deepEqual(merchants(["acme  robotics", "ACME ROBOTICS", " Åhléns ", "a<b>c;d", "O'Reilly Media"]), ["ACME ROBOTICS", "ÅHLÉNS", "ABCD", "O'REILLY MEDIA"]);
+  });
+  it("keeps letters outside A-Z", () => {
+    assert.deepEqual(merchants(["Ørsted", "Æble Café", "Straße Bräu", "Öberg Verkstad"]), ["ØRSTED", "ÆBLE CAFÉ", "STRASSE BRÄU", "ÖBERG VERKSTAD"]);
+    assert.equal(merchantKeyword("Ørsted A/S Fredericia"), "ØRSTED");
+    assert.equal(merchantKeyword("KORTKÖP Åhléns City"), "ÅHLÉNS CITY");
+    assert.equal(merchantKeyword("Köp Café Göteborg Ö"), "CAFÉ");
   });
   it("enforces length, letters, one-letter tokens, opaque and generic words", () => {
     assert.equal(merchants(["ABC", "x".repeat(41), "1234567", "AB1 2CD", "A B C D", "0123abcd".repeat(5), "LLC", "PayPal", "Card Payment", "Cloud Hosting", "Kortköp", ...MERCHANT_STOPWORDS]), undefined);
@@ -218,7 +224,7 @@ describe("merchantKeyword", () => {
     ["Notion Labs Inc. San Francisco", "NOTION LABS"],
     ["Figma 2026-10-03 49.00 USD", "FIGMA"],
     ["KORTKÖP 241103 SPOTIFY AB STOCKHOLM", "SPOTIFY"],
-    ["Kortköp 24-11-03 Åhléns City Stockholm", "AHLENS CITY"],
+    ["Kortköp 24-11-03 Åhléns City Stockholm", "ÅHLÉNS CITY"],
     ["Lastschrift 03.11. ACME GMBH BERLIN DE", "ACME"],
     ["TST* Cafe Roma", "CAFE ROMA"],
     ["Swish betalning Anna Svensson", undefined],
@@ -227,6 +233,14 @@ describe("merchantKeyword", () => {
     ["PAYPAL *", undefined],
     ["INC LLC", undefined],
     ["X Y Z", undefined],
+    ["Betalning till Orsted", undefined],
+    ["Autogiro Vattenfall", undefined],
+    ["PLUSGIRO 12 34 Foo Bar", undefined],
+    ["Transfer to Acme Robotics", undefined],
+    ["Payment to Acme Robotics", undefined],
+    ["Anna Svensson", undefined],
+    ["Jean-Luc Picard", undefined],
+    ["Anna Svensson AB", "ANNA SVENSSON"],
   ];
   for (const [text, want] of cases) it(`${JSON.stringify(text)} -> ${JSON.stringify(want)}`, () => assert.equal(merchantKeyword(text), want));
   it("returns at most two words from the allowed characters", () => {
@@ -235,7 +249,7 @@ describe("merchantKeyword", () => {
     assert.match(k, /^[A-Z0-9&.' -]+$/);
   });
   it("normaliseMerchant upper-cases, folds diacritics and drops prefix and reference", () => {
-    assert.equal(normaliseMerchant("sq *Åhléns*77 x"), "AHLENS");
+    assert.equal(normaliseMerchant("sq *Åhléns*77 x"), "ÅHLÉNS");
     assert.equal(normaliseMerchant("ＡＣＭＥ"), "ACME");
   });
 });

@@ -342,12 +342,12 @@ describe("playbook_save merchant suggestions", () => {
     assert.doesNotMatch(JSON.stringify(pb), /1234|FRANCISCO/);
   });
   it("keeps confirmed and pending keywords on re-record, and does not duplicate", () => {
-    save([2, 4, 5, 6], "Acme Robotics");
+    save([2, 4, 5, 6], "Acme Robotics AB");
     setMerchants("127.0.0.1", ["ACME ROBOTICS"]);
     const r = save([2, 5, 6], "SQ *OTHER VENDOR");
     assert.match(r.message, /Suggested the merchant keyword OTHER VENDOR/);
     save([2, 5, 6], "ACME ROBOTICS LLC");
-    save([2, 5, 6], "Other Vendor");
+    save([2, 5, 6], "Other Vendor AB");
     const pb = getPlaybook("127.0.0.1")!;
     assert.deepEqual(pb.merchants, ["ACME ROBOTICS"]);
     assert.deepEqual(pb.merchantsPending, ["OTHER VENDOR"]);
@@ -355,11 +355,11 @@ describe("playbook_save merchant suggestions", () => {
   it("suggests on an unchanged playbook", () => {
     save([2, 4, 5, 6]);
     assert.equal(getPlaybook("127.0.0.1")?.merchantsPending, undefined);
-    save([2, 4, 5, 6], "Acme Robotics");
+    save([2, 4, 5, 6], "Acme Robotics AB");
     assert.deepEqual(getPlaybook("127.0.0.1")?.merchantsPending, ["ACME ROBOTICS"]);
   });
   it("ignores unusable merchant text, including Swish and transfer lines", () => {
-    for (const m of ["PAYPAL *", "Swish betalning Anna Svensson", "Överföring Erik Berg"]) save([2, 4, 5, 6], m);
+    for (const m of ["PAYPAL *", "Swish betalning Anna Svensson", "Överföring Erik Berg", "Betalning till Orsted", "Autogiro Vattenfall", "BANKGIRO 123-4567 Foo Bar", "Transfer to Acme Robotics", "Payment to Acme Robotics", "Anna Svensson", "Åsa Öberg-Lind"]) save([2, 4, 5, 6], m);
     assert.equal(getPlaybook("127.0.0.1")?.merchantsPending, undefined);
   });
 });
@@ -367,8 +367,8 @@ describe("playbook_save merchant suggestions", () => {
 describe("setMerchants", () => {
   it("confirms, cleans, clears pending ones it confirms, and dismisses; fails without a playbook", () => {
     assert.throws(() => setMerchants("127.0.0.1", ["ACME"]), /no playbook/);
-    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Acme Robotics");
-    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Beta Works");
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Acme Robotics AB");
+    savePlaybookFromTrace(trace().list(), [2, 4, 5, 6], undefined, "t", undefined, "Beta Works AB");
     setMerchants("127.0.0.1", ["acme robotics", "ACME ROBOTICS", "LLC", "12345", "ab", "CLOUD HOSTING"]);
     let pb = getPlaybook("127.0.0.1")!;
     assert.deepEqual(pb.merchants, ["ACME ROBOTICS"]);
