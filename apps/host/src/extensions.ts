@@ -453,7 +453,7 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         // A playbook run clicks and downloads like the browser tools, so it is asked about where they are: once per run, naming the playbook.
         const playbook = event.toolName === "playbook_run" ? playbookFor((event.input as { site?: unknown }).site) : undefined;
         if (event.toolName === "playbook_run" && !playbook) return undefined; // nothing to follow; the tool says so
-        const action = playbook ? `Follow the saved playbook for ${playbook.site}? (${playbook.steps.length} steps)` : undefined;
+        const action = playbook ? `Follow the saved playbook for ${playbook.site}${playbook.hosts.length > 1 ? ` (also visits ${playbook.hosts.slice(1).join(", ")})` : ""}? (${playbook.steps.length} steps)` : undefined;
         // The same decision the host-side core makes (playbookConsent), so the two cannot drift apart.
         const consent = playbook ? playbookConsent(mode, store.config.confirmSignIns, playbook.steps.some((s) => s.kind === "signIn")) : undefined;
         const forced = consent ? consent.forced : signInNeedsConfirmation(event.toolName, store.config.confirmSignIns);

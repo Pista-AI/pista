@@ -1,11 +1,11 @@
 // Captures what the browser tools did in a thread and turns the model's chosen subset into a stored playbook.
 // The model only picks entry numbers from what the host recorded, so it cannot invent URLs or selectors.
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchPeriod, pickRow, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
+import { matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, siteKey, validatePlaybook } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, validatePlaybook } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -83,10 +83,10 @@ function isPeriodClick(ctx: TracePeriodContext, invoice: InvoiceParams | undefin
   return m.kind === "one" && m.index === ctx.clickedIndex;
 }
 
-const urlOf = (r: TraceRow): string | undefined => (r.kind === "navigate" ? r.url : r.kind === "click" ? r.urlAfter : r.kind === "download" ? r.url : r.kind === "signIn" ? r.origin : undefined);
+const urlOf = (r: TraceRow): string | undefined => (r.kind === "navigate" ? r.url : r.kind === "click" ? r.urlAfter : r.kind === "download" ? r.url : r.kind === "signIn" ? r.origin : r.kind === "replayed" ? ("url" in r.step ? r.step.url : "origin" in r.step ? r.step.origin : undefined) : undefined);
 
 /** Builds the playbook for the chosen entry numbers, or throws a short reason. Not yet validated; the caller runs validatePlaybook. */
-export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> = {}, invoice?: InvoiceParams): { site: string; startUrl: string; steps: PlaybookStep[]; shortcut?: PlaybookShortcut; unverified?: boolean } {
+export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> = {}, invoice?: InvoiceParams): { site: string; startUrl: string; steps: PlaybookStep[]; shortcut?: PlaybookShortcut; hosts: string[]; unverified?: boolean; verify?: "row" | "page" } {
   if (!chosen.length) throw new Error("steps is empty");
   if (chosen.some((n, i) => !Number.isInteger(n) || (i > 0 && n <= chosen[i - 1]!))) throw new Error("steps must be whole entry numbers in increasing order");
   const picked = chosen.map((n) => {
@@ -99,16 +99,20 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
   const last = picked[picked.length - 1]!;
   if (last.kind !== "download") throw new Error("the last chosen entry must be the download that succeeded");
   const site = siteKey(first.url);
+  // Every domain the path visits (a vendor hands over to its payment page, say) is listed; replay stops on any other.
+  const hosts = [site];
   for (const r of picked) {
     const u = urlOf(r);
-    if (u && siteKey(u) !== site) throw new Error(`entry ${r.n} is on a different site (${siteKey(u)}), not ${site}`);
+    if (u && !hosts.includes(siteKey(u))) hosts.push(siteKey(u));
   }
+  if (hosts.length > MAX_HOSTS) throw new Error(`the path visits ${hosts.length} different sites (${hosts.join(", ")}); at most ${MAX_HOSTS} are allowed, so record a shorter path`);
   // Text that looks like a token or hash is dropped, never stored.
   const clean = (v?: string) => (v && !isOpaque(v) ? v : undefined);
   // Once a step depends on the invoice, nothing after it may be a fixed address: those are specific to one invoice.
   let byInvoice = false;
   // A lone download whose row does not show the invoice: saved, but replay hands the step back every time.
   let unverified = false;
+  let verify: "row" | "page" | undefined;
   const steps: PlaybookStep[] = picked.slice(1).map((r, i): PlaybookStep => {
     const text = clean(waitFor[String(r.n)]?.slice(0, MAX_TEXT));
     const expect: PlaybookExpect = text ? { text } : {};
@@ -145,16 +149,21 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
         const fileType = r.contentType?.split(";")[0]?.split("/")[1];
         const row = r.rowContext ? rowRule(r.rowContext, invoice) : undefined;
         if (invoice && !r.locator?.role && !r.locator?.name && !r.locator?.text) throw new Error(`entry ${r.n}: this download has no button or link that can be found again (only an address or a selector), so its row can't be checked against the invoice; download it by clicking the invoice's button or link`);
-        if (invoice && r.rowContext?.texts.length === 1 && !verifySingleRow(r.rowContext.texts[0] ?? "", invoice).ok) unverified = true;
+        if (invoice) verify = "row";
+        // A detail page shows the invoice date and amount itself; then the page proves the download, not a row.
+        if (invoice && r.rowContext?.texts.length === 1 && !verifySingleRow(r.rowContext.texts[0] ?? "", invoice).ok) {
+          if (r.pageText && verifyPage(r.pageText, invoice).ok) verify = "page";
+          else unverified = true;
+        }
         if (row) byInvoice = true;
         if (byInvoice && !r.locator) throw new Error(`entry ${r.n}: this download address is specific to one invoice; download it by clicking`);
         const asClick = row || byInvoice || !!invoice;
-        return { kind: "download", ...(!asClick && r.url ? { url: r.url } : { target: { ...r.locator, ...(row ? { row } : {}) } }), ...(fileType ? { fileType } : {}) };
+        return { kind: "download", ...(!asClick && r.url ? { url: r.url } : { target: { ...r.locator, ...(row ? { row } : {}) } }), ...(fileType ? { fileType } : {}), ...(verify === "page" ? { verify } : {}) }; // "row" is the default and not stored
       }
     }
   });
-  const shortcut = deriveShortcut(first.url, steps, picked.slice(1).map((r) => (r.kind === "click" ? r.urlAfter : undefined)), site);
-  return { site, startUrl: first.url, steps, ...(shortcut ? { shortcut } : {}), ...(unverified ? { unverified } : {}) };
+  const shortcut = deriveShortcut(first.url, steps, picked.slice(1).map((r) => (r.kind === "click" ? r.urlAfter : undefined)), hosts);
+  return { site, hosts, startUrl: first.url, steps, ...(shortcut ? { shortcut } : {}), ...(unverified ? { unverified } : {}), ...(verify ? { verify } : {}) };
 }
 
 const cap = (s: string, n = LABEL_MAX) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -177,10 +186,11 @@ const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => J
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
 export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown, unsure?: boolean): { message: string; event?: HostEvent } {
   try {
-    const { unverified, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
-    const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : "";
-    const fresh = validatePlaybook(built, built.site);
+    const { unverified, verify, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
+    const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : verify ? ` The download is verified by ${verify === "page" ? "page" : "row"}.` : "";
     const old = getPlaybook(built.site);
+    // Hosts the stored playbook already visits stay (site first, at most MAX_HOSTS), so a repair of one part does not drop the rest.
+    const fresh = validatePlaybook({ ...built, hosts: [...new Set([...built.hosts, ...(old?.hosts ?? [])])].slice(0, MAX_HOSTS) }, built.site);
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
     // Keywords on file carry over; a new one is added (pending, with the reason when broad) once the playbook is saved.
     const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}) };

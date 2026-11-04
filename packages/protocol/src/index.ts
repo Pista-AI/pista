@@ -809,7 +809,8 @@ export type PlaybookStep =
   /** Replay fills the saved login for `origin`; no credential is part of the playbook. */
   | { kind: "signIn"; origin: string; expect?: PlaybookExpect }
   | { kind: "wait"; expect: PlaybookExpect }
-  | { kind: "download"; target?: PlaybookLocator; url?: string; fileType?: string };
+  /** `verify`: what proves it is the wanted invoice: the row the control sits in (default), or the page it is on (a detail page that shows the invoice date and amount). */
+  | { kind: "download"; target?: PlaybookLocator; url?: string; fileType?: string; verify?: "row" | "page" };
 
 /** `host/path` of an address (no scheme, query or fragment), for display as text. */
 export function hostPath(url: string): string {
@@ -859,6 +860,8 @@ export interface Playbook {
   version: 1;
   /** Registrable domain the playbook belongs to. */
   site: string;
+  /** Registrable domains the path may visit (at most 4, `site` first), e.g. a vendor and its payment page. Replay stops on any other. */
+  hosts: string[];
   startUrl: string;
   steps: PlaybookStep[];
   /**
@@ -896,6 +899,8 @@ export type MerchantRefusal = "too-short" | "too-long" | "wildcard-placement" | 
 
 export interface PlaybookMeta {
   site: string;
+  /** Only when the playbook spans more than its own site. */
+  hosts?: string[];
   startUrl: string;
   /** Where replay opens the list directly, when a shortcut is known. */
   shortcutUrl?: string;

@@ -22,7 +22,7 @@ export type ReplayStep =
   | { kind: "click"; target: ReplayLocator; fallbacks?: ReplayLocator[]; expect?: ReplayExpect }
   | { kind: "signIn"; origin: string; expect?: ReplayExpect }
   | { kind: "wait"; expect: ReplayExpect }
-  | { kind: "download"; target?: ReplayLocator; url?: string; fileType?: string };
+  | { kind: "download"; target?: ReplayLocator; url?: string; fileType?: string; verify?: "row" | "page" };
 
 export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "row-not-found" | "row-ambiguous" | "row-not-verified" | "needs-invoice" | "error";
 
@@ -131,6 +131,25 @@ export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOpti
   const byAmount = invoice.amount !== undefined && parseAmounts(rowText).length > 0;
   const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
   return m.kind === "one" ? { ok: true, amount: byAmount && amountShown(rowText, invoice.amount!, invoice.currency) } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
+}
+
+/** Longest page text read for verification; capture and replay both cut at this, so they judge the same text. */
+export const PAGE_TEXT_MAX = 20_000;
+/** A page with more distinct dates than this (invoice, due, paid) is a list or a statement, not one invoice. */
+const PAGE_DATES_MAX = 3;
+
+/**
+ * Verifies the invoice on a detail page (the download control sits in no row): the page text must show the invoice date and, when the
+ * invoice has an amount, that amount (strictly parsed; the date alone is not enough). Same date tolerance as a row. The detail never quotes the page's text.
+ */
+export function verifyPage(pageText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true; amount: boolean } | { ok: false; detail: string } {
+  const text = pageText.slice(0, PAGE_TEXT_MAX);
+  const date = invoice.date.slice(0, 10);
+  if (fullDateCount(text) > PAGE_DATES_MAX) return { ok: false, detail: `page shows too many dates to be one invoice (looking for ${date})` };
+  const dateSeen = matchRows([{ index: 0, text }], { date: invoice.date }).kind === "one";
+  const amountSeen = invoice.amount !== undefined && amountShown(text, invoice.amount, invoice.currency);
+  if (dateSeen && (invoice.amount === undefined || amountSeen)) return { ok: true, amount: amountSeen };
+  return { ok: false, detail: dateSeen ? "page shows the date but not the amount" : amountSeen ? `page doesn't show the invoice date ${date}` : `page showed neither the invoice date ${date} nor its amount` };
 }
 
 /** The text a lone element is verified on: the row it sits in (see rowTextOf), "" when no level shows exactly one date. */
@@ -352,7 +371,13 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
           noteRule(step.target, seen);
           // A download found without a row rule must still sit in the invoice's row: a list showing one invoice is not proof it is the wanted one.
-          if (o.invoice && !step.target.row && !step.target.period) {
+          if (o.invoice && !step.target.row && !step.target.period && step.verify === "page") {
+            // A detail page: the invoice's date and amount are on the page itself, not in a row.
+            const v = verifyPage(String(await d.evaluate("document.body ? document.body.innerText : ''").catch(() => "")).slice(0, PAGE_TEXT_MAX), o.invoice);
+            if (!v.ok) throw new Handoff("ambiguous", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
+            verified.date = true;
+            if (v.amount) verified.amount = true;
+          } else if (o.invoice && !step.target.row && !step.target.period) {
             const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
             if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
             verified.date = true;

@@ -27,7 +27,7 @@ before(async () => {
     const dated = /^\/invoices\/(inv-2026-\d\d[ab]?)\.pdf$/.exec(url.pathname);
     if (dated) return void res.writeHead(200, { "content-type": "application/pdf" }).end(`%PDF-1.4\n% ${dated[1]}\n%%EOF\n`);
     try {
-      const body = readFileSync(join(root, url.pathname)).toString().replace("{{LABEL}}", label);
+      const body = readFileSync(join(root, url.pathname)).toString().replace("{{LABEL}}", label).replace("{{OTHER}}", `http://localhost:${(server.address() as { port: number }).port}`);
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(body);
     } catch {
       res.writeHead(404).end();
@@ -227,4 +227,39 @@ test("a click that opens a new tab is followed, so the next step acts on the new
   assert.ok((await driver!.state()).url.endsWith("/detail-tab.html"));
   // Leave no extra tab behind for the other tests.
   for (const t of (await (await fetch(`${CDP}/json/list`)).json()) as { id: string; type: string }[]) if (t.type === "page" && !before.has(t.id)) await fetch(`${CDP}/json/close/${t.id}`);
+});
+
+// The same server answers on a second origin (localhost), which a playbook may list as a second host.
+const twoHosts = (path: string, hosts: string[]) => ({ ...options(path), allowUrl: (u: string) => hosts.includes(new URL(u).hostname), domainRules: { allowedDomains: ["127.0.0.1", "localhost"] } });
+const hop = (verify: "row" | "page" | undefined, page = "opens-tab-x.html"): [{ startUrl: string; steps: ReplayStep[] }] => [{ startUrl: `${base}${page}`, steps: [{ kind: "click", target: { role: "link", name: "Open invoice" } }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf", ...(verify ? { verify } : {}) }] }];
+const closeExtraTabs = async (before: Set<string>) => {
+  for (const t of (await (await fetch(`${CDP}/json/list`)).json()) as { id: string; type: string }[]) if (t.type === "page" && !before.has(t.id)) await fetch(`${CDP}/json/close/${t.id}`);
+};
+const openTabs = async () => new Set(((await (await fetch(`${CDP}/json/list`)).json()) as { id: string }[]).map((t) => t.id));
+
+test("a click that opens a tab on a listed second host is followed, and the detail page proves the invoice", { skip }, async () => {
+  const before = await openTabs();
+  const invoice = { date: "2026-09-03", amount: 49, currency: "EUR" };
+  const r = await runReplay(...hop("page"), { ...twoHosts("invoices/x1.pdf", ["127.0.0.1", "localhost"]), invoice });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepEqual(r.verified, { date: true, amount: true });
+  assert.ok(readFileSync(join(dir, "invoices/x1.pdf"), "latin1").includes("inv-2026-09"));
+  await closeExtraTabs(before);
+});
+
+test("a detail page that shows neither the invoice date nor its amount is handed off as ambiguous", { skip }, async () => {
+  const before = await openTabs();
+  const r = await runReplay(...hop("page", "opens-tab-x.html"), { ...twoHosts("invoices/x2.pdf", ["127.0.0.1", "localhost"]), invoice: { date: "2026-02-14", amount: 7, currency: "USD" } });
+  assert.equal(!r.ok && r.reason, "ambiguous");
+  assert.ok(!r.ok && r.detail.includes("neither"), JSON.stringify(r));
+  assert.throws(() => readFileSync(join(dir, "invoices/x2.pdf")));
+  await closeExtraTabs(before);
+});
+
+test("a second host that is not listed still ends the run as blocked", { skip }, async () => {
+  const before = await openTabs();
+  const r = await runReplay(...hop("page"), { ...twoHosts("invoices/x3.pdf", ["127.0.0.1"]), invoice: { date: "2026-09-03", amount: 49, currency: "EUR" } });
+  assert.equal(!r.ok && r.reason, "blocked");
+  assert.throws(() => readFileSync(join(dir, "invoices/x3.pdf")));
+  await closeExtraTabs(before);
 });
