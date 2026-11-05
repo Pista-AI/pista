@@ -40,7 +40,7 @@ export function describeTrace(rows: readonly TraceRow[]): string {
     .map((r) => {
       switch (r.kind) {
         case "navigate": return `${r.n} navigate ${r.url}`;
-        case "click": return `${r.n} click ${where(r.locator)}${place(r)} -> ${r.urlAfter}`;
+        case "click": return `${r.n} click ${where(r.locator)}${place(r)} -> ${r.urlAfter}${r.openedTab ? " (opened a new tab)" : ""}`;
         case "download": return `${r.n} download ${r.url ?? where(r.locator ?? {}) + place(r)} (${r.contentType ?? "unknown type"}, ${r.source === "url" ? "address given by you" : "from the page"})`;
         case "signIn": return `${r.n} signIn ${r.origin}`;
         case "replayed": return `${r.n} replayed step ${r.index} of the saved playbook (${r.step.kind})`;

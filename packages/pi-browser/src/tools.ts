@@ -4,7 +4,7 @@ import { refDownloadSource, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
 import { isPeriodLabel } from "./row-match.ts";
 import { loneRowText } from "./replay.ts";
-import { declineCookieBanner, runPageAction, type ActionResult, type PageAction } from "./actions.ts";
+import { declineCookieBanner, runPageAction, waitForLoad, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
 import { registerContextPruning } from "./context.ts";
@@ -29,7 +29,7 @@ export type TracePeriodContext = { names: (string | null)[]; clickedIndex: numbe
 /** One successful, replayable browser action. Typed text, keys and selected options are never recorded (they may be secrets). */
 export type BrowserTraceEntry =
   | { kind: "navigate"; url: string }
-  | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string; rowContext?: TraceRowContext; periodContext?: TracePeriodContext }
+  | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string; /** The click opened a new tab and the tools followed it; `urlAfter` is that tab's address. */ openedTab?: true; rowContext?: TraceRowContext; periodContext?: TracePeriodContext }
   | { kind: "download"; url?: string; /** "url": the model supplied the address; "ref": it came from the page (the element's link or its click). */ source: "ref" | "url"; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string; rowContext?: TraceRowContext }
   | { kind: "signIn"; origin: string };
 
@@ -55,6 +55,8 @@ export interface BrowserToolOptions {
   downloadRoot?: () => string | undefined;
   /** Managed domain rules (see domains.ts). Without any list the driver is used as is. */
   domainRules?: DomainRules;
+  /** Why switching to a tab at `url` is refused (browser_tabs), or undefined to allow it. */
+  tabGuard?: (url: string) => string | undefined;
   /** Called with the reason when a page is refused by `domainRules`. */
   onDomainBlock?: (reason: string) => void;
 }
@@ -145,7 +147,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     const context = located && req.action === "click" ? await contextOf(d, req.target) : {};
     const result = await runPageAction(d, req, approve);
     const state = await d.state();
-    if (located && result.outcome?.startsWith("Clicked")) options.onTrace?.({ kind: "click", locator: located, urlAfter: state.url, ...context });
+    if (located && result.outcome?.startsWith("Clicked")) options.onTrace?.({ kind: "click", locator: located, urlAfter: state.url, ...(result.openedTab ? { openedTab: true as const } : {}), ...context });
     return respond(state, result);
   };
 
@@ -275,6 +277,36 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
             await d.back();
             await new Promise((r) => setTimeout(r, 400));
             return respond(await d.state());
+          },
+          { leaving: true },
+        ),
+    }),
+  );
+  pi.registerTool(
+    defineTool({
+      name: "browser_tabs",
+      label: "Browser: tabs",
+      description:
+        "List the open tabs (number, address, title, which is active), or pass `select` (a tab's number or id) to switch to it and see its page. A click that opens a new tab already switches to it; use this to go back to an earlier tab or to pick one when several opened.",
+      promptSnippet: "browser_tabs: list the open tabs, or switch to one",
+      parameters: Type.Object({ select: Type.Optional(Type.String({ description: "Tab number from the list (1, 2, ...) or its id; omit to list the tabs" })) }),
+      execute: (_id, { select }) =>
+        gated(
+          async (d) => {
+            if (!d.tabs || !d.switchTab) throw new Error("browser_tabs is not supported with this browser driver.");
+            const tabs = await d.tabs();
+            const say = (r: object) => ({ content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }], details: r });
+            const list = tabs.map((t, i) => ({ tab: i + 1, id: t.id, url: t.url, title: t.title, active: t.active }));
+            if (select === undefined) return say({ tabs: list });
+            const pick = tabs.find((t) => t.id === select) ?? (/^\d+$/.test(select) ? tabs[Number(select) - 1] : undefined);
+            if (!pick) return say({ note: `No tab "${select}".`, tabs: list });
+            const refused = options.tabGuard?.(pick.url);
+            if (refused) return say({ note: refused, tabs: list });
+            d.setActivity?.("Switching tab");
+            await d.switchTab(pick.id);
+            await waitForLoad(d);
+            const shown = await runPageAction(d, { action: "snapshot" });
+            return respond(await d.state(), { outcome: `Switched to tab ${tabs.indexOf(pick) + 1}.`, text: shown.text });
           },
           { leaving: true },
         ),

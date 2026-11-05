@@ -247,6 +247,8 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         traceDir: CLIENT_DIR,
         threadId: ref.threadId,
         domainRules,
+        // Switching to a tab that sits on a playbook site is the same as opening it: playbook_run goes first.
+        tabGuard: opts.guardPlaybooks ? (url) => playbookGuardMessage(attempted, "browser_navigate", { url }) : undefined,
         downloadRoot: () => ref.cwd,
       });
     },
@@ -296,6 +298,7 @@ export function countNavigateVisit(visits: Map<string, number>, url: string): st
 const PAGE_CHANGING_TOOLS = new Set([
   "browser_navigate",
   "browser_back",
+  "browser_tabs",
   "browser_click",
   "browser_type",
   "browser_select",

@@ -3,9 +3,14 @@ import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { test } from "node:test";
+import { findBrowser } from "../src/chrome/find.ts";
+import { launchBrowser } from "../src/chrome/launch.ts";
 import type { CdpEvent, CdpTransport } from "../src/chrome/pipe.ts";
 import { ChromeDriver } from "../src/drivers/chrome.ts";
+import { runPageAction } from "../src/actions.ts";
+import { registerBrowserTools, type BrowserTraceEntry } from "../src/tools.ts";
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -192,4 +197,96 @@ test("a popup that cannot be guarded is closed", async () => {
   await tick();
   await tick();
   assert.ok(b.calls.some((c) => c.method === "Target.closeTarget" && c.params.targetId === "T2"));
+});
+
+test("tabs lists only our tabs, switching reuses the session, and closing a tab goes back to its opener", async () => {
+  const infos = [
+    { targetId: "T1", type: "page", url: "https://a.test/", title: "A" },
+    { targetId: "T2", type: "page", url: "https://a.test/two", title: "Two", openerId: "T1" },
+    { targetId: "T9", type: "page", url: "https://restored.test/", title: "Restored" },
+    { targetId: "W1", type: "service_worker", url: "https://a.test/sw.js", title: "" },
+  ];
+  const b = fakeBrowser((method, params) => {
+    if (method === "Target.getTargets") return { targetInfos: infos };
+    if (method === "Target.attachToTarget") return { sessionId: `S-${params.targetId}` };
+    if (method === "Target.createTarget") return { targetId: "T1" };
+  });
+  const { driver } = driverWith([b]);
+  assert.deepEqual((await driver.tabs()).map((t) => [t.id, t.active]), [["T1", true], ["T2", false]]);
+  const watched = await driver.watchNewTabs();
+  assert.deepEqual(await watched(), [], "nothing new yet");
+  await driver.switchTab("T2");
+  await assert.rejects(driver.switchTab("T9"), /No tab/);
+  assert.equal(b.calls.filter((c) => c.method === "Page.enable").at(-1)!.sessionId, "S-T2");
+  assert.deepEqual((await driver.tabs()).map((t) => t.active), [false, true]);
+  // The tab closes: the next use is on the tab that opened it, on its old session, not on a new tab.
+  b.emit({ method: "Target.detachedFromTarget", params: { sessionId: "S-T2" } });
+  infos.splice(1, 1);
+  await driver.state();
+  assert.equal(b.calls.filter((c) => c.method === "Target.createTarget").length, 1);
+  assert.equal(b.calls.filter((c) => c.method === "Target.attachToTarget").length, 2);
+  assert.equal(b.calls.filter((c) => c.method === "Page.enable").at(-1)!.sessionId, "S-T1");
+});
+
+// The same, against a real Chrome (headless, over the same private pipe the app uses). Skipped where no Chrome is installed.
+const noChrome = findBrowser({}) ? false : "no Chrome, Edge or Brave browser is installed";
+test("a click that opens a new tab is followed, listed and switchable, traced, and closing it returns to the first tab", { skip: noChrome }, async () => {
+  const srv = await server((req, res) => {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(req.url === "/second" ? "<title>Second</title><h1>Second page</h1><button>Go</button>" : '<title>First</title><a target="_blank" href="/second">Open second</a><a href="/second">Same tab</a>');
+  });
+  const home = mkdtempSync(join(tmpdir(), "chrome-tabs-"));
+  const driver = new ChromeDriver({ pistaHome: home }, { launch: (o) => launchBrowser(o, { spawn: (cmd, args, opts) => spawn(cmd, [...args, "--headless=new"], opts) }) });
+  try {
+    await driver.navigate(`${srv.base}/`);
+    const ref = async (name: string) => {
+      const snap = (await runPageAction(driver, { action: "snapshot" })).text!;
+      return new RegExp(`\\b(e\\d+)\\b[^\\n]*${name}`).exec(snap)![1]!;
+    };
+    const clicked = await runPageAction(driver, { action: "click", target: await ref("Open second") });
+    assert.match(clicked.outcome!, /Clicked .*Opened a new tab: .*\/second/);
+    assert.equal(clicked.openedTab, true);
+    assert.match(clicked.text!, /Go/, "the snapshot is of the new tab");
+    const tabs = await driver.tabs();
+    assert.equal(tabs.length, 2);
+    assert.deepEqual(tabs.map((t) => t.active), [false, true]);
+    assert.ok((await driver.state()).url.endsWith("/second"));
+    // A link in the same tab opens no tab.
+    await driver.switchTab(tabs[0]!.id);
+    const same = await runPageAction(driver, { action: "click", target: await ref("Same tab") });
+    assert.ok(!same.openedTab && !/new tab/.test(same.outcome!), same.outcome);
+    await driver.navigate(`${srv.base}/`);
+
+    // The tools: a click traces openedTab with the new tab's address; browser_tabs lists and switches.
+    const tools = new Map<string, { execute: (id: string, p: Record<string, unknown>) => Promise<{ content: { text?: string }[] }> }>();
+    const trace: BrowserTraceEntry[] = [];
+    registerBrowserTools({ registerTool: (t: { name: string }) => tools.set(t.name, t as never), on: () => {} } as never, () => driver, { keepPageViews: 0, onTrace: (e) => trace.push(e) });
+    const call = async (name: string, params: Record<string, unknown> = {}) => {
+      const res = await tools.get(name)!.execute("t", params);
+      return { meta: JSON.parse(res.content[0]!.text!), body: res.content[1]?.text ?? "" };
+    };
+    const open = await call("browser_click", { ref: await ref("Open second") });
+    assert.match(open.meta.result, /Opened a new tab/);
+    const entry = trace.at(-1)!;
+    assert.ok(entry.kind === "click" && entry.openedTab === true && entry.urlAfter.endsWith("/second"), JSON.stringify(entry));
+    const listed = (await call("browser_tabs")).meta.tabs as { tab: number; url: string; active: boolean }[];
+    assert.deepEqual(listed.map((t) => t.active), [false, false, true]);
+    assert.equal(listed.length, 3, "the earlier second tab is still open");
+    const back = await call("browser_tabs", { select: "1" });
+    assert.ok(back.meta.url.endsWith("/") && /Open second/.test(back.body), "the snapshot after the switch shows the first page");
+    const forward = await call("browser_tabs", { select: String(listed[2]!.tab) });
+    assert.ok(forward.meta.url.endsWith("/second") && /Go/.test(forward.body));
+    assert.match((await call("browser_tabs", { select: "9" })).meta.note, /No tab/);
+
+    // Closing the active tab makes its opener the active one again.
+    const active = (await driver.tabs()).find((t) => t.active)!;
+    await (driver as any).browser.transport.send("Target.closeTarget", { targetId: active.id });
+    for (let i = 0; i < 40 && (driver as any).conn; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok((await driver.state()).url.endsWith("/"), "back on the first tab");
+    assert.equal((await driver.tabs()).filter((t) => t.active).length, 1);
+  } finally {
+    await driver.closeGracefully();
+    srv.close();
+    rmSync(home, { recursive: true, force: true });
+  }
 });

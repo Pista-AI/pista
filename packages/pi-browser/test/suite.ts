@@ -149,6 +149,7 @@ const BROWSER_TOOLS = [
   "browser_press",
   "browser_scroll",
   "browser_back",
+  "browser_tabs",
   "browser_screenshot",
   "browser_eval",
   // Offered to the model only when their flag registers them (fill unless PI_BROWSER_FILL=0, choose only with PI_BROWSER_CHOOSE=1).

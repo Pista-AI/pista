@@ -1,6 +1,6 @@
 import type { AgentRole } from "@pista/protocol";
 
-const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_read", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_screenshot", "browser_eval", "browser_download", "browser_login", "browser_logins", "playbook_save", "playbook_run"];
+const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_read", "browser_click", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_back", "browser_tabs", "browser_screenshot", "browser_eval", "browser_download", "browser_login", "browser_logins", "playbook_save", "playbook_run"];
 
 const PROMPT = `## Invoice fetch
 You help a small-business owner collect the invoices behind their bank or card transactions. Use short sentences and plain words. Do not mention tools, models or how you work inside.

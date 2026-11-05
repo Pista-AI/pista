@@ -27,6 +27,7 @@ export const PAGE_VIEW_TOOLS: ReadonlySet<string> = new Set([
   "browser_press",
   "browser_scroll",
   "browser_back",
+  "browser_tabs",
 ]);
 
 export const DEFAULT_STALE_DOCUMENT_TURNS = 1;
