@@ -374,12 +374,15 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
     let i = lastReplayed;
     while (i > 0 && rows[i - 1]!.kind === "replayed") i--;
     const nav = rows[i - 1];
-    if (nav?.kind === "navigate" && hosts.includes(hostOf(nav.url) ?? "")) {
+    // The replayed steps already stayed on the playbook's own hosts, so the start page may be on another site than the download.
+    if (nav?.kind === "navigate") {
       start = i - 1;
       k = Math.max(...rows.filter((x): x is TraceRow & ReplayedEntry => x.kind === "replayed").map((x) => x.index)) + 1;
     }
   }
-  if (start < 0) start = rows.findLastIndex((x) => x.kind === "navigate" && hosts.includes(hostOf(x.url) ?? ""));
+  const known = hosts.map((h) => getPlaybook(h)).find(Boolean);
+  const startHosts = [...hosts, ...(known?.hosts ?? [])];
+  if (start < 0) start = rows.findLastIndex((x) => x.kind === "navigate" && startHosts.includes(hostOf(x.url) ?? ""));
   if (start < 0) return fail("no page opened by address on this site is in the recorded trace");
   const path = rows.slice(start);
   const onPath = new Set(path.map((x) => hostOf(urlOf(x))).filter(Boolean));
