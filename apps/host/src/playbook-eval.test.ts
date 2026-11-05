@@ -15,7 +15,7 @@ process.env.PI_BROWSER_CDP_URL = CDP;
 
 const { projectDir } = setupHome("playbook-eval", { cleanup: "exit" });
 const { CdpDriver } = await import("@pista/pi-browser");
-const { getPlaybook } = await import("./playbooks.ts");
+const { HISTORY, getPlaybook } = await import("./playbooks.ts");
 const { Hub } = await import("./hub.ts");
 
 // The cdp driver cannot save files, so a download fetches the address itself (replay and browser_download both resolve links to addresses).
@@ -168,7 +168,7 @@ test("run 3: a renamed link hands off at the download step; the model repairs it
     const pb = getPlaybook("127.0.0.1")!;
     assert.equal(pb.failCount, 0);
     assert.equal(pb.status, "ok");
-    assert.ok(pb.history.some((h) => new RegExp(`^repaired after handoff at step ${steps}; .*changed step ${steps}$`).test(h.summary)), JSON.stringify(pb.history));
+    assert.ok(pb.history.some((h) => new RegExp(`^${HISTORY.repaired(steps)}; .*changed step ${steps}$`).test(h.summary)), JSON.stringify(pb.history));
     assert.equal(pb.steps.length, steps);
 
     const path4 = "invoices/2026-11/fixture-2026-11-03-49.00.pdf";

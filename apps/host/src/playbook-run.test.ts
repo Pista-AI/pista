@@ -7,10 +7,10 @@ import { liveOf, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("playbook-run", { cleanup: "exit" });
 const { approvalExtension } = await import("./extensions.ts");
-const { formatHandoff, playbookConsent, playbookGuardMessage, recordRun, registerPlaybookRun, runPlaybookForInvoice, serialised, unfence } = await import("./playbook-run.ts");
+const { formatHandoff, playbookConsent, playbookGuardMessage, recordRun, registerPlaybookRun, runPlaybookForInvoice, serialised } = await import("./playbook-run.ts");
 const { Hub } = await import("./hub.ts");
 const { PlaybookTrace, savePlaybookFromTrace } = await import("./playbook-capture.ts");
-const { getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
+const { HISTORY, getPlaybook, savePlaybook, unfence, validatePlaybook } = await import("./playbooks.ts");
 
 const B = "http://127.0.0.1:8765/invoices/";
 function save(steps: unknown[] = [{ kind: "click", target: { role: "link", name: "October 2026" } }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }]): Playbook {
@@ -257,7 +257,7 @@ test("a shortcut is learned once two successful runs saw the same address", () =
   run(`${B}billing.html`);
   run(`${B}billing.html`);
   assert.deepEqual(seen(), [billing, undefined, undefined]);
-  assert.deepEqual(last(), ["shortcut learned", "shortcut learned", "shortcut learned", "shortcut confirmed"]);
+  assert.deepEqual(last(), [HISTORY.shortcutLearned, HISTORY.shortcutLearned, HISTORY.shortcutLearned, "shortcut confirmed"]);
   // One failure (the full path then worked) keeps it; a run that used it resets the count; the second in a row drops it.
   run(`${B}billing.html`, "failed");
   assert.deepEqual(seen(), [billing, undefined, 1], "a single transient failure keeps the shortcut");

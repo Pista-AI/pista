@@ -23,7 +23,7 @@ const { projectDir } = setupHome("playbook-chain-eval", { cleanup: "exit" });
 // Registered first so the lock is taken before the resolver probe below opens a tab in the shared browser.
 if (!unavailable) serialiseChromeEval();
 const { CdpDriver } = await import("@pista/pi-browser");
-const { deletePlaybook, getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
+const { HISTORY, deletePlaybook, getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
 const { Hub } = await import("./hub.ts");
 
 // The cdp driver cannot save files, so a download fetches the address itself (from the local server: the vendor names only resolve inside Chrome).
@@ -255,7 +255,7 @@ async function handoffThenRepair(site: string, startUrl: string, hosts: string[]
   const pb = getPlaybook(site)!;
   assert.equal(pb.failCount, 0);
   assert.equal(pb.status, "ok");
-  assert.ok(pb.history.some((h) => h.summary.startsWith("repaired after handoff at step 2")), JSON.stringify(pb.history));
+  assert.ok(pb.history.some((h) => h.summary.startsWith(HISTORY.repaired(2))), JSON.stringify(pb.history));
   assert.ok(!JSON.stringify(pb.steps).includes("Open receipt"), "the broken step is gone");
   assert.ok(JSON.stringify(pb.steps).includes("Receipt options"), "the model's click took its place");
 }
