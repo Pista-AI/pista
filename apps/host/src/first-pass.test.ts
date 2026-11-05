@@ -309,5 +309,5 @@ test("a date-only match (amount not verified) does not promote and says so in th
   const run = async (req: { site: string }) => ({ ...downloaded(req.site, 1, false), foreignCurrency: true as const, how: "Amount not verified: the page shows another currency; only the date matched." });
   await runFirstPass("2026-03-01 LAMBDA CLOUD -99.00 SEK\n2026-03-02 LAMBDA CLOUD -99.00 SEK", { playbooks: all, allow: async () => true, run, writeManifest: (r) => rows.push(...r) });
   assert.equal(getPlaybook("lambda.test")!.merchants, undefined);
-  assert.match(rows[0]!.note!, /Amount not verified/);
+  assert.match(rows[0]!.note!, /amount not verified/i);
 });

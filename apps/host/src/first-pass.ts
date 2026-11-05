@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import type { FirstPassLine, HostEvent, Playbook } from "@pista/protocol";
 import { keywordMatches, type BroadReason } from "./merchants.ts";
 import { upsertRow, vendorSlug } from "./manifest.ts";
-import { HISTORY, confirmByProof, notesBlock, unfence } from "./playbooks.ts";
+import { HISTORY, lowerFirst, confirmByProof, notesBlock, unfence } from "./playbooks.ts";
 import { playbookConsent, type PlaybookRunConsent, type PlaybookRunRequest, type PlaybookRunResult } from "./playbook-run.ts";
 import { matchVendor, parseTransactions, type ParsedLine } from "./transactions.ts";
 
@@ -133,7 +133,7 @@ export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: A
     if (r.status === "downloaded") {
       out.fetched.push({ line, site, file: r.path });
       for (const keyword of r.learned ?? []) out.learned.push({ site, keyword });
-      if (line.amount !== undefined) rows.push({ vendor: labels.get(line) ?? site, date: line.date!, amount: Math.abs(line.amount!), currency: line.currency ?? "", status: "found", file: r.path, note: r.how ? `fetched by a saved playbook; ${r.how}` : "fetched by a saved playbook" });
+      if (line.amount !== undefined) rows.push({ vendor: labels.get(line) ?? site, date: line.date!, amount: Math.abs(line.amount!), currency: line.currency ?? "", status: "found", file: r.path, note: r.how ? `fetched by a saved playbook; ${lowerFirst(r.how)}` : "fetched by a saved playbook" });
     } else if (r.status === "exists") out.fetched.push({ line, site, file: "already saved, not fetched again", exists: true });
     else if (r.status === "declined") out.declined.push({ line, site });
     else if (r.status === "handoff") out.handedOff.push({ line, site, why: r.reason, step: r.step, detail: r.detail, url: r.url, ...(pb && notesBlock(pb) ? { notes: notesBlock(pb) } : {}) });

@@ -481,7 +481,7 @@ test("billing facts are learned from a converted match, then the rate and a narr
   assert.equal(getPlaybook("127.0.0.1")!.billing!.samples, 2);
   await t.run({ invoice: inv, overwrite: true });
   await t.run({ invoice: inv, overwrite: true });
-  assert.equal(seen[3].band, 0.03);
+  assert.equal(seen[3].band, 0.04);
   assert.equal((await t.run({ invoice: { date: "2026-10-03", amount: 9, currency: "EUR" }, overwrite: true }) as { status: string }).status, "downloaded");
   assert.equal(seen[4].rateFor, undefined, "learned for the SEK transaction currency only");
 });
@@ -493,7 +493,7 @@ test("the transaction text, without the merchant keywords, reaches the replay fr
   const replay = okReplay({ date: true, amount: true }, seen);
   const t = runTool({ replay });
   await t.run({ merchant: "ACME CLOUD", reference: "2026-10-03 ACME CLOUD INV-4471 -9.00", overwrite: true });
-  assert.equal(seen[0].invoice.reference, "2026-10-03 INV-4471 -9.00");
+  assert.equal(seen[0].invoice.reference, "INV-4471", "dates and plain amounts are dropped");
   await t.run({ overwrite: true });
   assert.equal(seen[1].invoice.reference, undefined);
   const d = direct("full-access", true, replay);
@@ -506,6 +506,6 @@ test("the playbook_run text says how the match was made, and that a date-only ma
   const by = await runTool({ replay: okReplay({ date: true, amount: true, matchedBy: ["reference"] }) }).run({ overwrite: true });
   assert.match(by, /Matched by reference\./);
   const dateOnly = await runTool({ replay: okReplay({ date: true, amount: false, foreignCurrency: true, matchedBy: ["date"] }) }).run({ overwrite: true });
-  assert.match(dateOnly, /Amount not verified/);
-  assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /Amount not verified/);
+  assert.match(dateOnly, /amount not verified/i);
+  assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /amount not verified/i);
 });

@@ -291,6 +291,27 @@ describe("billing facts", () => {
     recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10, amountVerified: true });
     assert.deepEqual(recordSuccess("example.com", undefined, { rowCurrency: "NOK", offsetDays: 3, amountVerified: true })!.billing, { currency: "NOK", dayOffset: 3, samples: 1 });
   });
+  it("seed a rate only when it is near the table rate or a reference matched", () => {
+    fresh();
+    const far = recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 1, fxRateImplied: 7, amountVerified: true })!;
+    assert.deepEqual(far.billing, { currency: "USD", dayOffset: 1, samples: 1 }, "10 vs 10 per USD table: 7 is far off, no rate");
+    fresh();
+    assert.equal(recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10.2, amountVerified: true })!.billing!.rate, 10.2, "within 3 percent of 11.2/1.12");
+    fresh();
+    assert.equal(recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 1, fxRateImplied: 7, matchedBy: ["reference"], amountVerified: true })!.billing!.rate, 7);
+  });
+  it("drop a learned rate that did not verify, keeping the offset", () => {
+    fresh();
+    recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 2, fxRateImplied: 10, amountVerified: true });
+    const b = recordSuccess("example.com", "x", { to: "SEK", rowCurrency: "USD", offsetDays: 2, amountVerified: false })!.billing;
+    assert.deepEqual(b, { currency: "USD", dayOffset: 2, samples: 0 });
+  });
+  it("restart the rate facts when paid in another currency", () => {
+    fresh();
+    recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 2, fxRateImplied: 10, amountVerified: true });
+    recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 2, fxRateImplied: 10, amountVerified: true });
+    assert.deepEqual(recordSuccess("example.com", undefined, { to: "USD", rowCurrency: "USD", offsetDays: 1, amountVerified: true })!.billing, { currency: "USD", dayOffset: 1, samples: 1 });
+  });
   it("are validated on load", () => {
     const ok = { currency: "SEK", dayOffset: 1.5, rate: 10, rateTo: "NOK", samples: 3 };
     assert.deepEqual(validatePlaybook(base({ billing: ok }), "example.com").billing, ok);
@@ -305,6 +326,6 @@ describe("billing facts", () => {
     assert.equal(matchSentence({ amount: true }), "");
     assert.equal(bandFor(0), undefined);
     assert.equal(bandFor(2), 0.05);
-    assert.equal(bandFor(3), 0.03);
+    assert.equal(bandFor(3), 0.04);
   });
 });

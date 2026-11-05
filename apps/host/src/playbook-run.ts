@@ -107,7 +107,7 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
-    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { to: invoice?.currency, rowCurrency: r.verified.rowCurrency, offsetDays: r.verified.offsetDays, fxRateImplied: r.verified.fxRateImplied, amountVerified: r.verified.amount });
+    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { to: invoice?.currency, rowCurrency: r.verified.rowCurrency, offsetDays: r.verified.offsetDays, fxRateImplied: r.verified.fxRateImplied, matchedBy: r.verified.matchedBy, amountVerified: r.verified.amount });
     noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
@@ -260,9 +260,14 @@ export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRu
 
 /** The transaction's text with the merchant keywords taken out (they match every row of the vendor and say nothing about one). */
 function referenceOf(raw: string | undefined, keywords: readonly (string | undefined)[]): string | undefined {
-  let t = (raw ?? "").slice(0, 300);
-  for (const k of keywords) if (k && k.length >= 3 && !k.includes("*")) t = t.replace(new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), " ");
-  t = t.replace(/\s+/g, " ").trim();
+  let t = raw ?? "";
+  for (const k of keywords) {
+    if (!k || k.length < 3 || k.includes("*")) continue;
+    const word = /[A-Za-z]/.test(k) ? "\\b" : "";
+    t = t.replace(new RegExp(`${word}${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${word}`, "gi"), " ");
+  }
+  // Dates and amounts come with every transaction and would "match" any row; an invoice or order number does not look like them.
+  t = t.slice(0, 300).split(/\s+/).filter((w) => w && !/^\d{8}$/.test(w) && !/^[-+]?\d+(?:[.,]\d+)?$/.test(w) && !/^\d{4}-\d{2}-\d{2}$/.test(w)).join(" ");
   return t || undefined;
 }
 
