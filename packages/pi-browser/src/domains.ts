@@ -80,7 +80,7 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
     return refuse(reason, true);
   };
   // An empty URL means the driver could not read the page (mid-navigation): poll briefly, then fail closed.
-  const settle = async (state: PageState): Promise<PageState> => {
+  const checkState = async (state: PageState): Promise<PageState> => {
     for (let i = 0; state.url === "" && i < EMPTY_RETRIES; i++) {
       await new Promise((r) => setTimeout(r, EMPTY_RETRY_MS));
       state = await inner.state();
@@ -90,14 +90,14 @@ export function guardDriver(inner: BrowserDriver, rules: DomainRules, onBlock?: 
     const reason = checkUrl(state.url, rules);
     return reason ? reset(reason) : state;
   };
-  const check = async () => void (await settle(await inner.state()));
+  const check = async () => void (await checkState(await inner.state()));
   return {
     navigate: async (url) => {
       const reason = url.startsWith("chrome-error:") ? "chrome-error pages are not allowed" : checkUrl(url, rules);
       if (reason) refuse(reason, false);
-      return settle(await inner.navigate(url));
+      return checkState(await inner.navigate(url));
     },
-    state: async () => settle(await inner.state()),
+    state: async () => checkState(await inner.state()),
     back: async () => {
       await check();
       await inner.back();

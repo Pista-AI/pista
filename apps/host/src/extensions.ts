@@ -261,8 +261,8 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
         traceDir: CLIENT_DIR,
         threadId: ref.threadId,
         domainRules,
-        // Switching to a tab that sits on a playbook site is the same as opening it: playbook_run goes first.
-        tabGuard: opts.guardPlaybooks ? (url) => playbookGuardMessage(attempted, "browser_navigate", { url }) : undefined,
+        // Switching to a tab or navigating by ref to a playbook site is the same as opening it: playbook_run goes first.
+        urlGuard: opts.guardPlaybooks ? (url) => playbookGuardMessage(attempted, "browser_navigate", { url }) : undefined,
         downloadRoot: () => ref.cwd,
       });
     },
@@ -392,7 +392,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
         calls++;
         if (n >= STOP_AFTER) return pause(`${event.toolName} was called ${n} times with identical arguments in this run`);
         // Same page again and again, however the URL is spelled: its own message, since "identical arguments" would not describe it.
-        // Known gap: a browser_navigate by ref has no url here, so it is not counted as a visit; the identical-arguments count above still catches a repeated ref.
+        // A browser_navigate by ref has no url here, so it is not counted as a visit (urlGuard still guards the ref at the tool level); the identical-arguments count above catches a repeated ref.
         const url = event.toolName === "browser_navigate" ? (event.input as { url?: unknown }).url : undefined;
         const revisit = typeof url === "string" ? countNavigateVisit(visits, url) : undefined;
         if (revisit) {

@@ -285,11 +285,7 @@ export async function settle(driver: BrowserDriver, options: SettleOptions = {})
     await sleep(NAVIGATION_GRACE_POLL_MS);
     loading = (await driver.state()).loading;
   }
-  const start = Date.now();
-  while (loading && Date.now() - start < LOAD_MAX_MS) {
-    await sleep(LOAD_POLL_MS);
-    loading = (await driver.state()).loading;
-  }
+  if (loading) await waitForLoad(driver);
 
   if (options.popupBaseline !== undefined) {
     const popupStart = Date.now();

@@ -5,24 +5,12 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteKey, transactionKey } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
 export const PLAYBOOK_DECLINED = "pista:playbook-declined";
-
-/** The site of an address or a bare host ("acme.com/billing"), or undefined. */
-export function siteOf(input: unknown): string | undefined {
-  if (typeof input !== "string" || !input.trim()) return undefined;
-  const s = input.trim();
-  if (/^[/.?#]/.test(s) && !s.startsWith("//")) return undefined; // a relative path
-  try {
-    return siteKey(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s.replace(/^\/\//, "")}`);
-  } catch {
-    return undefined;
-  }
-}
 
 /** The stored playbook for `site` (an address or a bare domain), or null when there is none or the input is no site. */
 export function playbookFor(site: unknown): Playbook | null {
@@ -32,7 +20,7 @@ export function playbookFor(site: unknown): Playbook | null {
 
 /**
  * Why a browser call is refused: browser_navigate, or browser_download with a url, to a site that has a playbook playbook_run was not tried for.
- * Known limit: clicking through to the site from another one, or opening it from browser_eval, is not guarded.
+ * Still unguarded: a plain click through to the site from another one, and opening it from browser_eval. Navigation by ref and tab switches are guarded at the tool level (urlGuard).
  */
 export function playbookGuardMessage(attempted: ReadonlySet<string>, toolName: string, input: unknown): string | undefined {
   if (toolName !== "browser_navigate" && toolName !== "browser_download") return undefined;
@@ -85,7 +73,7 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
   }
   const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), pb.hosts);
   if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found, history: log("shortcut confirmed") });
-  else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) savePlaybook({ ...rest, shortcutCandidate: found, history: log("shortcut learned") });
+  else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) savePlaybook({ ...rest, shortcutCandidate: found, history: log(HISTORY.shortcutLearned) });
   else if (!found && c) savePlaybook(rest);
 }
 
@@ -118,17 +106,6 @@ const describeStep = (s: PlaybookStep | { kind: string; url?: string }): string 
   if ("origin" in s) return `${s.kind} ${s.origin}`;
   return s.kind;
 };
-
-const OPEN = "<<<website-data";
-const CLOSE = "website-data>>>";
-/** Removes the markers until none is left, so nested pieces cannot reassemble one. */
-export function unfence(s: string): string {
-  for (let prev = ""; prev !== s; ) {
-    prev = s;
-    s = s.replaceAll(OPEN, "").replaceAll(CLOSE, "");
-  }
-  return s;
-}
 
 /** The handoff for the model. Everything from the website (detail, url, snapshot) sits in one delimited block of untrusted data. */
 export function formatHandoff(site: string, invoice: InvoiceParams, total: number, r: Extract<ReplayResult, { ok: false }>, notes = "", history: readonly { summary: string }[] = []): string {

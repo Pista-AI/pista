@@ -55,8 +55,8 @@ export interface BrowserToolOptions {
   downloadRoot?: () => string | undefined;
   /** Managed domain rules (see domains.ts). Without any list the driver is used as is. */
   domainRules?: DomainRules;
-  /** Why switching to a tab at `url` is refused (browser_tabs), or undefined to allow it. */
-  tabGuard?: (url: string) => string | undefined;
+  /** Why opening `url` is refused, or undefined to allow it. Guards both tab switches (browser_tabs) and navigation by ref (browser_navigate). */
+  urlGuard?: (url: string) => string | undefined;
   /** Called with the reason when a page is refused by `domainRules`. */
   onDomainBlock?: (reason: string) => void;
 }
@@ -182,7 +182,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
             }
             const blocked = internalPageReason(url);
             if (blocked) throw new Error(`Not opened: ${blocked}`);
-            const refused = ref ? options.tabGuard?.(url) : undefined;
+            const refused = ref ? options.urlGuard?.(url) : undefined;
             if (refused) throw new Error(refused);
             // Resolved before the navigation: the element is gone afterwards.
             const located = ref && options.onTrace ? await locateTarget(d, ref) : undefined;
@@ -319,7 +319,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
             if (select === undefined) return say({ tabs: list });
             const pick = tabs.find((t) => t.id === select) ?? (/^\d+$/.test(select) ? tabs[Number(select) - 1] : undefined);
             if (!pick) return say({ note: `No tab "${select}".`, tabs: list });
-            const refused = options.tabGuard?.(pick.url);
+            const refused = options.urlGuard?.(pick.url);
             if (refused) return say({ note: refused, tabs: list });
             d.setActivity?.("Switching tab");
             await d.switchTab(pick.id);

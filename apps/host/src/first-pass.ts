@@ -4,8 +4,8 @@ import { basename, dirname, join } from "node:path";
 import type { FirstPassLine, HostEvent, Playbook } from "@pista/protocol";
 import { keywordMatches, type BroadReason } from "./merchants.ts";
 import { mergeManifest } from "./manifest.ts";
-import { confirmByProof, notesBlock } from "./playbooks.ts";
-import { playbookConsent, unfence, type PlaybookRunConsent, type PlaybookRunRequest, type PlaybookRunResult } from "./playbook-run.ts";
+import { HISTORY, confirmByProof, notesBlock, unfence } from "./playbooks.ts";
+import { playbookConsent, type PlaybookRunConsent, type PlaybookRunRequest, type PlaybookRunResult } from "./playbook-run.ts";
 import { matchVendor, parseTransactions, type ParsedLine } from "./transactions.ts";
 
 type Pb = Pick<Playbook, "site" | "merchants" | "merchantsPending" | "merchantsPendingWhy" | "steps" | "status"> & Partial<Pick<Playbook, "notes" | "avoid" | "failCount" | "history">>;
@@ -46,7 +46,7 @@ export function routeLines(lines: ParsedLine[], playbooks: Pb[]): { routed: Rout
     else {
       const skipped = matchVendor(line.merchant, shut);
       const pb = skipped.kind === "one" ? shut.find((p) => p.site === skipped.site) : undefined;
-      const last = [...(pb?.history ?? [])].reverse().find((h) => h.summary.startsWith("replay failed"))?.summary.replace(/^replay failed:?\s*/, "");
+      const last = [...(pb?.history ?? [])].reverse().find((h) => h.summary.startsWith(HISTORY.replayFailed))?.summary.replace(new RegExp(`^${HISTORY.replayFailed}:?\\s*`), "");
       rest.push(pb ? { line, why: `skipped: ${pb.site} needs attention after ${pb.failCount ?? 0} failures${last ? ` (last: ${last})` : ""}`, site: pb.site } : { line });
     }
   }

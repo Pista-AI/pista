@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setupHome } from "./test-helpers.ts";
+import { traceOf, type TraceEntry } from "./test-trace-fixtures.ts";
 
 setupHome("playbook-autocapture", { cleanup: "exit" });
 const { PlaybookTrace, autoCapture } = await import("./playbook-capture.ts");
 const { formatHandoff, recordRun } = await import("./playbook-run.ts");
-const { getPlaybook, savePlaybook, validatePlaybook, deletePlaybook } = await import("./playbooks.ts");
+const { HISTORY, getPlaybook, savePlaybook, validatePlaybook, deletePlaybook } = await import("./playbooks.ts");
 
 const B = "https://billing.example.com/";
 const INV = { date: "2026-10-03", amount: 12.5, currency: "EUR" };
@@ -13,12 +14,7 @@ const OK = JSON.stringify({ path: "invoices/a.pdf", bytes: 10, contentType: "app
 const dl = { kind: "download" as const, source: "ref" as const, locator: { role: "link", name: "Download" }, contentType: "application/pdf", path: "invoices/a.pdf" };
 const click = { kind: "click" as const, locator: { role: "link", name: "Invoices", text: "Invoices" }, urlAfter: `${B}invoices` };
 
-function trace(entries: Parameters<InstanceType<typeof PlaybookTrace>["add"]>[0][], invoice: unknown = INV) {
-  const t = new PlaybookTrace();
-  for (const e of entries) t.add(e);
-  if (invoice) t.invoice = invoice;
-  return t;
-}
+const trace = (entries: TraceEntry[], invoice: unknown = INV) => traceOf(entries, invoice);
 const fresh = () => deletePlaybook("example.com");
 
 test("a download with a navigate/click path and an invoice in context is saved by the host, with a note", () => {
@@ -30,7 +26,7 @@ test("a download with a navigate/click path and an invoice in context is saved b
   const pb = getPlaybook("example.com")!;
   assert.deepEqual(pb.steps.map((s) => s.kind), ["click", "download"]);
   assert.equal(pb.startUrl, B);
-  assert.ok(pb.history.some((h) => h.summary === "captured by host"));
+  assert.ok(pb.history.some((h) => h.summary === HISTORY.captured));
 });
 
 test("nothing is saved for a refused download, no invoice, an off-path sign-in or an internal host", () => {
@@ -66,7 +62,7 @@ test("after a handoff, the model's download repairs the playbook: replayed steps
   const pb = getPlaybook("example.com")!;
   assert.deepEqual([pb.status, pb.failCount, pb.steps.length], ["ok", 0, 3]);
   assert.equal(pb.steps[1]!.kind === "click" && pb.steps[1]!.target.name, "New button");
-  assert.ok(pb.history.some((h) => h.summary.startsWith("repaired after handoff at step 2")));
+  assert.ok(pb.history.some((h) => h.summary.startsWith(HISTORY.repaired(2))));
 });
 
 test("the handoff names the step, detail, page and recent history", () => {
@@ -119,7 +115,7 @@ test("a handoff at the start page leaves no replayed entries; the next download 
   autoCapture(trace([{ kind: "navigate", url: B }, click, dl]), OK, "t");
   const pb = getPlaybook("example.com")!;
   assert.deepEqual([pb.status, pb.failCount], ["ok", 0]);
-  assert.ok(pb.history.some((h) => h.summary.startsWith("captured by host")));
+  assert.ok(pb.history.some((h) => h.summary.startsWith(HISTORY.captured)));
 });
 
 test("first-time capture: playbook_run finds no playbook, the model explores and downloads, the host saves it", async () => {
@@ -148,7 +144,7 @@ test("a handoff on the second host is repaired with both hosts", () => {
   assert.match(autoCapture(t, OK, "t").note ?? "", /^Saved a playbook for shop\.test/);
   const pb = getPlaybook("shop.test")!;
   assert.deepEqual(pb.hosts.sort(), ["example.com", "shop.test"]);
-  assert.ok(pb.history.some((h) => h.summary.startsWith("repaired after handoff at step 3")));
+  assert.ok(pb.history.some((h) => h.summary.startsWith(HISTORY.repaired(3))));
 });
 
 test("a path that crosses sites through a click that opens a tab is captured with both hosts", () => {

@@ -38,6 +38,43 @@ export function siteKey(url: string): string {
   return (getDomain(u.hostname, { allowPrivateDomains: true }) ?? u.hostname).toLowerCase();
 }
 
+/** Like siteKey, but undefined for a missing or unparseable address. */
+export function trySiteKey(url?: string): string | undefined {
+  try {
+    return url ? siteKey(url) : undefined;
+  } catch {}
+}
+
+/** The site of an address or a bare host ("acme.com/billing"), or undefined. */
+export function siteOf(input: unknown): string | undefined {
+  if (typeof input !== "string" || !input.trim()) return undefined;
+  const s = input.trim();
+  if (/^[/.?#]/.test(s) && !s.startsWith("//")) return undefined; // a relative path
+  return trySiteKey(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s.replace(/^\/\//, "")}`);
+}
+
+/** Hosts that are not a vendor site: localhost, IP addresses, .local, .internal and single-label names. */
+export const isInternalHost = (host: string): boolean => /^(localhost|\[.*\]|\d+(\.\d+){3}|[^.]+|.*\.(local|internal|localhost))$/i.test(host);
+
+export const OPEN = "<<<website-data";
+export const CLOSE = "website-data>>>";
+/** Removes the markers until none is left, so nested pieces cannot reassemble one. */
+export function unfence(s: string): string {
+  for (let prev = ""; prev !== s; ) {
+    prev = s;
+    s = s.replaceAll(OPEN, "").replaceAll(CLOSE, "");
+  }
+  return s;
+}
+
+/** The history lines the host writes (and first-pass reads back). */
+export const HISTORY = {
+  captured: "captured by host",
+  repaired: (k: number) => `repaired after handoff at step ${k}`,
+  shortcutLearned: "shortcut learned",
+  replayFailed: "replay failed",
+};
+
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
 const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;
 const OPAQUE_CHARS = /^[A-Za-z0-9_\-.~%+/=]{32,}$/;
@@ -240,13 +277,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
   const o = obj(input);
   if (o.site !== undefined && o.site !== site) throw new Error("site does not match");
   // Older files have no `hosts`: the playbook then spans its own site only. The site always comes first.
-  const hosts = [site, ...(Array.isArray(o.hosts) ? o.hosts : []).flatMap((h) => {
-    try {
-      return typeof h === "string" ? [siteKey(`http://${h.trim()}`)] : [];
-    } catch {
-      return [];
-    }
-  })].filter((h, i, all) => all.indexOf(h) === i).slice(0, MAX_HOSTS);
+  const hosts = [site, ...(Array.isArray(o.hosts) ? o.hosts : []).flatMap((h) => siteOf(h) ?? [])].filter((h, i, all) => all.indexOf(h) === i).slice(0, MAX_HOSTS);
   if (!Array.isArray(o.steps)) throw new Error("steps must be an array");
   if (o.steps.length > MAX_STEPS) throw new Error(`too many steps (max ${MAX_STEPS})`);
   const now = new Date().toISOString();
@@ -429,7 +460,7 @@ export function recordFailure(site: string, reason?: string, count = true): Play
       pb.failCount++;
       if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
     }
-    pb.history.push({ at: now, summary: reason ? `replay failed: ${reason}` : "replay failed" });
+    pb.history.push({ at: now, summary: reason ? `${HISTORY.replayFailed}: ${reason}` : HISTORY.replayFailed });
   });
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
 import { PlaybookTrace, TRACE_LIMIT, describeTrace, savePlaybookFromTrace } from "./playbook-capture.ts";
+import { traceOf } from "./test-trace-fixtures.ts";
 import { dismissMerchant, getPlaybook, recordFailure, savePlaybook, setMerchants } from "./playbooks.ts";
 
 const B = "http://127.0.0.1:8765/invoices/";
@@ -32,10 +33,11 @@ describe("playbook_save", () => {
   });
 
   it("says when a click opened a new tab, and saves it as an ordinary click", () => {
-    const t = new PlaybookTrace();
-    t.add({ kind: "navigate", url: `${B}opens-tab.html` }); // 1
-    t.add({ kind: "click", locator: { role: "link", name: "Open invoice", text: "Open invoice" }, urlAfter: `${B}detail-tab.html`, openedTab: true }); // 2
-    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice", text: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    const t = traceOf([
+      { kind: "navigate", url: `${B}opens-tab.html` }, // 1
+      { kind: "click", locator: { role: "link", name: "Open invoice", text: "Open invoice" }, urlAfter: `${B}detail-tab.html`, openedTab: true }, // 2
+      { kind: "download", source: "ref", locator: { role: "link", name: "Download invoice", text: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }, // 3
+    ]);
     assert.match(describeTrace(t.list()), /^2 click link "Open invoice" -> .*detail-tab\.html \(opened a new tab\)$/m);
     savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t");
     assert.deepEqual(getPlaybook("127.0.0.1")!.steps.map((x) => x.kind), ["click", "download"]);
@@ -61,10 +63,11 @@ describe("playbook_save", () => {
   });
 
   it("lists every domain the path visits as hosts, and refuses more than four", () => {
-    const t = new PlaybookTrace();
-    t.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1
-    t.add({ kind: "click", locator: { role: "link", name: "View invoice" }, urlAfter: "https://invoice.stripe.com/i/acct/live", openedTab: true }); // 2
-    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    const t = traceOf([
+      { kind: "navigate", url: "https://vendor.com/billing" }, // 1
+      { kind: "click", locator: { role: "link", name: "View invoice" }, urlAfter: "https://invoice.stripe.com/i/acct/live", openedTab: true }, // 2
+      { kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }, // 3
+    ]);
     const msg = savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t").message;
     assert.match(msg, /^Saved a playbook for vendor\.com/);
     assert.deepEqual(getPlaybook("vendor.com")?.hosts, ["vendor.com", "stripe.com"]);
@@ -77,10 +80,11 @@ describe("playbook_save", () => {
   });
 
   it("repairs a cross-host playbook from replayed entries and keeps the old hosts", () => {
-    const t = new PlaybookTrace();
-    t.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1
-    t.add({ kind: "click", locator: { role: "link", name: "View invoice" }, urlAfter: "https://invoice.stripe.com/i/acct/live", openedTab: true }); // 2
-    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    const t = traceOf([
+      { kind: "navigate", url: "https://vendor.com/billing" }, // 1
+      { kind: "click", locator: { role: "link", name: "View invoice" }, urlAfter: "https://invoice.stripe.com/i/acct/live", openedTab: true }, // 2
+      { kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }, // 3
+    ]);
     savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t");
     const r = new PlaybookTrace();
     r.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1

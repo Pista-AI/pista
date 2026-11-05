@@ -186,7 +186,7 @@ test("browser_navigate by ref: the tab guard sees the link's address before anyt
     state: async () => ({ url: "", title: "", loading: false }),
     setActivity: () => undefined,
   } as unknown as BrowserDriver;
-  registerBrowserTools(api, () => driver, { traceDir: "off", tabGuard: (u) => (u.includes("guarded.test") ? "Blocked: playbook first." : undefined) });
+  registerBrowserTools(api, () => driver, { traceDir: "off", urlGuard: (u) => (u.includes("guarded.test") ? "Blocked: playbook first." : undefined) });
   await assert.rejects(tools.get("browser_navigate")!.execute("1", { ref: "e1" }, undefined), /Blocked: playbook first/);
   assert.deepEqual(calls, []);
 });

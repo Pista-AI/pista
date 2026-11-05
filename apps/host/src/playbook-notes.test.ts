@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setupHome } from "./test-helpers.ts";
+import { localListTrace } from "./test-trace-fixtures.ts";
 
 const { home, projectDir } = setupHome("playbook-notes", { cleanup: "exit" });
 const { approvalExtension } = await import("./extensions.ts");
@@ -132,9 +133,7 @@ test("routing skips a notes-only playbook, and a first-pass handoff carries the 
 
 test("saving a path over a notes-only playbook keeps its notes", () => {
   addSiteNote("127.0.0.1", { note: "Click the button, not the link" }, "model");
-  const t = new PlaybookTrace();
-  t.add({ kind: "navigate", url: "http://127.0.0.1:8765/invoices/list.html" });
-  t.add({ kind: "download", source: "url", url: "http://127.0.0.1:8765/invoices/a.pdf", contentType: "application/pdf", path: "invoices/a.pdf" });
+  const t = localListTrace();
   savePlaybookFromTrace(t.list(), [1, 2], undefined, "t");
   const pb = getPlaybook("127.0.0.1")!;
   assert.equal(pb.steps.length, 1);
@@ -182,9 +181,7 @@ test("a successful playbook_run result stays pure JSON and carries the notes blo
 
 test("saving a path over an existing playbook keeps createdAt; playbook_note refuses internal hosts", async () => {
   const old = addSiteNote("127.0.0.1", { note: "again" }, "model");
-  const t = new PlaybookTrace();
-  t.add({ kind: "navigate", url: "http://127.0.0.1:8765/invoices/list.html" });
-  t.add({ kind: "download", source: "url", url: "http://127.0.0.1:8765/invoices/a.pdf", contentType: "application/pdf", path: "invoices/a.pdf" });
+  const t = localListTrace();
   savePlaybookFromTrace(t.list(), [1, 2], undefined, "t");
   assert.equal(getPlaybook("127.0.0.1")!.createdAt, old.createdAt);
   let tool: { execute: (id: string, p: Record<string, unknown>) => Promise<{ content: { text: string }[] }> } | undefined;
