@@ -10,7 +10,7 @@ import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./d
 import { readFileSync } from "node:fs";
 import { isWebPage, readHead, refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
-import { amountComparable, amountShown, fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf } from "./row-match.ts";
+import { describeCandidate, fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf, type MatchedBy, type RowMatch } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
 
 /** What a row is matched on. Mirrors the protocol type; pi-browser does not depend on protocol (the host test checks they agree). */
@@ -27,11 +27,40 @@ export type ReplayStep =
 export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "row-not-found" | "row-ambiguous" | "row-not-verified" | "needs-invoice" | "error";
 
 /**
+ * What a run compared with the invoice. `amount: true` means the amount was verified, including by a band check on a charge in
+ * another currency: then `matchedBy` includes "amount-fx" and `fxRateUsed` is the rate the scorer applied (a table rate unless the
+ * caller gave one), while `fxRateImplied` is the real rate (invoice amount / row amount) a consumer may learn from.
+ */
+export type Verified = {
+  date: boolean;
+  amount: boolean;
+  /** the amount could not be verified: the row or page showed only another currency (or none comparable), so the date alone was compared */
+  foreignCurrency?: true;
+  matchedBy?: MatchedBy[];
+  fxRateUsed?: number;
+  /** bank date minus row or page date, in days (positive: the vendor's date precedes the charge) */
+  offsetDays?: number;
+  /** the matched row's or page's amount (absolute) and currency code when known */
+  rowAmount?: number;
+  rowCurrency?: string;
+  /** invoice amount / row amount, when the currencies differ */
+  fxRateImplied?: number;
+};
+
+/**
  * Either the saved file, or a handoff at the first step that failed. `failedIndex` numbers steps from 1 like the stored playbook;
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean; /** the row or page showed only another currency than the invoice, so the date alone was compared */ foreignCurrency?: true }; /** Things the run did that a person should know about (for example a repeated click that left several tabs open). */ notes?: string[]; shortcut?: ReplayShortcutOutcome }
+  | {
+    ok: true;
+    download: { path: string; bytes: number; contentType?: string };
+    steps: number;
+    /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[];
+    /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: Verified;
+    /** Things the run did that a person should know about (for example a repeated click that left several tabs open). */ notes?: string[];
+    shortcut?: ReplayShortcutOutcome;
+  }
   | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
 /** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
@@ -51,7 +80,7 @@ export interface ReplayOptions {
   downloadPath: string;
   overwrite?: boolean;
   /** The invoice the job wants (date as yyyy-mm-dd, amount and currency from the bank transaction): picks the row for a locator with `row`. */
-  invoice?: { date: string; amount?: number; currency?: string };
+  invoice?: { date: string; amount?: number; currency?: string; /** text from the transaction (an invoice or order number) that a row may show */ reference?: string };
   /** Asked before each click, sign-in and download; false stops with "declined". */
   approve?: (step: ReplayStep, index: number) => Promise<boolean>;
   /** Asked about a held consequential click (see safety.ts), naming it exactly; without it the stop stands and replay hands off. */
@@ -88,7 +117,9 @@ class Handoff extends Error {
 
 const norm = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
-export type Resolution = { target: string } | { reason: "not-found" | "ambiguous" | "row-not-found" | "row-ambiguous"; detail: string; /** nothing to choose from yet (no period labels), so the page may still be building */ empty?: true };
+/** What the matcher found for the chosen row. */
+export type Seen = { amount: boolean; foreign?: boolean; matchedBy?: MatchedBy[]; fxRateUsed?: number; offsetDays?: number; rowAmount?: number; rowCurrency?: string; fxRateImplied?: number };
+export type Resolution = { target: string; seen?: Seen } | { reason: "not-found" | "ambiguous" | "row-not-found" | "row-ambiguous"; detail: string; /** nothing to choose from yet (no period labels), so the page may still be building */ empty?: true };
 type Candidate = { ref: string; role: string; name: string; href?: string };
 
 const tiersOf = (l: ReplayLocator): ((e: Candidate) => boolean)[] => {
@@ -113,6 +144,8 @@ export function resolveAll(elements: readonly Candidate[], target: ReplayLocator
 const describeInvoice = (i: { date: string; amount?: number; currency?: string }) =>
   `the invoice dated ${i.date.slice(0, 10)}${i.amount !== undefined ? `, amount ${i.amount}${i.currency ? ` ${i.currency.slice(0, 3)}` : ""}` : ""}`;
 
+const seenOf = (m: Extract<RowMatch, { kind: "one" }>, byAmount: boolean): Seen => ({ amount: byAmount && m.amountVerified, ...(byAmount && !m.amountVerified ? { foreign: true } : {}), matchedBy: m.matchedBy, offsetDays: m.offsetDays, ...(m.fxRateUsed !== undefined ? { fxRateUsed: m.fxRateUsed } : {}), ...(m.rowAmount !== undefined ? { rowAmount: m.rowAmount } : {}), ...(m.rowCurrency ? { rowCurrency: m.rowCurrency } : {}), ...(m.fxRateImplied !== undefined ? { fxRateImplied: m.fxRateImplied } : {}) });
+
 /** Chooses one of `refs` by the text of its row. Exactly one match gives its ref; none or several is a handoff, never a guess. */
 export function pickRow(refs: readonly string[], rowTexts: readonly (string | null)[], invoice: NonNullable<ReplayOptions["invoice"]>, by: readonly ("date" | "amount")[]): Resolution {
   const looking = describeInvoice(invoice);
@@ -120,24 +153,27 @@ export function pickRow(refs: readonly string[], rowTexts: readonly (string | nu
   if (rowTexts.length < refs.length || rowTexts.slice(0, refs.length).some((t) => t === null || t === undefined)) return ambiguous("A candidate's row could not be read");
   if (new Set(rowTexts).size < refs.length) return ambiguous("Several candidates have identical rows");
   if (rowTexts.some((t) => new Set(parseDates(t!).filter((d) => d.d).map((d) => d.raw)).size > 3)) return ambiguous("A row holds too many dates to be one invoice");
-  const m = matchRows(refs.map((_, i) => ({ index: i, text: rowTexts[i] ?? "" })), { date: invoice.date, ...(by.includes("amount") && invoice.amount !== undefined ? { amount: invoice.amount, currency: invoice.currency } : {}) });
-  if (m.kind === "one") return { target: refs[m.index]! };
+  const byAmount = by.includes("amount") && invoice.amount !== undefined;
+  const m = matchRows(refs.map((_, i) => ({ index: i, text: rowTexts[i] ?? "" })), { date: invoice.date, reference: invoice.reference, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
+  if (m.kind === "one") return { target: refs[m.index]!, seen: seenOf(m, byAmount && parseAmounts(rowTexts[m.index] ?? "", { strict: true }).length > 0) };
   if (m.kind === "none") return { reason: "row-not-found", detail: `No row of ${refs.length} matches ${looking}.` };
-  return { reason: "row-ambiguous", detail: `${m.candidates.length} rows match ${looking}.` };
+  return { reason: "row-ambiguous", detail: `${m.candidates.length} rows match ${looking}: ${m.details.slice(0, 5).map((c) => describeCandidate(c, invoice)).join("; ")}.` };
 }
 
 /**
  * A single element found without a row rule, checked against the invoice before it is acted on: its row (see rowTextOf) must show
  * the invoice's date and no more than 3 distinct dates. The detail never quotes the row's text.
  */
-export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true; amount: boolean; amountVerified?: false } | { ok: false; detail: string } {
+export function verifySingleRow(rowText: string, invoice: NonNullable<ReplayOptions["invoice"]>): ({ ok: true; amount: boolean; amountVerified?: false } & Omit<Seen, "amount" | "foreign">) | { ok: false; detail: string } {
   const fail = (why: string) => ({ ok: false as const, detail: why });
   const date = invoice.date.slice(0, 10);
   if (fullDateCount(rowText) !== 1) return fail(`row doesn't show exactly one date to compare with the invoice date ${date}`);
   // The amount counts whenever the text shows one; a text without any amount is judged by its date alone.
-  const byAmount = invoice.amount !== undefined && parseAmounts(rowText).length > 0;
-  const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
-  return m.kind === "one" ? { ok: true, amount: byAmount && amountShown(rowText, invoice.amount!, invoice.currency), ...(m.amountVerified === false ? { amountVerified: false as const } : {}) } : fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
+  const byAmount = invoice.amount !== undefined && parseAmounts(rowText, { strict: true }).length > 0;
+  const m = matchRows([{ index: 0, text: rowText }], { date: invoice.date, reference: invoice.reference, ...(byAmount ? { amount: invoice.amount, currency: invoice.currency } : {}) });
+  if (m.kind !== "one") return fail(`row doesn't show the invoice date ${date}${byAmount ? " and amount" : ""}`);
+  const { foreign, ...seen } = seenOf(m, byAmount);
+  return { ok: true, ...seen, ...(foreign ? { amountVerified: false as const } : {}) };
 }
 
 /** Longest page text read for verification; capture and replay both cut at this, so they judge the same text. */
@@ -160,17 +196,24 @@ function foreignPageIsOneInvoice(text: string, date: string): boolean {
  * Verifies the invoice on a detail page (the download control sits in no row): the page text must show the invoice date and, when the
  * invoice has an amount, that amount (strictly parsed; the date alone is not enough). Same date tolerance as a row. The detail never quotes the page's text.
  */
-export function verifyPage(pageText: string, invoice: NonNullable<ReplayOptions["invoice"]>): { ok: true; amount: boolean; amountVerified?: false } | { ok: false; detail: string } {
+export function verifyPage(pageText: string, invoice: NonNullable<ReplayOptions["invoice"]>): ({ ok: true; amount: boolean; amountVerified?: false } & Omit<Seen, "amount" | "foreign">) | { ok: false; detail: string } {
   const text = pageText.slice(0, PAGE_TEXT_MAX);
   const date = invoice.date.slice(0, 10);
   if (fullDateCount(text) > PAGE_DATES_MAX) return { ok: false, detail: `page shows too many dates to be one invoice (looking for ${date})` };
   const dateSeen = matchRows([{ index: 0, text }], { date: invoice.date }).kind === "one";
-  const amountSeen = invoice.amount !== undefined && amountShown(text, invoice.amount, invoice.currency);
-  if (dateSeen && (invoice.amount === undefined || amountSeen)) return { ok: true, amount: amountSeen };
-  // The page shows amounts only in another currency than the invoice: the date and the invoice-like checks above are all it can prove.
-  // Stricter than the same-currency path, as there is no amount to tell an invoice from a list: at most 2 dates (the invoice's, plus a due date), one amount.
-  if (dateSeen && invoice.amount !== undefined && !amountComparable(text, invoice.currency) && foreignPageIsOneInvoice(text, invoice.date)) return { ok: true, amount: false, amountVerified: false };
-  return { ok: false, detail: dateSeen ? "page shows the date but not the amount" : amountSeen ? `page doesn't show the invoice date ${date}` : `page showed neither the invoice date ${date} nor its amount` };
+  const m = matchRows([{ index: 0, text }], { date: invoice.date, reference: invoice.reference, ...(invoice.amount !== undefined ? { amount: invoice.amount, currency: invoice.currency } : {}) });
+  if (m.kind === "one") {
+    const seen = seenOf(m, invoice.amount !== undefined);
+    if (invoice.amount === undefined || (m.amountVerified && m.matchedBy.includes("amount"))) return { ok: true, ...seen, ...(seen.foreign ? { amountVerified: false as const } : {}) };
+    // The amount was verified only through a rate, or could not be (the page shows amounts only in another currency): the date and the
+    // invoice-like checks are what it can prove. Stricter than the same-currency path, as a rate cannot tell an invoice from a list:
+    // at most 2 dates (the invoice's, plus a due date), one amount.
+    if (parseAmounts(text, { strict: true }).length > 0 && foreignPageIsOneInvoice(text, invoice.date)) {
+      const { foreign, ...rest } = seen;
+      return { ok: true, ...rest, ...(foreign ? { amountVerified: false as const } : {}) };
+    }
+  }
+  return { ok: false, detail: dateSeen ? "page shows the date but not the amount" : m.kind === "many" ? `page's date and amount are ambiguous (looking for ${date})` : `page showed neither the invoice date ${date} nor its amount` };
 }
 
 /** The text a lone element is verified on: the row it sits in (see rowTextOf), "" when no level shows exactly one date. */
@@ -258,7 +301,7 @@ const countMatches = (selector: string): number => {
 };
 
 /** Snapshots the page and resolves the locator to a ref (or a selector the page has). */
-async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], invoice?: ReplayOptions["invoice"], seen?: { amount: boolean; foreign?: boolean }): Promise<Resolution> {
+async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readonly ReplayLocator[] = [], invoice?: ReplayOptions["invoice"], seen?: Seen): Promise<Resolution> {
   if (target.period && target.role) {
     if (!invoice) throw new Handoff("needs-invoice", "This step picks a period (month) by the invoice, and the job gave no invoice date.");
     const snap = await snapshotOf(d, RESOLVE_MAX_ELEMENTS);
@@ -278,9 +321,7 @@ async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readon
     const picked = pickRow(refs, texts, invoice, target.row.match);
     // A row without any amount passes an amount rule, so only a row that shows the invoice's amount counts as compared.
     if (seen && "target" in picked && target.row.match.includes("amount") && invoice.amount !== undefined) {
-      const text = texts[refs.indexOf(picked.target)] ?? "";
-      seen.amount = amountShown(text, invoice.amount, invoice.currency);
-      seen.foreign = !seen.amount && !amountComparable(text, invoice.currency);
+      Object.assign(seen, picked.seen);
     }
     return picked;
   }
@@ -333,18 +374,22 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   };
   const stillOnSite = async () => guardUrl((await d.state()).url, "The page moved to");
   let saved: { path: string; bytes: number; contentType?: string } | undefined;
-  const verified: { date: boolean; amount: boolean; foreignCurrency?: true } = { date: false, amount: false };
+  const verified: Verified = { date: false, amount: false };
   /** Records that the date was compared, and whether the amount was or only another currency was seen. */
-  const noteAmount = (amount: boolean | undefined, foreign: boolean | undefined) => {
+  const noteAmount = (amount: boolean | undefined, foreign: boolean | undefined, how: Omit<Seen, "amount" | "foreign"> = {}) => {
     verified.date = true;
+    if (how.matchedBy) verified.matchedBy = [...new Set([...(verified.matchedBy ?? []), ...how.matchedBy])];
+    if (how.fxRateUsed !== undefined) verified.fxRateUsed = how.fxRateUsed;
+    if (how.offsetDays !== undefined) verified.offsetDays = how.offsetDays;
+    for (const k of ["rowAmount", "rowCurrency", "fxRateImplied"] as const) if (how[k] !== undefined) Object.assign(verified, { [k]: how[k] });
     if (amount) verified.amount = true;
     else if (foreign && !verified.amount) verified.foreignCurrency = true;
     if (verified.amount) delete verified.foreignCurrency;
   };
   /** Notes what a located step's row or period rule compared against the invoice. */
-  const noteRule = (t: ReplayLocator, seen: { amount: boolean; foreign?: boolean }) => {
+  const noteRule = (t: ReplayLocator, seen: Seen) => {
     if (!o.invoice || !(t.row || t.period)) return;
-    noteAmount(seen.amount, seen.foreign);
+    noteAmount(seen.amount, seen.foreign, seen);
   };
 
   const click = async (target: string, what: string) => {
@@ -353,7 +398,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     return r;
   };
   /** Like `locate`, but a `not-found` (or a period step with no labels yet) is retried on a fresh snapshot for a few seconds: the page may still be building. */
-  const locateWaiting = async (target: ReplayLocator, fallbacks?: readonly ReplayLocator[], seen?: { amount: boolean; foreign?: boolean }) => {
+  const locateWaiting = async (target: ReplayLocator, fallbacks?: readonly ReplayLocator[], seen?: Seen) => {
     const start = now();
     for (;;) {
       const r = await locate(d, target, fallbacks, o.invoice, seen);
@@ -439,11 +484,11 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
             // A detail page: the invoice's date and amount are on the page itself, not in a row.
             const v = verifyPage(String(await d.evaluate("document.body ? document.body.innerText : ''").catch(() => "")).slice(0, PAGE_TEXT_MAX), o.invoice);
             if (!v.ok) throw new Handoff("ambiguous", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
-            noteAmount(v.amount, v.amountVerified === false);
+            noteAmount(v.amount, v.amountVerified === false, v);
           } else if (o.invoice && !step.target.row && !step.target.period) {
             const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
             if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
-            noteAmount(v.amount, v.amountVerified === false);
+            noteAmount(v.amount, v.amountVerified === false, v);
           }
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");

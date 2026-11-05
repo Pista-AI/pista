@@ -1,8 +1,9 @@
 // Pure matcher: picks the invoice-list row a job is looking for. Output carries indices only (rows may hold personal data).
 
+import { EUR_RATES, rateFor as fxRate } from "./fx.ts";
+
 /** `amb` marks one reading of a numeric date that could be day-first or month-first; both readings are emitted. */
 export type CandidateDate = { y: number; m: number; d?: number; monthOnly?: boolean; amb?: "dmy" | "mdy"; raw: string };
-export type RowMatch = { kind: "one"; index: number; /** false: matched by date alone because the row shows only another currency */ amountVerified?: false } | { kind: "none" } | { kind: "many"; candidates: number[] };
 export type MatchRow = { index: number; text: string };
 export type Amount = { value: number; currency?: string };
 
@@ -108,19 +109,6 @@ const agrees = (a: string | undefined, t: string | undefined) => {
   return !x || !y || x === y || (KRONA.has(x) && KRONA.has(y));
 };
 
-/** Whether the text shows an amount equal to `amount` (a row without one is not evidence about it). */
-export const amountShown = (text: string, amount: number, currency?: string): boolean => parseAmounts(text, { strict: true }).some((a) => Math.abs(a.value - amount) <= 0.01 && agrees(a.currency, currency));
-
-/**
- * Whether an invoice amount can be compared with the amounts in `text`: false only when the text shows amounts and every one carries a
- * currency that is not the invoice's (a USD line against a SEK bank charge). A text without amounts, or with one that is in the
- * invoice's currency or has no currency, is comparable.
- */
-export const amountComparable = (text: string, currency?: string): boolean => {
-  const shown = parseAmounts(text, { strict: true });
-  return !shown.length || shown.some((a) => agrees(a.currency, currency));
-};
-
 const dayNum = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400000);
 const isoParts = (iso: string) => iso.split("-").map(Number) as [number, number, number];
 
@@ -139,40 +127,172 @@ const readings = (text: string, order: "dmy" | "mdy" | null) =>
   parseDates(text).filter((d) => d.d !== undefined && (!d.amb || !order || d.amb === order)).map((d) => (order && d.amb ? { ...d, amb: undefined } : d));
 
 /**
- * Picks the one row for the invoice, or says it cannot. Every row with a date within the tolerance counts (the closest date does not
- * win), so two rows, or two dates in one row near the target, give "many". A row matching only through a day-first/month-first guess
- * counts only with an exactly matching amount; otherwise the answer is "many". Rows showing amounts that do not match are excluded;
- * rows showing none stay candidates only when no row has an equal amount.
+ * Sign convention: `target.date` is the bank transaction date and the rows are the vendor's invoices. `offsetDays` is
+ * target date minus row date, so it is positive when the vendor's row comes before the charge (the normal case: invoice on the
+ * 21st, charge on the 22nd is +1). The date score is full for 0 to +3, falls linearly to 0 at +7 (`maxBefore`), and for rows dated
+ * after the charge (negative offsets) falls fast and ends at -2 (`maxAfter`).
+ */
+export type MatchOptions = {
+  /** Days a row may precede the bank date (default 7) and follow it (default 2). */
+  maxBefore?: number;
+  maxAfter?: number;
+  /** Relative width of the amount band: a row in another currency scores full inside it, 0 at twice it. Default 0.08 for the built-in table, 0.05 for caller rates (halved when two or more rows are in the window, never below 0.02). */
+  band?: number;
+  /** Rate source of the caller (for example learned per site); when given, `band` should come with it. */
+  rateFor?: (from: string, to: string) => number | undefined;
+  /** Units per EUR overriding entries of the built-in table. */
+  rates?: Record<string, number>;
+  /** Score gap to the runner-up below which the answer is "many" (default 0.15). */
+  margin?: number;
+};
+/** The answer for period labels, which carry no scores. */
+export type PeriodMatch = { kind: "one"; index: number } | { kind: "none" } | { kind: "many"; candidates: number[] };
+export type MatchedBy = "date" | "amount" | "amount-fx" | "reference";
+export type Candidate = {
+  index: number;
+  score: number;
+  /** Bank date minus row date, in days: positive when the row precedes the charge. */
+  offsetDays: number;
+  date: { y: number; m: number; d: number };
+  amount?: { value: number; currency?: string; score: number; rate?: number; converted?: number };
+  reference?: true;
+  /** The date is a guess (a numeric day/month reading, or a later date of a row that shows several): conclusive only with an exact amount or a reference. */
+  guess?: true;
+  /** The best date is not the earliest of several the row shows: it may be a due or paid date, so the row is never conclusive without a reference. */
+  due?: true;
+  matchedBy: MatchedBy[];
+  amountVerified: boolean;
+};
+export type RowMatch =
+  | ({ kind: "one"; index: number; fxRateUsed?: number; /** the matched row's amount (absolute) and currency, when it showed one */ rowAmount?: number; rowCurrency?: string; /** invoice amount / row amount, when the currencies differ: the rate the vendor and bank really applied */ fxRateImplied?: number } & Pick<Candidate, "matchedBy" | "amountVerified" | "offsetDays" | "score">)
+  /** `index`, `score` and the evidence fields exist only on `one`; `many` lists `candidates` and `details`. */
+  | { kind: "none" }
+  | { kind: "many"; candidates: number[]; details: Candidate[] };
+
+const AMOUNT_GAP = 0.3, FULL_UNTIL = 3, THRESHOLD = 0.5, W_DATE = 1, W_AMOUNT = 1.5, REF_BOOST = 0.6, GUESS = 0.6, UNCONFIRMED = 0.2; // a row showing no comparable amount stays a candidate but ranks below one that confirms it
+const dateScore = (o: number, maxBefore: number, maxAfter: number) =>
+  o >= 0 ? (o <= FULL_UNTIL ? 1 : o >= maxBefore ? 0 : 1 - (o - FULL_UNTIL) / (maxBefore - FULL_UNTIL)) : -o >= maxAfter ? 0 : 1 - -o / (maxAfter + 0.25);
+const bandScore = (off: number, band: number) => (off <= band ? 1 : off >= 2 * band ? 0 : 1 - (off - band) / band);
+
+const DATE_SHAPES = [/\d{4}-\d{2}-\d{2}/g, /\d{2}[./-]\d{2}[./-]\d{2,4}/g];
+/** Whole alphanumeric tokens of a text, lowercased; a hyphenated token is kept whole and its halves are added. */
+const tokens = (text: string): Set<string> => {
+  let t = text.toLowerCase();
+  for (const re of DATE_SHAPES) t = t.replace(re, " ");
+  const out = new Set<string>();
+  for (const w of t.match(/[a-z0-9]+(?:-[a-z0-9]+)*/g) ?? []) (out.add(w), w.split("-").forEach((h) => out.add(h)));
+  return out;
+};
+/** Reference candidates from the transaction text: 5+ characters with a digit, no account-number-length digit runs. Plain words and the merchant name carry no digit. */
+const referenceTokens = (text: string | undefined): string[] => [...tokens(text ?? "")].filter((w) => w.length >= 5 && /\d/.test(w) && (w.match(/\d/g) ?? []).length < 12);
+
+type Fit = { r: MatchRow; o: number; d: { y: number; m: number; d: number }; guess: boolean; due: boolean };
+/** Row decision from the viable candidates, best first. "many" when anything but the date could not separate them. */
+function decide(viable: Candidate[], margin: number, targetHasAmount: boolean): "one" | "many" {
+  const [top, ...rest] = viable;
+  if (!top) return "many";
+  const exact = top.amount?.score === 1 && top.amount.rate === undefined;
+  if (rest[0] && top.score - rest[0].score < margin) return "many";
+  if (!top.reference && (top.due || (top.guess && !exact))) return "many";
+  if (top.reference) return "one";
+  // Two rows with the same exact amount (weekly invoices alike): only a reference can tell them apart, never the date.
+  if (exact && rest.some((c) => c.amount?.score === 1 && c.amount.rate === undefined)) return "many";
+  // Without a reference, the date never separates rows that fit the amount about equally (any fit short of an exact same-currency one).
+  if (!exact && rest.some((c) => (c.amount?.score ?? 0) >= 0.5 && (top.amount?.score ?? 0) - c.amount!.score < AMOUNT_GAP)) return "many";
+  // A row with no amount only beats a rival that its amount contradicts outright, not one that merely scored low.
+  if (targetHasAmount && !top.amount && rest.some((c) => (c.amount?.score ?? 0) > 0)) return "many";
+  return "one";
+}
+
+/**
+ * Scores every row with a date inside the window on date, amount and reference, and picks the one row, or says it cannot.
+ * Date: see MatchOptions. Amount: within 0.01 in the same currency; in another currency a rate gives a band; a row showing no
+ * comparable amount is neutral. A reference (a whole token of target.reference, such as an invoice number) found in the row boosts
+ * it, but never over an amount that does not fit. A row showing several dates whose best date is not its earliest is a guess.
+ * Wrong picks cost more than hand-offs: see `decide`. Rows showing only negative amounts are excluded.
  */
 export function matchRows(
   rows: MatchRow[],
-  target: { date: string; amount?: number; currency?: string },
-  opts: { toleranceDays?: number } = {},
+  target: { date: string; amount?: number; currency?: string; reference?: string },
+  opts: MatchOptions = {},
 ): RowMatch {
-  const tol = opts.toleranceDays ?? 3;
-  const [ty, tm, td] = isoParts(target.date);
+  const [maxBefore, maxAfter, margin] = [opts.maxBefore ?? 7, opts.maxAfter ?? 2, opts.margin ?? 0.15];
+  const [ty, tm, td] = isoParts(target.date.slice(0, 10));
   const t = dayNum(ty, tm, td);
   const order = listOrder(rows.map((r) => r.text));
-  let hits: { index: number; sure: boolean; amounts: Amount[]; foreign: boolean }[] = [];
+  const table = { ...EUR_RATES, ...opts.rates };
+  const callerRate = opts.rateFor !== undefined || opts.rates !== undefined;
+  const rate = (from: string, to: string) => opts.rateFor?.(from, to) ?? fxRate(from, to, table);
+  const refs = referenceTokens(target.reference);
+  const inWindow: Fit[] = [];
   for (const r of rows) {
-    const near = readings(r.text, order).filter((d) => Math.abs(dayNum(d.y, d.m, d.d!) - t) <= tol);
-    if (near.length) hits.push({ index: r.index, sure: near.some((d) => !d.amb), amounts: parseAmounts(r.text, { strict: true }), foreign: target.amount !== undefined && !amountComparable(r.text, target.currency) });
+    const shown = parseAmounts(r.text, { strict: true });
+    if (shown.length && shown.every((a) => a.value < 0)) continue;
+    const dates = readings(r.text, order);
+    const earliest = Math.min(...dates.map((d) => dayNum(d.y, d.m, d.d!)));
+    const several = new Set(dates.map((d) => d.raw)).size > 1;
+    let best: Fit | undefined, bestScore = 0;
+    for (const d of dates) {
+      const n = dayNum(d.y, d.m, d.d!), o = t - n;
+      const due = several && n !== earliest, guess = !!d.amb || due;
+      const s = dateScore(o, maxBefore, maxAfter) * (guess ? GUESS : 1);
+      if (s > bestScore) (bestScore = s), (best = { r, o, d: { y: d.y, m: d.m, d: d.d! }, guess, due });
+    }
+    if (best) inWindow.push(best);
   }
-  const equal = (h: { amounts: Amount[] }) => target.amount !== undefined && h.amounts.some((a) => Math.abs(a.value - target.amount!) <= 0.01 && agrees(a.currency, target.currency));
-  if (target.amount !== undefined) {
-    if (hits.some(equal)) hits = hits.filter(equal);
-    else hits = hits.filter((h) => !h.amounts.length || h.foreign); // a row in another currency is judged by its date alone
+  const base = opts.band ?? (callerRate ? 0.05 : 0.08);
+  // The built-in table's band stays as given; a caller's rates are trusted more, so the band tightens with candidate density (floor 2 %).
+  const band = callerRate ? Math.max(0.02, inWindow.length >= 2 ? base / 2 : base) : base;
+  const cands: Candidate[] = inWindow.map(({ r, o, d, guess, due }) => {
+    const ds = dateScore(o, maxBefore, maxAfter) * (guess ? GUESS : 1);
+    let amount: Candidate["amount"];
+    if (target.amount !== undefined) {
+      for (const a of parseAmounts(r.text, { strict: true }).filter((x) => x.value >= 0)) {
+        let c: NonNullable<Candidate["amount"]> | undefined;
+        if (agrees(a.currency, target.currency)) c = { ...a, score: Math.abs(a.value - target.amount) <= 0.01 ? 1 : 0 };
+        else {
+          const k = rate(a.currency!, target.currency!);
+          if (k !== undefined && target.amount > 0) c = { ...a, rate: k, converted: a.value * k, score: bandScore(Math.abs((a.value * k) / target.amount - 1), band) };
+        }
+        if (c && (!amount || c.score > amount.score)) amount = c;
+      }
+    }
+    const rowTokens = refs.length ? tokens(r.text) : new Set<string>();
+    const ref = refs.some((x) => rowTokens.has(x)) && (!amount || amount.score >= 0.5);
+    const full = amount?.score === 1;
+    const base = (W_DATE * ds + (amount ? W_AMOUNT * amount.score : 0)) / (W_DATE + (amount ? W_AMOUNT : 0));
+    return {
+      index: r.index, score: base + (ref ? REF_BOOST : 0) - (target.amount !== undefined && !amount ? UNCONFIRMED : 0), offsetDays: o, date: d, ...(amount ? { amount } : {}), ...(ref ? { reference: true as const } : {}), ...(guess ? { guess: true as const } : {}), ...(due ? { due: true as const } : {}),
+      matchedBy: [...(ds === 1 ? ["date" as const] : []), ...(full ? [amount!.rate !== undefined ? "amount-fx" as const : "amount" as const] : []), ...(ref ? ["reference" as const] : [])],
+      amountVerified: full,
+    };
+  });
+  const viable = cands.filter((c) => c.score >= THRESHOLD && c.amount?.score !== 0).sort((a, b) => b.score - a.score);
+  if (!viable.length) return { kind: "none" };
+  const top = viable[0]!;
+  if (decide(viable, margin, target.amount !== undefined) === "many") {
+    return { kind: "many", candidates: viable.map((c) => c.index).sort((x, y) => x - y), details: viable };
   }
-  if (!hits.length) return { kind: "none" };
-  const doubtful = hits.some((h) => !h.sure && !equal(h));
-  return hits.length === 1 && !doubtful ? { kind: "one", index: hits[0]!.index, ...(hits[0]!.foreign && !equal(hits[0]!) ? { amountVerified: false as const } : {}) } : { kind: "many", candidates: hits.map((h) => h.index) };
+  return { kind: "one", index: top.index, matchedBy: top.matchedBy, amountVerified: top.amountVerified, offsetDays: top.offsetDays, score: top.score, ...(top.amount ? { rowAmount: Math.abs(top.amount.value), ...(top.amount.currency ? { rowCurrency: top.amount.currency } : {}) } : {}), ...(top.amount?.rate !== undefined && top.amount.score > 0 ? { fxRateUsed: top.amount.rate, ...(top.amount.value > 0 ? { fxRateImplied: target.amount! / top.amount.value } : {}) } : {}) };
+}
+
+const signed = (n: number) => (n > 0 ? `+${n}` : `${n}`);
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const money = (v: number, c?: string) => `${v.toFixed(2).replace(".", ",")}${c ? ` ${c}` : ""}`;
+
+/** One line of evidence for a hand-off: "row 3: 21 Oct 2026, 200,00 USD (date +1 day, amount via USD→SEK 10.1: 2021.55 vs 2020.00)". Quotes no row text. */
+export function describeCandidate(c: Candidate, target: { amount?: number; currency?: string }): string {
+  const a = c.amount;
+  const via = a?.rate !== undefined ? `amount via ${a.currency}→${target.currency} ${Number(a.rate.toPrecision(3))}: ${a.converted!.toFixed(2)} vs ${target.amount!.toFixed(2)}` : a ? `amount ${a.score === 1 ? "equal" : "differs"}` : "";
+  const ev = [`date ${signed(c.offsetDays)} day${Math.abs(c.offsetDays) === 1 ? "" : "s"}`, via, c.reference ? "reference found" : ""].filter(Boolean).join(", ");
+  return `row ${c.index}: ${c.date.d} ${MONTHS[c.date.m - 1]} ${c.date.y}${a ? `, ${money(a.value, a.currency)}` : ""} (${ev})`;
 }
 
 /** True for a short label that is itself a date or month ("October 2026", "1 Oct - 31 Oct 2026"): what a month or period selector shows. */
 export const isPeriodLabel = (s: string): boolean => s.length <= 40 && parseDates(s).length > 0;
 
 /** Period labels the target falls in: a month label by its month, a label with two dates as a range. A numeric label still ambiguous is no match. */
-export function matchPeriod(labels: MatchRow[], target: { date: string }): RowMatch {
+export function matchPeriod(labels: MatchRow[], target: { date: string }): PeriodMatch {
   const [ty, tm, td] = isoParts(target.date);
   const t = dayNum(ty, tm, td);
   const order = listOrder(labels.map((l) => l.text));
