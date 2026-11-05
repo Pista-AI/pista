@@ -221,7 +221,7 @@ gated("3. a note recorded by the model is shown, as advisory data, in the next p
   const note = "Invoices live in the Billing portal; each row opens a payment page in a new tab.";
   const { seen } = await run([call("playbook_note", { site: A(), note })]);
   assert.match(seen[1]!, /^Notes from earlier runs for vendor-a\.test \(advisory/, seen[1]!);
-  assert.match(seen[1]!, new RegExp(note.replace(/[.]/g, "\\.")));
+  assert.ok(seen[1]!.includes(note), seen[1]!);
   const path = "invoices/2026-10/notes-2026-10-05-12.00.pdf";
   const next = await run([call("playbook_run", { site: A(), invoice: inv("2026-10-05", 12), path })]);
   const result = JSON.parse(next.seen[1]!) as { notes?: string; note?: string };
