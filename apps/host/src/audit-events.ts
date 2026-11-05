@@ -150,13 +150,19 @@ export class ToolAudit {
     this.started.set(event.toolCallId, { at: Date.now(), name: event.toolName, input: event.args });
   }
 
-  end(event: { toolCallId: string; isError?: boolean }): void {
+  end(event: { toolCallId: string; isError?: boolean; result?: { content?: { type: string; text?: string }[] } }): void {
     const call = this.started.get(event.toolCallId);
     this.started.delete(event.toolCallId);
     if (!call) return;
     if (!this.decided.delete(event.toolCallId)) emitDecision(this.audit, call.name, call.input, "deny", { source: "extension" });
     safe(() => {
       const { kind, attrs } = classifyTool(call.name, call.input);
+      // A navigation by ref has no address in its input; the result carries the page it landed on.
+      if (call.name === "browser_navigate" && !attrs["url.domain"]) {
+        try {
+          attrs["url.domain"] = new URL(JSON.parse(event.result?.content?.find((c) => c.type === "text")?.text ?? "{}").url).hostname;
+        } catch {}
+      }
       this.audit.emit("pista.tool.result", { "tool.name": call.name, "tool.kind": kind, ...attrs, success: !event.isError, "duration.ms": Date.now() - call.at });
     });
   }

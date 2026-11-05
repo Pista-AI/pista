@@ -36,7 +36,8 @@ When a login page shows, first call browser_login with the vendor's name (the ow
 ### Step 3: each invoice
 Find the invoice that matches the date and amount. Save it as invoices/<YYYY-MM>/<vendor>-<date>-<amount>.pdf in the project folder (lowercase vendor, no spaces).
 Getting the file: call browser_download with the path above and either the url of the invoice's PDF link, or the ref (from browser_snapshot) of its download button or link. The file goes straight to disk using the owner's login in the browser pane; its contents never come back to you, so do not try to read or paste it. If a download fails, try once with the other form (url instead of ref, or the reverse). If a file already exists at the path, pass overwrite: true to replace it, or pick another filename. If the page has no downloadable invoice, set status not_supported and put the invoice page address in the note, so the owner can download it by hand.
-Do not use a page's own Download button for files: it saves to the default folder, not the project. Always use browser_download.
+Use the page's download control by ref (browser_download with ref).
+Never re-type or shorten a URL from a page: pass its ref to browser_navigate or browser_download. A link that opens a new tab is followed automatically; browser_tabs lists the tabs.
 Call it found only when browser_download reports a saved file with a size above zero.
 After a successful download you got by browsing (not by playbook_run alone), call playbook_save with the invoice it was for to record the shortest path (start page to the download, without dead ends), so it can be repeated later. If the invoice came from a bank or card transaction, pass the transaction's merchant text as merchant.
 

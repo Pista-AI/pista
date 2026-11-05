@@ -102,6 +102,14 @@ test("invoice role: lists logins through browser_logins before any search, and k
   assert.match(p, /Never type, store, repeat or ask for a password/);
 });
 
+test("invoice role: tells the model to use the page's download control and never retype a URL", () => {
+  const p = INVOICE_FETCH_ROLE.prompt ?? "";
+  assert.ok(!/Do not use a page's own Download button/.test(p));
+  assert.match(p, /download control by ref/);
+  assert.match(p, /Never re-type or shorten a URL.*ref to browser_navigate or browser_download/);
+  assert.match(p, /opens a new tab is followed automatically; browser_tabs lists the tabs/);
+});
+
 test("sign-in confirmation: mode x confirmSignIns x tool", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pista-login-"));
   const none = { role: undefined, restricted: false, isChild: false };

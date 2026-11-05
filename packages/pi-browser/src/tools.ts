@@ -1,6 +1,6 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { refDownloadSource, saveDownload } from "./download.ts";
+import { NotAnInvoice, refDownloadSource, rejectWebPage, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
 import { isPeriodLabel } from "./row-match.ts";
 import { loneRowText } from "./replay.ts";
@@ -164,17 +164,36 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     defineTool({
       name: "browser_navigate",
       label: "Browser: navigate",
-      description: `Open a URL in the browser (cookie banners are declined, never accepted).${options.navigateHint ? ` ${options.navigateHint}` : ""} Then use browser_snapshot to interact with the page or browser_read to read it.`,
+      description: `Open a URL, or a link by its snapshot ref, in the browser (cookie banners are declined, never accepted).${options.navigateHint ? ` ${options.navigateHint}` : ""} Then use browser_snapshot to interact with the page or browser_read to read it.`,
       promptSnippet: "browser_navigate: open a page in the browser",
-      parameters: Type.Object({ url: Type.String({ description: "Full URL, e.g. https://www.google.com/search?q=..." }) }),
-      execute: async (_id, { url }) => {
-        const blocked = internalPageReason(url);
-        if (blocked) throw new Error(`Not opened: ${blocked}`);
+      parameters: Type.Object({
+        url: Type.Optional(Type.String({ description: "Full URL, e.g. https://www.google.com/search?q=..." })),
+        ref: Type.Optional(Type.String({ description: "Snapshot ref of a link to open in this tab; its exact address is used. Prefer this to typing an address you read on a page." })),
+      }),
+      execute: async (_id, { url: given, ref }) => {
+        if (Boolean(given) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
         return gated(
           async (d) => {
+            // The link's own address, exactly as the page has it (query string included); checked below like a typed one.
+            let url = given ?? "";
+            if (ref) {
+              url = String(await d.evaluate(scripts.href(ref)).catch(() => ""));
+              if (!url) throw new Error(`browser_navigate: ${ref} is not a link with an address (or the ref is stale). Take a new browser_snapshot.`);
+            }
+            const blocked = internalPageReason(url);
+            if (blocked) throw new Error(`Not opened: ${blocked}`);
+            const refused = ref ? options.tabGuard?.(url) : undefined;
+            if (refused) throw new Error(refused);
+            // Resolved before the navigation: the element is gone afterwards.
+            const located = ref && options.onTrace ? await locateTarget(d, ref) : undefined;
+            const context = located && ref ? await contextOf(d, ref) : {};
             d.setActivity?.(`Opening ${url}`);
             const opened = await d.navigate(url);
-            if (!opened.note) options.onTrace?.({ kind: "navigate", url: opened.url });
+            if (!opened.note) {
+              // A link is traced as the click on it, never as its address: the address often belongs to one invoice.
+              if (located) options.onTrace?.({ kind: "click", locator: located, urlAfter: opened.url, ...context });
+              else if (!ref) options.onTrace?.({ kind: "navigate", url: opened.url });
+            }
             const declined = await declineCookieBanner(d);
             if (!declined) return respond(opened);
             return respond(await d.state().catch(() => opened), { note: `Declined the cookie banner (clicked "${declined}").` });
@@ -327,7 +346,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           path: Type.String({ description: "Where to save it, relative to the project folder" }),
           overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
         }),
-        execute: async (_id, { url: rawUrl, ref, path, overwrite }, signal) => {
+        execute: async (_id, { url: rawUrl, ref, path, overwrite }, signal): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> => {
           let url = rawUrl;
           if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
           const folder = root();
@@ -358,7 +377,16 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           // A lone candidate gets its own row text too, so the host can check the invoice's date on it (see TraceRowContext).
           const single = located && ref && !listContext ? await loneRowText(d, ref) : undefined;
           const rowContext = listContext ?? (single !== undefined ? { texts: [single], clickedIndex: 0 } : undefined);
-          const saved = await saveDownload(d, { root: folder, path, overwrite }, url ? { url } : fromRef!);
+          const saved = await saveDownload(d, { root: folder, path, overwrite, validate: rejectWebPage(url ? "url" : "ref") }, url ? { url } : fromRef!).catch((error) => {
+            if (!(error instanceof NotAnInvoice)) throw error;
+            // Nothing was written or replaced. A result (not an error) so the host's repeat guard can count it by `site`.
+            let site = "";
+            try {
+              site = new URL(url || href).host;
+            } catch {}
+            return { rejected: "not-an-invoice", ...(site ? { site } : {}), note: error.message };
+          });
+          if ("rejected" in saved) return { content: [{ type: "text" as const, text: JSON.stringify(saved, null, 2) }], details: saved };
           const replaced = saved.replaced;
           const direct = url ?? (href && !listContext ? href : undefined);
           if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : {}), ...(located ? { locator: located } : {}), ...(rowContext ? { rowContext } : {}), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });

@@ -8,7 +8,7 @@
 import { declineCookieBanner, runPageAction, settle, waitForLoad, type Approve } from "./actions.ts";
 import { checkUrl, DomainBlockedError, guardDriver, type DomainRules } from "./domains.ts";
 import { readFileSync } from "node:fs";
-import { refDownloadSource, saveDownload } from "./download.ts";
+import { isWebPage, readHead, refDownloadSource, saveDownload } from "./download.ts";
 import type { BrowserDriver } from "./driver.ts";
 import { amountShown, fullDateCount, isPeriodLabel, matchPeriod, matchRows, parseAmounts, parseDates, rowTextOf } from "./row-match.ts";
 import { call, formatSnapshot, scripts, type PageSnapshot } from "./page-scripts.ts";
@@ -371,7 +371,8 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           // An empty or generic binary type says nothing: a PDF is then recognised by its first bytes.
           const ct = /^(application|binary)\/octet-stream\b/.test(got.contentType?.toLowerCase() ?? "") ? undefined : got.contentType?.toLowerCase() || undefined;
           const type = step.fileType?.toLowerCase();
-          if (!type) return void (ct?.includes("text/html") && reject("it is a web page"));
+          if (isWebPage(got.contentType, readHead(file))) reject("it is a web page");
+          if (!type) return;
           if (ct) return void (!ct.includes(type) && reject(`expected ${type}, got ${ct}`));
           if (type !== "pdf" || !readFileSync(file).subarray(0, 5).toString("latin1").startsWith("%PDF-")) reject(`its type is unknown and it is not a ${type}`);
         };

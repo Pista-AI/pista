@@ -263,6 +263,8 @@ const WARN_AFTER = 3;
 const STOP_AFTER = 5;
 /** Blocked calls of any kind in one prompt before tool calls are paused. Models that vary arguments slightly never trip the per-key counts. */
 const MAX_BLOCKED = 4;
+/** Downloads on one site that came back as a web page, not a file, before tool calls are paused. */
+const MAX_REJECTED_DOWNLOADS = 2;
 /** Tool calls in one prompt before a local model's tool calls are paused; small models loop where frontier ones converge. Reads on fresh pages are legitimate calls, so the cap leaves room for a long browsing session. */
 const MAX_TOOL_CALLS_LOCAL = 40;
 /** Visits to one page (after normalizing the URL) before browser_navigate is blocked with a change-strategy message. The 3rd visit is blocked, not run. */
@@ -328,6 +330,8 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
       let calls = 0;
       let pageEpoch = 0;
       let paused = false;
+      const rejectedDownloads = new Map<string, number>();
+      let stopNote: string | undefined;
       const pause = (cause: string) => {
         paused = true;
         return { block: true, reason: `Stopped: ${cause}. Tool calls are paused for this turn; answer the user now with what you found and what is still missing.` };
@@ -340,9 +344,30 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
         calls = 0;
         pageEpoch = 0;
         paused = false;
+        rejectedDownloads.clear();
+        stopNote = undefined;
+      });
+      // browser_download reports a web page in place of a file as `rejected: "not-an-invoice"` (the model retypes an address, gets an error page, tries again).
+      pi.on("tool_result", (event) => {
+        if (event.toolName !== "browser_download") return;
+        const text = event.content.find((c) => c.type === "text");
+        let r: { rejected?: unknown; site?: unknown } = {};
+        try {
+          r = JSON.parse(text && "text" in text ? text.text : "{}");
+        } catch {}
+        if (r.rejected !== "not-an-invoice") return;
+        const site = typeof r.site === "string" ? r.site : "";
+        const n = (rejectedDownloads.get(site) ?? 0) + 1;
+        rejectedDownloads.set(site, n);
+        // No call is being decided here, so the explanation goes out with the next blocked call.
+        if (n >= MAX_REJECTED_DOWNLOADS) stopNote = pause(`browser_download returned a web page, not a file, ${n} times${site ? ` for ${site}` : ""}`).reason;
       });
       pi.on("tool_call", (event, ctx) => {
-        if (paused) return { block: true, reason: PAUSED_REASON };
+        if (paused) {
+          const reason = stopNote ?? PAUSED_REASON;
+          stopNote = undefined;
+          return { block: true, reason };
+        }
         // Scrolling the same way repeatedly is progress (each result shows a new position), not a loop.
         if (event.toolName === "browser_scroll") return undefined;
         const args = JSON.stringify(event.input);
@@ -353,6 +378,7 @@ export function loopGuardExtension(store?: Pick<ConfigStore, "config">): InlineE
         calls++;
         if (n >= STOP_AFTER) return pause(`${event.toolName} was called ${n} times with identical arguments in this run`);
         // Same page again and again, however the URL is spelled: its own message, since "identical arguments" would not describe it.
+        // Known gap: a browser_navigate by ref has no url here, so it is not counted as a visit; the identical-arguments count above still catches a repeated ref.
         const url = event.toolName === "browser_navigate" ? (event.input as { url?: unknown }).url : undefined;
         const revisit = typeof url === "string" ? countNavigateVisit(visits, url) : undefined;
         if (revisit) {

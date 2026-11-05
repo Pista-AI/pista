@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runPageAction, type Approve } from "./actions.ts";
 import type { BrowserDriver } from "./driver.ts";
@@ -62,6 +62,49 @@ export async function refDownloadSource(d: BrowserDriver, ref: string, approve: 
     },
   };
 }
+
+/** A download that is a web page, not a file: an error page or a sign-in page saved under an invoice's name. */
+export class NotAnInvoice extends Error {
+  constructor(source: "url" | "ref" = "url") {
+    super(
+      source === "url"
+        ? "That URL returned a web page, not a file. Nothing was saved. Click the page's download control by ref instead of retyping a URL."
+        : "That click opened a web page, not a file. Nothing was saved. Check you picked the invoice's download control.",
+    );
+  }
+}
+
+/** Whether a response is a web page: by its content type, or, when the type says nothing, by its first bytes (after a byte order mark). */
+export function isWebPage(contentType: string | undefined, head: Buffer): boolean {
+  const ct = contentType?.toLowerCase() ?? "";
+  if (/\b(text\/html|application\/xhtml)/.test(ct)) return true;
+  if (ct && !/^(application|binary)\/octet-stream\b/.test(ct)) return false;
+  let text: string;
+  if (head[0] === 0xff && head[1] === 0xfe) text = head.subarray(2).toString("utf16le");
+  else if (head[0] === 0xfe && head[1] === 0xff) text = Buffer.from(head.subarray(2)).swap16().toString("utf16le");
+  else text = head.subarray(head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf ? 3 : 0).toString("latin1");
+  return /^\s*(<\?xml[^>]*>\s*|<!--[\s\S]*?-->\s*)*(<!doctype\s+html|<html[\s>])/i.test(text);
+}
+
+/** The first bytes of a file, or empty when it cannot be read. */
+export function readHead(file: string): Buffer {
+  try {
+    const fd = openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(512);
+      return buf.subarray(0, readSync(fd, buf, 0, 512, 0));
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/** `validate` for saveDownload: refuses a web page (see isWebPage). */
+export const rejectWebPage = (source: "url" | "ref") => (file: string, got: { contentType?: string }): void => {
+  if (isWebPage(got.contentType, readHead(file))) throw new NotAnInvoice(source);
+};
 
 /**
  * Saves one download to `path` under `root` (confined, see confineToFolder). An existing file is replaced only with `overwrite` or

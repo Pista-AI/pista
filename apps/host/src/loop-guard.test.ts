@@ -18,6 +18,7 @@ function guard(model: typeof LOCAL | typeof REMOTE) {
   return {
     start: () => handlers.get("agent_start")!({}, { model }),
     call: (toolName: string, input: unknown = {}) => handlers.get("tool_call")!({ toolName, input }, { model }),
+    result: (toolName: string, details: object) => handlers.get("tool_result")!({ toolName, content: [{ type: "text", text: JSON.stringify(details) }] }, { model }),
   };
 }
 
@@ -157,4 +158,21 @@ test("browser_navigate to the same page: 1st and 2nd run, 3rd is blocked with th
   assert.equal(g.call("browser_navigate", { url: "https://example.com/other" }), undefined);
   g.start();
   assert.equal(g.call("browser_navigate", { url: "https://example.com/billing" }), undefined);
+});
+
+test("two downloads that came back as a web page on one site pause tool calls; other sites and a new prompt do not count", () => {
+  const g = guard(REMOTE);
+  g.start();
+  const miss = (site: string) => g.result("browser_download", { rejected: "not-an-invoice", site, note: "x" });
+  miss("invoice.stripe.com");
+  assert.equal(g.call("browser_download", { url: "https://invoice.stripe.com/a", path: "a.pdf" }), undefined);
+  miss("other.test");
+  assert.equal(g.call("browser_click", { ref: "e1" }), undefined);
+  g.result("browser_download", { path: "ok.pdf", bytes: 5 });
+  miss("invoice.stripe.com");
+  const r = g.call("browser_download", { url: "https://invoice.stripe.com/b", path: "b.pdf" });
+  assert.equal(r.block, true);
+  assert.match(r.reason, /Stopped: browser_download returned a web page, not a file, 2 times for invoice\.stripe\.com/);
+  g.start();
+  assert.equal(g.call("browser_download", { url: "https://invoice.stripe.com/b", path: "b.pdf" }), undefined);
 });
