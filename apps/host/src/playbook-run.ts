@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { FOREIGN_CURRENCY_NOTE, deriveShortcut, getPlaybook, LABEL_MAX, listPlaybooks, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
+import { bandFor, matchSentence, deriveShortcut, getPlaybook, LABEL_MAX, listPlaybooks, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { matchVendor } from "./transactions.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
@@ -107,7 +107,7 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
-    recordSuccess(site, r.verified.foreignCurrency);
+    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { currency: invoice?.currency, offsetDays: r.verified.offsetDays, fxRateUsed: r.verified.fxRateUsed, amountVerified: r.verified.amount });
     noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
@@ -233,7 +233,7 @@ export function hostConsent(o: {
 const GATED = Symbol("gated");
 
 export type PlaybookRunResult =
-  | { status: "downloaded"; /** set when the playbook was picked by keyword */ note?: string; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** keywords this run confirmed */ learned?: string[]; /** things the replay did that a person should know about */ notes?: string[] }
+  | { status: "downloaded"; /** set when the playbook was picked by keyword */ note?: string; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** how the row was matched (see matchSentence) */ how?: string; /** keywords this run confirmed */ learned?: string[]; /** things the replay did that a person should know about */ notes?: string[] }
   | { status: "handoff"; site: string; reason: ReplayReason; text: string; /** the step that failed, and what the page said and was at (website data) */ step?: string; detail?: string; url?: string }
   | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
 
@@ -242,6 +242,8 @@ export interface PlaybookRunRequest {
   invoice: unknown;
   /** The transaction's merchant text when the run was routed by a keyword. Only compared against the site's keywords, never stored. */
   merchant?: string;
+  /** The transaction's text (an invoice or order number may be in it); the merchant keywords are taken out before the replay looks for it in a row. Never stored. */
+  reference?: string;
   /** Leave pending keywords as they are on a hit; the caller promotes them once the whole batch verified (see first-pass.ts). */
   deferProof?: boolean;
   path?: string;
@@ -254,6 +256,21 @@ export interface PlaybookRunRequest {
  */
 export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRunConsent, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
   return runCore(deps, consent, req, signal);
+}
+
+/** The transaction's text with the merchant keywords taken out (they match every row of the vendor and say nothing about one). */
+function referenceOf(raw: string | undefined, keywords: readonly (string | undefined)[]): string | undefined {
+  let t = (raw ?? "").slice(0, 300);
+  for (const k of keywords) if (k && k.length >= 3 && !k.includes("*")) t = t.replace(new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), " ");
+  t = t.replace(/\s+/g, " ").trim();
+  return t || undefined;
+}
+
+/** The rate and band learned from earlier verified runs, for the replay's amount check; nothing until one has run. */
+function learnedRates(pb: { billing?: { currency: string; rate?: number; samples: number } }, currency: string | undefined): { rateFor?: (from: string, to: string) => number | undefined; band?: number } {
+  const b = pb.billing, band = b ? bandFor(b.samples) : undefined;
+  if (!b?.rate || band === undefined || b.currency !== currency) return {};
+  return { rateFor: (from, to) => (to.toUpperCase() === b.currency && from.toUpperCase() !== b.currency ? b.rate : undefined), band };
 }
 
 async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
@@ -292,6 +309,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
       if (!answer) return declined(`The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.`);
     }
   }
+  const reference = referenceOf(req.reference, [req.merchant, ...(pb.merchants ?? [])]);
   const driver = deps.driver();
   const done: number[] = [];
   const r = await serialised(driver, () => {
@@ -303,7 +321,8 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
       downloadRoot: root,
       downloadPath: path,
       overwrite,
-      invoice,
+      invoice: reference ? { ...invoice, reference } : invoice,
+      ...(learnedRates(pb, invoice.currency)),
       // Consent was settled above (the gate for tool calls, `approve` for host callers), so the steps need no further question.
       approve: async () => !signal?.aborted,
       confirmRisk: (action) => deps.confirmRisk({ toolName: "playbook_run", action, signal }),
@@ -319,7 +338,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     if (r.ok) learned = noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount && !req.deferProof });
     else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
   }
-  if (r.ok) return { status: "downloaded", ...(note ? { note } : {}), site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(learned.length ? { learned } : {}), ...(r.notes?.length ? { notes: r.notes } : {}) };
+  if (r.ok) return { status: "downloaded", ...(note ? { note } : {}), site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(matchSentence(r.verified, invoice.currency) ? { how: matchSentence(r.verified, invoice.currency) } : {}), ...(learned.length ? { learned } : {}), ...(r.notes?.length ? { notes: r.notes } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
   return { status: "handoff", site: pb.site, reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: lead(formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history)) };
@@ -339,13 +358,14 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         invoice: Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }),
         path: Type.Optional(Type.String({ description: "Where to save it, relative to the project folder" })),
         overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
+        reference: Type.Optional(Type.String({ description: "The transaction's full text, so an invoice or order number in it can be looked for in the page" })),
       }),
-      execute: async (_id, { site, merchant, invoice, path, overwrite }, signal) => {
+      execute: async (_id, { site, merchant, invoice, path, overwrite, reference }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const r = await runCore(deps, GATED, { site, merchant, invoice, path, overwrite }, signal);
+        const r = await runCore(deps, GATED, { site, merchant, invoice, path, overwrite, reference }, signal);
         if (r.status === "downloaded") {
           const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
-          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${r.note ? r.note + " " : ""}Followed the saved playbook for ${r.site} (${r.steps} steps).${r.foreignCurrency ? ` ${FOREIGN_CURRENCY_NOTE}` : ""}`, ...(notes ? { notes } : {}), ...(r.notes?.length ? { replayNotes: r.notes } : {}) }, null, 2));
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${r.note ? r.note + " " : ""}Followed the saved playbook for ${r.site} (${r.steps} steps).${r.how ? ` ${r.how[0]!.toUpperCase()}${r.how.slice(1)}${r.how.endsWith(".") ? "" : "."}` : ""}`, ...(notes ? { notes } : {}), ...(r.notes?.length ? { replayNotes: r.notes } : {}) }, null, 2));
         }
         return text(r.text);
       },

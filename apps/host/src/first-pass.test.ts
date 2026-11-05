@@ -286,3 +286,28 @@ test("a fetched file updates the model's pending row (label kept, file named aft
   assert.deepEqual([rows[0].vendor, rows[0].status, rows[0].file], ["OpenAI", "found", paths[0]]);
   assert.equal(rows[1].vendor, "Zebra Pay", "a new row is labelled with the confirmed keyword in title case");
 });
+
+test("a foreign-currency vendor confirms its keyword on amount-verified runs; the reference and the match sentence travel", async () => {
+  make("kappa.test", { merchantsPending: ["KAPPA CLOUD"] });
+  const seen: (string | undefined)[] = [];
+  const rows: { note?: string }[] = [];
+  const paste = "2026-03-01 KAPPA CLOUD INV-4471 -99.00 SEK\n2026-03-02 KAPPA CLOUD -99.00 SEK";
+  const run = async (req: { site: string; merchant?: string; reference?: string; deferProof?: boolean }) => {
+    seen.push(req.reference);
+    noteMerchantOutcome(req.site, req.merchant!, "hit", { amountVerified: !req.deferProof });
+    return { ...downloaded(req.site, seen.length), how: "matched by date and converted amount (to SEK 10.1)" };
+  };
+  await runFirstPass(paste, { playbooks: all, allow: async () => true, run, writeManifest: (r) => rows.push(...r) });
+  assert.deepEqual(seen, ["2026-03-01 KAPPA CLOUD INV-4471 -99.00 SEK", "2026-03-02 KAPPA CLOUD -99.00 SEK"]);
+  assert.deepEqual(getPlaybook("kappa.test")!.merchants, ["KAPPA CLOUD"]);
+  assert.equal(rows[0]!.note, "fetched by a saved playbook; matched by date and converted amount (to SEK 10.1)");
+});
+
+test("a date-only match (amount not verified) does not promote and says so in the manifest note", async () => {
+  make("lambda.test", { merchantsPending: ["LAMBDA CLOUD"] });
+  const rows: { note?: string }[] = [];
+  const run = async (req: { site: string }) => ({ ...downloaded(req.site, 1, false), foreignCurrency: true as const, how: "Amount not verified: the page shows another currency; only the date matched." });
+  await runFirstPass("2026-03-01 LAMBDA CLOUD -99.00 SEK\n2026-03-02 LAMBDA CLOUD -99.00 SEK", { playbooks: all, allow: async () => true, run, writeManifest: (r) => rows.push(...r) });
+  assert.equal(getPlaybook("lambda.test")!.merchants, undefined);
+  assert.match(rows[0]!.note!, /Amount not verified/);
+});
