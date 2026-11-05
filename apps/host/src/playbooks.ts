@@ -274,7 +274,8 @@ function cleanAvoid(v: unknown, hosts: Sites): Playbook["avoid"] {
 }
 
 /** Builds a fresh Playbook from untrusted input, keeping known fields only. Throws with a short reason. */
-export function validatePlaybook(input: unknown, site: string): Playbook {
+/** `heal`: identical consecutive steps are collapsed (reading a stored file) instead of refused (saving). */
+export function validatePlaybook(input: unknown, site: string, heal = false): Playbook {
   const o = obj(input);
   if (o.site !== undefined && o.site !== site) throw new Error("site does not match");
   // Older files have no `hosts`: the playbook then spans its own site only. The site always comes first.
@@ -295,8 +296,11 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
         }
       }).slice(-MAX_HISTORY)
     : [];
-  const steps = o.steps.flatMap((s) => step(s, hosts) ?? []);
-  const dup = steps.findIndex((s, i) => i > 0 && JSON.stringify(s) === JSON.stringify(steps[i - 1]));
+  let steps = o.steps.flatMap((s) => step(s, hosts) ?? []);
+  // Period clicks may repeat on purpose (pick the year, then the month); any other repeat is a mistake.
+  const repeats = (s: PlaybookStep, i: number) => i > 0 && !(s.kind === "click" && s.target.period) && JSON.stringify(s) === JSON.stringify(steps[i - 1]);
+  if (heal) steps = steps.filter((s, i) => !repeats(s, i));
+  const dup = steps.findIndex(repeats);
   if (dup > 0) throw new Error(`steps ${dup} and ${dup + 1} are identical; a path should not repeat the same step`);
   const notes = cleanNotes(o.notes), avoid = cleanAvoid(o.avoid, hosts);
   const shortcut = shortcutOf(o.shortcut, hosts, steps), candidate = shortcutOf(o.shortcutCandidate, hosts, steps);
@@ -346,7 +350,7 @@ export function getPlaybook(site: string): Playbook | null {
     return null;
   }
   try {
-    return validatePlaybook(JSON.parse(raw), site);
+    return validatePlaybook(JSON.parse(raw), site, true);
   } catch {
     return null; // corrupt or tampered file: treat as absent
   }

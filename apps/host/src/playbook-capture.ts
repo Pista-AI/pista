@@ -305,6 +305,14 @@ export function registerPlaybookNote(pi: ExtensionAPI): void {
   );
 }
 
+/** Whether the last kept row is a click that left the page where it was and opened no tab. */
+function isNoOp(kept: TraceRow[]): boolean {
+  const last = kept[kept.length - 1];
+  if (last?.kind !== "click" || last.openedTab) return false;
+  const before = kept.slice(0, -1).reverse().map(urlOf).find(Boolean);
+  return before === last.urlAfter;
+}
+
 /** What a click row (or a replayed click step) does, for telling repeats apart; undefined for anything else. Period clicks match whatever month they named. */
 function clickKey(r: TraceRow | undefined): string | undefined {
   if (r?.kind === "click") {
@@ -326,8 +334,9 @@ function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
   const kept: TraceRow[] = [];
   for (const x of path) {
     const key = clickKey(x);
-    // The same click twice in a row (a no-op click, then the one that worked; a replayed step and the model's re-click) is one action: the last one stays.
-    if (key && key === clickKey(kept[kept.length - 1])) {
+    // The same click twice in a row is one action when the first did nothing (no address change, no new tab) or was a replayed step the model re-clicked: the last one stays. Two clicks that each did work (a year, then a month) both stay.
+    const prev = kept[kept.length - 1];
+    if (key && key === clickKey(prev) && (prev!.kind === "replayed" || isNoOp(kept))) {
       kept.pop();
       kept.push(x);
       continue;

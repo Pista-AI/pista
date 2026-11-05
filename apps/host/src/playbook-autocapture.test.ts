@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { setupHome } from "./test-helpers.ts";
 import { traceOf, type TraceEntry } from "./test-trace-fixtures.ts";
@@ -196,4 +198,27 @@ test("a path with two identical consecutive steps is refused and the refusal goe
   const r = autoCapture(d, OK, "t");
   assert.match(r.note ?? "", /^Not captured automatically: steps 1 and 2 are identical/);
   assert.ok(getPlaybook("example.com")!.history.some((h) => h.summary.startsWith("not saved: steps 1 and 2")));
+});
+
+test("two period clicks that each changed the page (year, then month) stay two steps", () => {
+  fresh();
+  const period = { names: ["September 2026", "October 2026", null], clickedIndex: 1 };
+  const yr = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: `${B}y`, periodContext: period };
+  const mo = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: `${B}m`, periodContext: period };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}start` }, yr, mo, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+  assert.deepEqual(getPlaybook("example.com")!.steps.map((s) => s.kind === "click" && s.target.period), [true, true, false]);
+});
+
+test("a stored playbook with identical consecutive steps loads healed, keeping its notes and history", () => {
+  fresh();
+  const pb = validatePlaybook({ startUrl: B, steps: [{ kind: "click", target: { role: "link", name: "A" } }, { kind: "download", target: { role: "link", name: "D" }, fileType: "pdf" }], notes: [{ text: "keep me", at: new Date().toISOString(), by: "user" }], history: [{ at: new Date().toISOString(), summary: "old line" }] }, "example.com");
+  const raw = { ...pb, steps: [pb.steps[0], pb.steps[0], pb.steps[1]] };
+  const dir = join(process.env.PISTA_HOME!, "playbooks");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "example.com.json"), JSON.stringify(raw));
+  const loaded = getPlaybook("example.com")!;
+  assert.equal(loaded.steps.length, 2);
+  assert.equal(loaded.notes[0]?.text, "keep me");
+  assert.ok(loaded.history.some((h) => h.summary === "old line"));
 });
