@@ -73,6 +73,7 @@ export const HISTORY = {
   repaired: (k: number) => `repaired after handoff at step ${k}`,
   shortcutLearned: "shortcut learned",
   replayFailed: "replay failed",
+  refused: (why: string) => `not saved: ${why}`,
 };
 
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
@@ -295,6 +296,8 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
       }).slice(-MAX_HISTORY)
     : [];
   const steps = o.steps.flatMap((s) => step(s, hosts) ?? []);
+  const dup = steps.findIndex((s, i) => i > 0 && JSON.stringify(s) === JSON.stringify(steps[i - 1]));
+  if (dup > 0) throw new Error(`steps ${dup} and ${dup + 1} are identical; a path should not repeat the same step`);
   const notes = cleanNotes(o.notes), avoid = cleanAvoid(o.avoid, hosts);
   const shortcut = shortcutOf(o.shortcut, hosts, steps), candidate = shortcutOf(o.shortcutCandidate, hosts, steps);
   const merchants = cleanUserMerchants(o.merchants);
@@ -461,6 +464,13 @@ export function recordFailure(site: string, reason?: string, count = true): Play
       if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
     }
     pb.history.push({ at: now, summary: reason ? `${HISTORY.replayFailed}: ${reason}` : HISTORY.replayFailed });
+  });
+}
+
+/** Logs that a captured path was not saved, on the site's existing playbook (nothing happens when it has none). */
+export function recordRefusal(site: string, why: string): Playbook | null {
+  return mutate(site, (pb, now) => {
+    pb.history.push({ at: now, summary: HISTORY.refused(why) });
   });
 }
 

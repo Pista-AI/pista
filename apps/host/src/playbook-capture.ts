@@ -5,7 +5,7 @@ import { matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEnt
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, recordRefusal, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -305,6 +305,19 @@ export function registerPlaybookNote(pi: ExtensionAPI): void {
   );
 }
 
+/** What a click row (or a replayed click step) does, for telling repeats apart; undefined for anything else. Period clicks match whatever month they named. */
+function clickKey(r: TraceRow | undefined): string | undefined {
+  if (r?.kind === "click") {
+    const { role, name, text } = r.locator;
+    return r.periodContext ? `period|${role}` : r.rowContext ? `row|${role}|${name}|${text}|${r.rowContext.clickedIndex}` : `${role}|${name}|${text}`;
+  }
+  if (r?.kind === "replayed" && r.step.kind === "click") {
+    const t = r.step.target;
+    return t.period ? `period|${t.role}` : t.row ? undefined : `${t.role}|${t.name}|${t.text}`;
+  }
+  return undefined;
+}
+
 /**
  * Takes dead ends out of a captured path: clicks between a page and the click that came back to it, and clicks on a different row of a list than the one the invoice names.
  * Other clicks stay (a menu click changes no address). Replayed steps, sign-ins and the download are never dropped.
@@ -312,10 +325,20 @@ export function registerPlaybookNote(pi: ExtensionAPI): void {
 function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
   const kept: TraceRow[] = [];
   for (const x of path) {
+    const key = clickKey(x);
+    // The same click twice in a row (a no-op click, then the one that worked; a replayed step and the model's re-click) is one action: the last one stays.
+    if (key && key === clickKey(kept[kept.length - 1])) {
+      kept.pop();
+      kept.push(x);
+      continue;
+    }
     if (x.kind === "click") {
       const at = kept.findIndex((e) => urlOf(e) === x.urlAfter);
-      if (at >= 0 && at < kept.length - 1 && kept.slice(at + 1).every((e) => e.kind === "click")) {
+      if (at >= 0 && at < kept.length - 1 && kept.slice(at + 1).every((e) => clickKey(e))) {
+        // Replayed steps worked, so they stay; only the model's own dead-end clicks go.
+        const replayed = kept.slice(at + 1).filter((e) => e.kind === "replayed");
         kept.length = at + 1;
+        kept.push(...replayed);
         continue;
       }
     }
@@ -390,6 +413,7 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
   const pruned = prune(path, invoice);
   let res = save(pruned);
   if (!res.saved && pruned.length !== path.length) res = save(path);
+  if (!res.saved && /^steps \d+ and \d+ are identical/.test(res.reason ?? "")) recordRefusal(trySiteKey(urlOf(rows[start]!)) ?? "", res.reason!);
   if (res.saved) {
     trace.invoice = undefined;
     trace.merchant = undefined;

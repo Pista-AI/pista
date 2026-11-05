@@ -158,3 +158,42 @@ test("a path that crosses sites through a click that opens a tab is captured wit
   assert.match(autoCapture(t, OK, "t").note ?? "", /^Saved a playbook for shop\.test/);
   assert.deepEqual(getPlaybook("shop.test")!.hosts, ["shop.test", "example.com"]);
 });
+
+test("a repair that re-clicks the replayed period link keeps three steps, not five", () => {
+  fresh();
+  const S = "https://chatgpt.com/settings/billing";
+  const period = { names: ["September 2026", "October 2026", null], clickedIndex: 1 };
+  const loc = { role: "link", name: "October 2026", text: "October 2026" };
+  const t = trace([
+    { kind: "navigate", url: S },
+    { kind: "replayed", index: 0, step: { kind: "click", target: { role: "button", name: "Fakturering" } } },
+    { kind: "replayed", index: 1, step: { kind: "click", target: { role: "link", period: true } } },
+    { kind: "click", locator: loc, urlAfter: S, periodContext: period },
+    { kind: "click", locator: loc, urlAfter: "https://invoice.stripe.com/i/abc", periodContext: period },
+    { kind: "download", source: "ref", locator: { role: "button", name: "Ladda ner faktura" }, contentType: "application/pdf", path: "invoices/a.pdf", url: "https://invoice.stripe.com/i/abc" },
+  ]);
+  const r = autoCapture(t, OK, "t");
+  assert.match(r.note ?? "", /^Saved a playbook for chatgpt\.com \(3 steps/);
+  const pb = getPlaybook("chatgpt.com")!;
+  assert.deepEqual(pb.steps.map((s) => (s.kind === "click" ? (s.target.period ? "period" : s.target.name) : s.kind)), ["Fakturering", "period", "download"]);
+  deletePlaybook("chatgpt.com");
+});
+
+test("a menu click followed by a different click on the same page keeps both", () => {
+  fresh();
+  const menu = { kind: "click" as const, locator: { role: "button", name: "Menu", text: "Menu" }, urlAfter: B };
+  const r = autoCapture(trace([{ kind: "navigate", url: B }, menu, click, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+});
+
+test("a path with two identical consecutive steps is refused and the refusal goes to the history", () => {
+  fresh();
+  savePlaybook(validatePlaybook({ startUrl: B, steps: [{ kind: "click", target: { role: "link", name: "Invoices" } }, { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" }] }, "example.com"));
+  assert.throws(() => validatePlaybook({ startUrl: B, steps: [{ kind: "click", target: { role: "link", name: "A" } }, { kind: "click", target: { role: "link", name: "A" } }] }, "example.com"), /steps 1 and 2 are identical/);
+  // Two clicks whose opaque names are dropped on save end up as the same step.
+  const opaque = (n: string) => ({ kind: "click" as const, locator: { role: "link", name: n }, urlAfter: B });
+  const d = trace([{ kind: "navigate", url: `${B}start` }, opaque("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"), opaque("z1y2x3w4v5u6t7s8r9q0p1o2n3m4l5k6j7"), dl]);
+  const r = autoCapture(d, OK, "t");
+  assert.match(r.note ?? "", /^Not captured automatically: steps 1 and 2 are identical/);
+  assert.ok(getPlaybook("example.com")!.history.some((h) => h.summary.startsWith("not saved: steps 1 and 2")));
+});
