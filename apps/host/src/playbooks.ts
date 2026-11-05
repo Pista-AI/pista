@@ -443,13 +443,13 @@ function mutate(site: string, fn: (pb: Playbook, now: string) => void): Playbook
   return pb;
 }
 
-export function recordSuccess(site: string): Playbook | null {
+export function recordSuccess(site: string, note?: string): Playbook | null {
   return mutate(site, (pb, now) => {
     pb.successCount++;
     pb.failCount = 0;
     pb.status = "ok";
     pb.lastSucceeded = now;
-    pb.history.push({ at: now, summary: "replay succeeded" });
+    pb.history.push({ at: now, summary: note ? `replay succeeded, ${note}` : "replay succeeded" });
   });
 }
 

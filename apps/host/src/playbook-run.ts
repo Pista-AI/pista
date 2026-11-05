@@ -78,10 +78,12 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
 }
 
 /** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
+const FOREIGN_NOTE = "amount not verified (page shows another currency)";
+
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
-    recordSuccess(site);
+    recordSuccess(site, r.verified.foreignCurrency ? FOREIGN_NOTE : undefined);
     noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
@@ -207,7 +209,7 @@ export function hostConsent(o: {
 const GATED = Symbol("gated");
 
 export type PlaybookRunResult =
-  | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** keywords this run confirmed */ learned?: string[] }
+  | { status: "downloaded"; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** keywords this run confirmed */ learned?: string[] }
   | { status: "handoff"; site: string; reason: ReplayReason; text: string; /** the step that failed, and what the page said and was at (website data) */ step?: string; detail?: string; url?: string }
   | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
 
@@ -291,7 +293,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     if (r.ok) learned = noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount && !req.deferProof });
     else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
   }
-  if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(learned.length ? { learned } : {}) };
+  if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(learned.length ? { learned } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
   return { status: "handoff", site: pb.site, reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history) };
@@ -316,7 +318,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         const r = await runCore(deps, GATED, { site, invoice, path, overwrite }, signal);
         if (r.status === "downloaded") {
           const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
-          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).`, ...(notes ? { notes } : {}) }, null, 2));
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).${r.foreignCurrency ? ` The ${FOREIGN_NOTE}; only the date matched.` : ""}`, ...(notes ? { notes } : {}) }, null, 2));
         }
         return text(r.text);
       },
