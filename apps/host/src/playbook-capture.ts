@@ -156,7 +156,7 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
           } catch {}
         }
         const target: PlaybookLocator = period ? { ...rest, period: true } : { ...rest, ...(clean(name) ? { name } : {}), ...(clean(lt) ? { text: lt } : {}), ...(row ? { row } : {}) };
-        return { kind: "click", target, ...(Object.keys(expect).length ? { expect } : {}) };
+        return { kind: "click", target, ...(Object.keys(expect).length ? { expect } : {}), ...(r.openedTab ? { opensTab: true as const } : {}) };
       }
       case "download": {
         const fileType = r.contentType?.split(";")[0]?.split("/")[1];

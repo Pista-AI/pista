@@ -355,3 +355,29 @@ test("a step that fails after the shortcut is retried once from the full path; i
   assert.equal(reasonOf(twice.r), "2:error");
   assert.equal(twice.r.shortcut, undefined);
 });
+
+test("a control missing from the first snapshot is looked for again for a few seconds before not-found", async () => {
+  const run = async (appearsAtSnapshot: number) => {
+    let snapshots = 0;
+    let t = 0;
+    const slept: number[] = [];
+    const evaluate = async (code: string) => {
+      if (!String(code).includes("omitted")) return String(code).startsWith("Object.fromEntries") ? {} : "";
+      snapshots++;
+      return { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: snapshots >= appearsAtSnapshot ? [{ ref: "e1", role: "button", name: "Ladda ner faktura" }] : [] };
+    };
+    const driver = { state: async () => ({ url: "https://x.test/p", title: "", loading: false }), navigate: async () => ({}), evaluate } as unknown as BrowserDriver;
+    const r = await runReplay(
+      { startUrl: "https://x.test/p", steps: [{ kind: "download", target: { role: "button", name: "Ladda ner faktura" } }] },
+      { driver, allowUrl: () => true, downloadRoot: "/nonexistent", downloadPath: "a.pdf", now: () => t, sleep: async (ms) => (slept.push(ms), (t += ms), undefined) },
+    );
+    return { r, snapshots, slept };
+  };
+  const late = await run(2);
+  assert.notEqual(!late.r.ok && late.r.reason, "not-found"); // found on the second snapshot; what happens next is not this test's concern
+  assert.deepEqual(late.slept.slice(0, 1), [250]);
+  const never = await run(1000);
+  assert.equal(!never.r.ok && never.r.reason, "not-found");
+  assert.equal(never.slept.reduce((a, b) => a + b, 0), 3000);
+  assert.ok(!never.r.ok && never.r.detail.includes("nothing on the page matches"));
+});

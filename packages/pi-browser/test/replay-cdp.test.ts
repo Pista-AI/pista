@@ -237,6 +237,17 @@ const closeExtraTabs = async (before: Set<string>) => {
 };
 const openTabs = async () => new Set(((await (await fetch(`${CDP}/json/list`)).json()) as { id: string }[]).map((t) => t.id));
 
+test("a click that opens a tab whose download button appears late is followed and the download completes", { skip }, async () => {
+  const before = await openTabs();
+  const r = await runReplay(
+    { startUrl: `${base}late-opener.html`, steps: [{ kind: "click", target: { role: "link", name: "Open invoice" }, opensTab: true }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }] },
+    options("invoices/late.pdf"),
+  );
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(readFileSync(join(dir, "invoices/late.pdf"), "latin1").startsWith("%PDF"));
+  await closeExtraTabs(before);
+});
+
 test("a click that opens a tab on a listed second host is followed, and the detail page proves the invoice", { skip }, async () => {
   const before = await openTabs();
   const invoice = { date: "2026-09-03", amount: 49, currency: "EUR" };
