@@ -124,8 +124,23 @@ test("the vendor label becomes a file name slug", () => {
   assert.equal(vendorSlug("Acme Hosting, Inc."), "acme-hosting-inc");
 });
 
-test("merge matches a row on date and amount whatever the vendor label", () => {
-  const out = parse(mergeManifest(JSON.stringify([e("OpenAI", "2026-10-22", 2021.55)]), JSON.stringify([e("chatgpt.com", "2026-10-22", 2021.55, "found", "f.pdf")])));
-  assert.equal(out.length, 1);
-  assert.equal(out[0]!.status, "found");
+test("merge: same date and amount with different vendors stay two rows; an empty vendor still matches", () => {
+  const two = parse(mergeManifest(JSON.stringify([e("OpenAI", "2026-10-22", 9.99), e("Acme", "2026-10-22", 9.99)]), JSON.stringify([e("Acme", "2026-10-22", 9.99, "found", "a.pdf")])));
+  assert.deepEqual(two.map((x) => [x.vendor, x.status]), [["Acme", "found"], ["OpenAI", "pending"]]);
+  const blank = parse(mergeManifest(JSON.stringify([e("", "2026-10-22", 9.99)]), JSON.stringify([e("OpenAI", "2026-10-22", 9.99, "found", "f.pdf")])));
+  assert.deepEqual(blank.map((x) => [x.vendor, x.file]), [["OpenAI", "f.pdf"]]);
+});
+
+test("upsertRow: a different vendor appends, the same vendor updates, a hint picks among matches, an empty-vendor row matches", () => {
+  const cwd = ws([e("OpenAI", "2026-10-22", 9.99, "found", "o.pdf"), e("Acme", "2026-10-22", 9.99)]);
+  const key = { date: "2026-10-22", amount: 9.99 };
+  upsertRow(cwd, { ...key, vendor: "Zed" }, { vendor: "Zed", status: "found", file: "z.pdf" });
+  assert.equal(read(cwd).length, 3);
+  upsertRow(cwd, { ...key, vendor: "openai" }, { vendor: "openai", status: "found", file: "o2.pdf" });
+  assert.deepEqual(read(cwd).map((x) => x.file), ["o2.pdf", "", "z.pdf"]);
+  upsertRow(cwd, { ...key, hint: "acme" }, { status: "found", file: "a.pdf" });
+  assert.equal(read(cwd)[1]!.file, "a.pdf");
+  const blank = ws([e("", "2026-10-22", 9.99)]);
+  upsertRow(blank, { ...key, vendor: "Acme" }, { vendor: "Acme", file: "b.pdf" });
+  assert.deepEqual(read(blank).map((x) => x.file), ["b.pdf"]);
 });

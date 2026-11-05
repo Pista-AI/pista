@@ -4,10 +4,10 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { docKey, matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
+import { upsertRow } from "./manifest.ts";
 import { merchantKeyword } from "./merchants.ts";
 import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
-import { upsertRow } from "./manifest.ts";
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
 export type ReplayedEntry = { kind: "replayed"; index: number; step: PlaybookStep };
@@ -391,7 +391,9 @@ export function recordDownloadRow(cwd: string, trace: PlaybookTrace, resultText:
     if (inv.amount === undefined) return;
     const rows = trace.list();
     const site = [rows.at(-1), rows.at(-2)].map((x) => (x ? trySiteKey(urlOf(x)) : undefined)).find(Boolean);
-    upsertRow(cwd, { date: inv.date, amount: inv.amount, currency: inv.currency }, { vendor: site ?? "unknown", status: "found", file: r.path, note: "downloaded and checked by the host" });
+    if (!site) return;
+    // The site is only a hint for which row, and never a label: a row the host adds has no vendor, so a later model label wins.
+    upsertRow(cwd, { date: inv.date, amount: inv.amount, currency: inv.currency, hint: site }, { vendor: "", status: "found", file: r.path, note: "downloaded and checked by the host" });
   } catch {}
 }
 

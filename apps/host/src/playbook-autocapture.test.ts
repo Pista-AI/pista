@@ -251,7 +251,7 @@ test("a validated download flips the matching row to found, a new one is appende
   assert.deepEqual([rows.length, rows[0].vendor, rows[0].status, rows[0].file], [1, "Acme", "found", "invoices/a.pdf"]);
   recordDownloadRow(cwd, trace(path, { date: "2026-11-01", amount: 7, currency: "EUR" }), OK);
   rows = JSON.parse(readFileSync(file, "utf8"));
-  assert.deepEqual([rows.length, rows[1].vendor, rows[1].status], [2, "example.com", "found"]);
+  assert.deepEqual([rows.length, rows[1].vendor, rows[1].status], [2, "", "found"], "a new row carries no label");
   recordDownloadRow(cwd, trace(path, null), OK);
   assert.equal(JSON.parse(readFileSync(file, "utf8")).length, 2);
 });
