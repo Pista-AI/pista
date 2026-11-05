@@ -255,3 +255,12 @@ test("a paste whose only matching site needs attention still gets a summary with
   assert.deepEqual([out!.ran, out!.skipOnly], [false, true], "the thread's first pass stays unused");
   assert.match(summarise(out!), /skipped: eps\.test needs attention after 3 failures \(last: not-found\)/);
 });
+
+test("a pasted five-line record is ready and routes by keyword", () => {
+  const paste = ["2026-10-22", "Kortköp/uttag", "OPENAI *CHATGPT SUBSC SAN FRANCISCO", "-2 021,55", "47 734,35"].join("\n");
+  assert.equal(firstPassOnce().ready(paste), true);
+  const pb = make("openai.test", { merchants: ["OPENAI"] });
+  assert.deepEqual(pb.merchants, ["OPENAI"]);
+  const { routed } = routeLines(parseTransactions(paste).lines, all());
+  assert.deepEqual(routed.map((r) => [r.line.lineNo, r.site]), [[1, "openai.test"]]);
+});
