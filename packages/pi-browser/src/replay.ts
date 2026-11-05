@@ -19,7 +19,7 @@ export interface ReplayLocator { role?: string; name?: string; text?: string; se
 export interface ReplayExpect { urlIncludes?: string; text?: string; element?: ReplayLocator }
 export type ReplayStep =
   | { kind: "navigate"; url: string; expect?: ReplayExpect }
-  | { kind: "click"; target: ReplayLocator; fallbacks?: ReplayLocator[]; expect?: ReplayExpect }
+  | { kind: "click"; target: ReplayLocator; fallbacks?: ReplayLocator[]; expect?: ReplayExpect; opensTab?: true }
   | { kind: "signIn"; origin: string; expect?: ReplayExpect }
   | { kind: "wait"; expect: ReplayExpect }
   | { kind: "download"; target?: ReplayLocator; url?: string; fileType?: string; verify?: "row" | "page" };
@@ -31,7 +31,7 @@ export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean; /** the row or page showed only another currency than the invoice, so the date alone was compared */ foreignCurrency?: true }; shortcut?: ReplayShortcutOutcome }
+  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean; /** the row or page showed only another currency than the invoice, so the date alone was compared */ foreignCurrency?: true }; /** Things the run did that a person should know about (for example a repeated click that left several tabs open). */ notes?: string[]; shortcut?: ReplayShortcutOutcome }
   | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
 /** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
@@ -72,6 +72,13 @@ const URL_MAX = 500;
 const BLOCKED_URL_MAX = 200;
 const SNAPSHOT_MAX = 8000;
 const RESOLVE_MAX_ELEMENTS = 500;
+/** A control that is not there yet (a late-hydrating page) is looked for this long before it counts as not found. */
+const LOCATE_WAIT_MS = 3000;
+const LOCATE_POLL_MS = 250;
+/** How long a click that should open a tab is given to show it before the click is repeated. */
+const NEW_TAB_WAIT_MS = 1000;
+/** How many times a link that should open a tab is clicked again when none showed. */
+const MAX_TAB_RETRIES = 1;
 
 class Handoff extends Error {
   constructor(readonly reason: ReplayReason, detail: string) {
@@ -339,7 +346,26 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   const click = async (target: string, what: string) => {
     const r = await runPageAction(d, { action: "click", target }, riskApprove);
     if (r.note) throw new Handoff(o.signal?.aborted ? "aborted" : /^Stopped/.test(r.note) ? "declined" : "error", `${what}: ${r.note}`);
+    return r;
   };
+  /** Like `locate`, but a `not-found` is retried on a fresh snapshot for a few seconds: the page may still be building. */
+  const locateWaiting = async (target: ReplayLocator, fallbacks?: readonly ReplayLocator[], seen?: { amount: boolean }) => {
+    const start = now();
+    for (;;) {
+      const r = await locate(d, target, fallbacks, o.invoice, seen);
+      if ("target" in r || r.reason !== "not-found" || o.signal?.aborted || now() - start >= LOCATE_WAIT_MS) return r;
+      await within(sleep(o.pollMs ?? LOCATE_POLL_MS), (o.pollMs ?? LOCATE_POLL_MS) + 1000, o.signal, () => undefined);
+    }
+  };
+  /** Switches to the newest tab opened since `watch` was armed (or, without a watcher, since `known`); returns how many new tabs there were. */
+  const adoptNewTab = async (watch: (() => Promise<{ id: string }[]>) | undefined, known: Set<string>) => {
+    const fresh = watch ? await watch().catch(() => []) : ((await d.tabs?.().catch(() => undefined)) ?? []).filter((t) => !known.has(t.id));
+    if (!fresh.length || !d.switchTab) return 0;
+    await d.switchTab(fresh.at(-1)!.id);
+    await settle(d);
+    return fresh.length;
+  };
+  const notes: string[] = [];
   const run = async (step: ReplayStep, index: number) => {
     if (o.signal?.aborted) throw new Handoff("aborted", "The run was stopped.");
     if (step.kind !== "navigate" && step.kind !== "wait" && o.approve && !(await o.approve(step, index))) throw new Handoff("declined", "The user declined this step.");
@@ -355,10 +381,24 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       }
       case "click": {
         const seen = { amount: false };
-        const r = await locate(d, step.target, step.fallbacks, o.invoice, seen);
+        const known = new Set(((await d.tabs?.().catch(() => undefined)) ?? []).map((t) => t.id));
+        const watch = step.opensTab ? await d.watchNewTabs?.().catch(() => undefined) : undefined;
+        const r = await locateWaiting(step.target, step.fallbacks, seen);
         if (!("target" in r)) throw new Handoff(r.reason, r.detail);
         noteRule(step.target, seen);
-        await click(r.target, "click");
+        let res = await click(r.target, "click");
+        // The click should have opened a tab (the capture saw one). A tab can show up late, so look again before clicking a second time (a link only: a button may act twice).
+        if (step.opensTab && (watch || d.tabs) && !res.openedTab) {
+          const canRetry = !step.target.role || step.target.role === "link";
+          for (let attempt = 0; ; attempt++) {
+            if (!res.openedTab) await within(sleep(NEW_TAB_WAIT_MS), NEW_TAB_WAIT_MS + 1000, o.signal, () => undefined);
+            const adopted = await adoptNewTab(watch, known);
+            if (adopted > 1) notes.push(`step ${index}: ${adopted} new tabs were open after the click; the newest one was used.`);
+            if (adopted || res.openedTab) break;
+            if (!canRetry || attempt >= MAX_TAB_RETRIES) throw new Handoff("expectation-timeout", `expected a new tab after clicking ${describeLocator(step.target)}; none opened`);
+            res = await click(r.target, "click");
+          }
+        }
         await stillOnSite();
         break;
       }
@@ -387,7 +427,7 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
           source = { url: new URL(step.url, (await d.state()).url || undefined).href };
         } else if (step.target) {
           const seen = { amount: false };
-          const r = await locate(d, step.target, [], o.invoice, seen);
+          const r = await locateWaiting(step.target, [], seen);
           if (!("target" in r)) throw new Handoff(r.reason, r.detail);
           noteRule(step.target, seen);
           // A download found without a row rule must still sit in the invoice's row: a list showing one invoice is not proof it is the wanted one.
@@ -506,5 +546,5 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   }
   if (failure) return { ...failure, ...(shortcut ? { shortcut } : {}) };
   if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "", ...(shortcut ? { shortcut } : {}) };
-  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), verified, ...(shortcut ? { shortcut } : {}) };
+  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), verified, ...(notes.length ? { notes } : {}), ...(shortcut ? { shortcut } : {}) };
 }

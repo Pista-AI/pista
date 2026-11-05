@@ -58,6 +58,10 @@ export type Approve = (action: string) => Promise<boolean | "aborted">;
  * events; every action that changes the page returns a fresh snapshot so the agent sees the
  * effect without another call.
  */
+/** How long a click that visibly did nothing keeps watching for a tab opened late. */
+const LATE_TAB_WAIT_MS = 1500;
+const LATE_TAB_POLL_MS = 150;
+
 export async function runPageAction(driver: BrowserDriver, req: PageAction, approve: Approve = async () => false): Promise<ActionResult> {
   driver.setActivity?.(describe(req));
   const delta = deltaEnabled();
@@ -86,6 +90,9 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
     const effect = describeEffect(watch.op, watch.before, now, watch.arg, watch.submit);
     return { outcome: [outcome, effect].filter(Boolean).join(" "), text: await snapshot(150, true, popup?.noNavigation) };
   };
+  /** The address, the probe fingerprint (controls), and the text length, hash and title: equal before and after a click when nothing visible happened. */
+  const pageFingerprint = async () =>
+    `${(await driver.state().catch(() => undefined))?.url}|${String(await driver.evaluate(scripts.probe()).catch(() => ""))}|${String(await driver.evaluate("(document.body ? document.body.innerText.length : 0) + '|' + location.hash + '|' + document.title").catch(() => ""))}`;
   /** Fingerprint before the action, so settle can tell when a popup list has appeared. */
   const baseline = async (role: string | undefined, roles: string[]): Promise<SettleOptions | undefined> =>
     role && roles.includes(role) ? { popupBaseline: String(await driver.evaluate(scripts.probe()).catch(() => "")) } : undefined;
@@ -134,6 +141,7 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
       }
       const popup = await baseline(t.role, ["combobox", "listbox"]);
       const newTabs = await driver.watchNewTabs?.().catch(() => undefined);
+      const quiet = newTabs ? await pageFingerprint() : undefined;
       // A covering element (invisible overlay, sticky header) would swallow a real click, so click through the DOM.
       const trusted = !t.coveredBy && t.x !== undefined && t.y !== undefined && (await driver.input({ type: "click", x: t.x, y: t.y }));
       if (!trusted) await driver.evaluate(scripts.syntheticInput(req.target, "click"));
@@ -143,7 +151,14 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
       if (!newTabs) return after(clicked, popup, watch);
       // A link with target="_blank" or window.open() opens another tab: the tools follow it, so the next snapshot shows what the click led to.
       await settle(driver, popup);
-      const fresh = await newTabs().catch(() => []);
+      let fresh = await newTabs().catch(() => []);
+      // A window.open() from a timer or a fetch lands after the settle. A click that changed nothing else gets a longer look before it counts as having opened no tab.
+      if (!fresh.length && quiet !== undefined && (await pageFingerprint()) === quiet) {
+        for (let waited = 0; !fresh.length && waited < LATE_TAB_WAIT_MS; waited += LATE_TAB_POLL_MS) {
+          await new Promise((r) => setTimeout(r, LATE_TAB_POLL_MS));
+          fresh = await newTabs().catch(() => []);
+        }
+      }
       if (fresh.length === 1 && driver.switchTab) {
         try {
           await driver.switchTab(fresh[0]!.id);

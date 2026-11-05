@@ -76,6 +76,11 @@ describe("validatePlaybook", () => {
     assert.equal(s.target.name.length, 200);
     assert.equal("bogus" in s.target, false);
   });
+  it("keeps opensTab on click steps only, and loads a click without it", () => {
+    const pb = validatePlaybook(base({ steps: [{ kind: "click", target: { name: "a" }, opensTab: true }, { kind: "click", target: { name: "b" }, opensTab: "yes" }, { kind: "click", target: { name: "c" } }, { kind: "navigate", url: "https://example.com/x", opensTab: true }] }), "example.com");
+    const flags = pb.steps.map((x) => ("opensTab" in x ? x.opensTab : undefined));
+    assert.deepEqual(flags, [true, undefined, undefined, undefined]);
+  });
   it("enforces limits and rejects unknown kinds and foreign origins", () => {
     const nav = { kind: "navigate", url: "https://example.com/" };
     assert.throws(() => validatePlaybook(base({ steps: Array(31).fill(nav) }), "example.com"));

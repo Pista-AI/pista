@@ -356,6 +356,107 @@ test("a step that fails after the shortcut is retried once from the full path; i
   assert.equal(twice.r.shortcut, undefined);
 });
 
+test("a control missing from the first snapshot is looked for again for a few seconds before not-found", async () => {
+  const run = async (appearsAtSnapshot: number) => {
+    let snapshots = 0;
+    let t = 0;
+    const slept: number[] = [];
+    const evaluate = async (code: string) => {
+      if (!String(code).includes("omitted")) return String(code).startsWith("Object.fromEntries") ? {} : "";
+      snapshots++;
+      return { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: snapshots >= appearsAtSnapshot ? [{ ref: "e1", role: "button", name: "Ladda ner faktura" }] : [] };
+    };
+    const driver = { state: async () => ({ url: "https://x.test/p", title: "", loading: false }), navigate: async () => ({}), evaluate } as unknown as BrowserDriver;
+    const r = await runReplay(
+      { startUrl: "https://x.test/p", steps: [{ kind: "download", target: { role: "button", name: "Ladda ner faktura" } }] },
+      { driver, allowUrl: () => true, downloadRoot: "/nonexistent", downloadPath: "a.pdf", now: () => t, sleep: async (ms) => (slept.push(ms), (t += ms), undefined) },
+    );
+    return { r, snapshots, slept };
+  };
+  const late = await run(2);
+  assert.notEqual(!late.r.ok && late.r.reason, "not-found"); // found on the second snapshot; what happens next is not this test's concern
+  assert.deepEqual(late.slept.slice(0, 1), [250]);
+  const never = await run(1000);
+  assert.equal(!never.r.ok && never.r.reason, "not-found");
+  assert.equal(never.slept.reduce((a, b) => a + b, 0), 3000);
+  assert.ok(!never.r.ok && never.r.detail.includes("nothing on the page matches"));
+});
+
+/** A fake page for the opensTab branch: the click opens `opens` tabs after the given number of sleeps (counted across the run), or never. */
+function tabPage(role: string, plan: { tabsAfterSleeps?: number; opensOnClick?: number[]; double?: boolean }) {
+  let sleeps = 0;
+  let clicks = 0;
+  let t = 0;
+  const open: string[] = [];
+  const snap = { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: [{ ref: "e1", role, name: "Open invoice" }] };
+  const driver = {
+    state: async () => ({ url: "https://x.test/p", title: "", loading: false }),
+    navigate: async () => ({}),
+    evaluate: async (code: string) => (String(code).includes("omitted") ? snap : String(code).startsWith("Object.fromEntries") ? {} : ""),
+    input: async () => true,
+    tabs: async () => open.map((id) => ({ id, url: "", title: "", active: false })),
+    watchNewTabs: async () => async () => open.map((id) => ({ id, url: "", title: "", active: false })),
+    switchTab: async () => undefined,
+    download: async ({ path }: { path: string }) => (writeFileSync(path, "%PDF-1.4"), { bytes: 8, contentType: "application/pdf" }),
+  } as unknown as BrowserDriver;
+  // Clicks go through runPageAction, which needs a prepared target; the click is counted by the input call instead.
+  (driver as unknown as { evaluate: (c: string) => Promise<unknown> }).evaluate = async (code: string) => {
+    const c = String(code);
+    if (c.includes("omitted")) return snap;
+    if (c.startsWith("Object.fromEntries")) return {};
+    if (c.includes("prepare") || c.includes("__pista") && c.includes("click")) return { x: 1, y: 1, kind: "link", label: 'link "Open invoice"', name: "Open invoice", role };
+    return "";
+  };
+  (driver as unknown as { input: () => Promise<boolean> }).input = async () => (clicks++, (plan.opensOnClick ?? []).includes(clicks) && (open.push(`t${clicks}`), plan.double && open.push(`u${clicks}`)), true);
+  const sleep = async (ms: number) => {
+    sleeps++;
+    t += ms;
+    if (plan.tabsAfterSleeps !== undefined && sleeps === plan.tabsAfterSleeps) open.push("late");
+  };
+  return { driver, sleep, now: () => t, clicks: () => clicks };
+}
+const tabRun = (role: string, plan: Parameters<typeof tabPage>[1]) => {
+  const p = tabPage(role, plan);
+  return runReplay({ startUrl: "https://x.test/p", steps: [{ kind: "click", target: { role, name: "Open invoice" }, opensTab: true }, { kind: "download", url: "https://x.test/a.pdf" }] }, { driver: p.driver, allowUrl: () => true, downloadRoot: mkdtempSync(join(tmpdir(), "tabs-")), downloadPath: "a.pdf", now: p.now, sleep: p.sleep, pollMs: 1 }).then((r) => ({ r, clicks: p.clicks() }));
+};
+
+test("opensTab: a tab that shows up during the wait is adopted without a second click", async () => {
+  const { r, clicks } = await tabRun("link", { tabsAfterSleeps: 1 });
+  assert.notEqual(!r.ok && r.reason, "expectation-timeout");
+  assert.equal(clicks, 1);
+});
+
+test("opensTab: a link is clicked once more when no tab showed, a button never, and both hand off with the same text", async () => {
+  const link = await tabRun("link", {});
+  assert.equal(link.clicks, 2);
+  assert.equal(!link.r.ok && link.r.reason, "expectation-timeout");
+  assert.ok(!link.r.ok && link.r.detail.startsWith("expected a new tab after clicking") && link.r.detail.endsWith("none opened"), JSON.stringify(link.r));
+  const button = await tabRun("button", {});
+  assert.equal(button.clicks, 1);
+  assert.equal(!button.r.ok && button.r.reason, "expectation-timeout");
+  assert.ok(!button.r.ok && button.r.detail.endsWith("none opened"));
+});
+
+test("opensTab: a retry that leaves several tabs adopts the newest and records a note", async () => {
+  const { r, clicks } = await tabRun("link", { opensOnClick: [2], double: true });
+  assert.equal(clicks, 2);
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.ok && r.notes?.length, 1);
+  assert.match(r.ok ? r.notes![0]! : "", /2 new tabs/);
+});
+
+test("a row-not-found or ambiguous locate returns at once, without waiting", async () => {
+  const slept: number[] = [];
+  const el = (ref: string) => ({ ref, role: "button", name: "Pay" });
+  const run = async (elements: unknown[]) => {
+    const snap = { lines: [], count: 2, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements };
+    const driver = { state: async () => ({ url: "https://x.test/p", title: "", loading: false }), navigate: async () => ({}), evaluate: async (c: string) => (String(c).includes("omitted") ? snap : {}) } as unknown as BrowserDriver;
+    return runReplay({ startUrl: "https://x.test/p", steps: [{ kind: "click", target: { role: "button", name: "Pay" } }] }, { driver, allowUrl: () => true, downloadRoot: "/nonexistent", downloadPath: "a.pdf", sleep: async (ms) => void slept.push(ms) });
+  };
+  assert.equal((await run([el("e1"), el("e2")])).ok, false);
+  assert.deepEqual(slept, []);
+});
+
 test("a page showing only another currency is verified by its date, and says the amount was not", () => {
   const sek = { date: "2026-10-22", amount: 2021.55, currency: "SEK" };
   const page = "Invoice\nDate of issue 21 oktober 2026\nTotal 200,00 US$\nAmount due 200,00 US$";

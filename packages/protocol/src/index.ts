@@ -805,7 +805,8 @@ export interface PlaybookLocator {
 export interface PlaybookExpect { urlIncludes?: string; text?: string; element?: PlaybookLocator }
 export type PlaybookStep =
   | { kind: "navigate"; url: string; expect?: PlaybookExpect }
-  | { kind: "click"; target: PlaybookLocator; fallbacks?: PlaybookLocator[]; expect?: PlaybookExpect }
+  /** `opensTab`: the recorded click opened a new tab, which replay waits for and follows. */
+  | { kind: "click"; target: PlaybookLocator; fallbacks?: PlaybookLocator[]; expect?: PlaybookExpect; opensTab?: true }
   /** Replay fills the saved login for `origin`; no credential is part of the playbook. */
   | { kind: "signIn"; origin: string; expect?: PlaybookExpect }
   | { kind: "wait"; expect: PlaybookExpect }

@@ -153,7 +153,7 @@ function step(v: unknown, site: Sites): PlaybookStep | null {
     case "click": {
       const fb = Array.isArray(o.fallbacks) ? o.fallbacks : [];
       if (fb.length > MAX_FALLBACKS) throw new Error(`too many fallbacks (max ${MAX_FALLBACKS})`);
-      return { kind: "click", target: locator(o.target, site), ...(fb.length ? { fallbacks: fb.map((f) => locator(f, site)) } : {}), ...withExpect };
+      return { kind: "click", target: locator(o.target, site), ...(fb.length ? { fallbacks: fb.map((f) => locator(f, site)) } : {}), ...withExpect, ...(o.opensTab === true ? { opensTab: true as const } : {}) };
     }
     case "signIn": {
       const origin = parseHttp(String(o.origin));
