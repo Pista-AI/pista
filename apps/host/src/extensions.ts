@@ -465,7 +465,8 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         }
         const mode = store.config.approvalMode;
         // A playbook run clicks and downloads like the browser tools, so it is asked about where they are: once per run, naming the playbook.
-        const found = event.toolName === "playbook_run" ? resolvePlaybook((event.input as { site?: unknown }).site, (event.input as { merchant?: string }).merchant).pb ?? undefined : undefined;
+        const runInput = event.toolName === "playbook_run" ? (event.input as { site?: unknown; merchant?: unknown }) : undefined;
+        const found = runInput ? (resolvePlaybook(runInput.site, runInput.merchant).pb ?? undefined) : undefined;
         const playbook = found?.steps.length ? found : undefined; // a notes-only site has no path to follow
         if (event.toolName === "playbook_run" && !playbook) return undefined; // nothing to follow; the tool says so
         const action = playbook ? `Follow the saved playbook for ${playbook.site}${playbook.hosts.length > 1 ? ` (also visits ${playbook.hosts.slice(1).join(", ")})` : ""}? (${playbook.steps.length} steps)` : undefined;
