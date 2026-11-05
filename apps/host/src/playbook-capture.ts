@@ -380,6 +380,12 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
       k = Math.max(...rows.filter((x): x is TraceRow & ReplayedEntry => x.kind === "replayed").map((x) => x.index)) + 1;
     }
   }
+  // A path may cross sites through clicks (a link that opens a tab): the start is the page the unbroken run of clicks began from, on any host.
+  if (start < 0) {
+    let i = rows.length - 2;
+    while (i >= 0 && rows[i]!.kind === "click") i--;
+    if (i >= 0 && rows[i]!.kind === "navigate") start = i;
+  }
   const known = hosts.map((h) => getPlaybook(h)).find(Boolean);
   const startHosts = [...hosts, ...(known?.hosts ?? [])];
   if (start < 0) start = rows.findLastIndex((x) => x.kind === "navigate" && startHosts.includes(hostOf(x.url) ?? ""));

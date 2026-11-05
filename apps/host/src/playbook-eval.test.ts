@@ -163,11 +163,12 @@ test("run 3: a renamed link hands off at the download step; the model repairs it
     assert.match(handoff, /<<<website-data\nDetail: [^]*website-data>>>$/);
     assert.deepEqual(toolCalls(id), ["playbook_run", "browser_snapshot", "browser_download", "playbook_save", "playbook_save"]);
     assert.match(file(path), /inv-2026-10b/);
-    assert.match(results.at(-1)!, new RegExp(`Updated the playbook for 127\\.0\\.0\\.1; first changed step is ${steps}`), results.at(-1)!);
-    const updated = playbookEvents().at(-1)!;
-    assert.deepEqual({ ...updated, before: typeof updated.before, after: typeof updated.after }, { type: "playbook.event", threadId: id, kind: "updated", site: "127.0.0.1", step: steps, stepCount: steps, before: "string", after: "string" });
+    // The host already repaired the playbook when the download succeeded, so the model's own save finds nothing left to change.
+    assert.match(results.at(-1)!, /already matches this path; nothing changed/, results.at(-1)!);
     const pb = getPlaybook("127.0.0.1")!;
-    assert.match(pb.history.at(-1)!.summary, new RegExp(`changed step ${steps}$`));
+    assert.equal(pb.failCount, 0);
+    assert.equal(pb.status, "ok");
+    assert.ok(pb.history.some((h) => new RegExp(`^repaired after handoff at step ${steps}; .*changed step ${steps}$`).test(h.summary)), JSON.stringify(pb.history));
     assert.equal(pb.steps.length, steps);
 
     const path4 = "invoices/2026-11/fixture-2026-11-03-49.00.pdf";
