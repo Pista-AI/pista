@@ -176,6 +176,11 @@ describe("matchVendor", () => {
       const l = parseTransactions(rec("2026-10-22", "Leverantörsbetalning", "1234567890123456", "-100,00") .replace("-100,00", "ACME AB\n-100,00")).lines[0]!;
       assert.deepEqual([l.ok, l.merchant], [true, "ACME AB"]);
     });
+    it("skips column titles above the first record", () => {
+      const head = "Datum\nTyp\nMottagare\nBelopp\nSaldo\n";
+      const lines = parseTransactions(head + rec("2026-10-22", "Kortköp/uttag", "OPENAI *CHATGPT", "-20,00", "5,00") + "\n" + rec("2026-10-21", "Kortköp/uttag", "ACME AB", "-10,00", "25,00")).lines;
+      assert.deepEqual(lines.map((l) => l.ok), [true, true]);
+    });
     it("rejects income with an income reason", () => {
       const l = parseTransactions(rec("2026-10-22", "Bankgiro inbetalning", "ACME AB", "1 000,00", "5 000,00")).lines[0]!;
       assert.deepEqual([l.ok, l.reason], [false, "income (positive amount)"]);

@@ -176,8 +176,11 @@ export function parseTransactions(text: string): { lines: ParsedLine[] } {
   const lines: ParsedLine[] = [];
   const grouped = new Set<ParsedLine>();
   const dateOnly = (raw: string) => !header && dates(raw.trim(), null).count === 1 && !removeRaws(raw.trim(), dates(raw.trim(), null).raws).trim();
+  // Column titles above the first record (Datum, Typ, Belopp, Saldo) are not transactions.
+  const firstRec = body.findIndex((r, i) => dateOnly(r.raw) && body[i + 1] && !dateOnly(body[i + 1]!.raw));
   for (let i = 0; i < body.length; i++) {
     const r = body[i]!;
+    if (i < firstRec && !/\d/.test(r.raw)) continue;
     if (dateOnly(r.raw)) {
       let end = i + 1;
       while (end < body.length && !dateOnly(body[end]!.raw)) end++;
