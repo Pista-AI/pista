@@ -20,6 +20,8 @@ process.env.PISTA_BROWSER_DRIVER = "cdp";
 process.env.PI_BROWSER_CDP_URL = CDP;
 
 const { projectDir } = setupHome("playbook-chain-eval", { cleanup: "exit" });
+// Registered first so the lock is taken before the resolver probe below opens a tab in the shared browser.
+if (!unavailable) serialiseChromeEval();
 const { CdpDriver } = await import("@pista/pi-browser");
 const { deletePlaybook, getPlaybook, savePlaybook, validatePlaybook } = await import("./playbooks.ts");
 const { Hub } = await import("./hub.ts");
@@ -99,7 +101,6 @@ hub.add({ readyState: 1, OPEN: 1, on: () => {}, send: (frame: string) => {
 const { piAi, faux, models, ref } = await fauxModels();
 const { manager, store, project } = await makeManager({ projectDir, models, hub });
 store.patchConfig({ defaultModel: ref, approvalMode: "full-access" });
-if (!unavailable) serialiseChromeEval();
 
 type Ctx = { messages: { role: string; content: string | { type: string; text?: string }[] }[] };
 type Step = (ctx: Ctx) => unknown;
