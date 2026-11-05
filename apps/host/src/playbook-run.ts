@@ -107,7 +107,7 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
-    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { currency: invoice?.currency, offsetDays: r.verified.offsetDays, fxRateUsed: r.verified.fxRateUsed, amountVerified: r.verified.amount });
+    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { rowCurrency: r.verified.rowCurrency, offsetDays: r.verified.offsetDays, fxRateImplied: r.verified.fxRateImplied, amountVerified: r.verified.amount });
     noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
@@ -269,8 +269,8 @@ function referenceOf(raw: string | undefined, keywords: readonly (string | undef
 /** The rate and band learned from earlier verified runs, for the replay's amount check; nothing until one has run. */
 function learnedRates(pb: { billing?: { currency: string; rate?: number; samples: number } }, currency: string | undefined): { rateFor?: (from: string, to: string) => number | undefined; band?: number } {
   const b = pb.billing, band = b ? bandFor(b.samples) : undefined;
-  if (!b?.rate || band === undefined || b.currency !== currency) return {};
-  return { rateFor: (from, to) => (to.toUpperCase() === b.currency && from.toUpperCase() !== b.currency ? b.rate : undefined), band };
+  if (!b?.rate || band === undefined || !currency || b.currency === currency) return {};
+  return { rateFor: (from, to) => (from.toUpperCase() === b.currency && to.toUpperCase() === currency ? b.rate : undefined), band };
 }
 
 async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {

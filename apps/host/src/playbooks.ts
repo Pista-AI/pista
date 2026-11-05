@@ -82,12 +82,12 @@ export const HISTORY = {
 
 const LIST = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : (xs[0] ?? ""));
 /** Says how a replay's row or page was matched (the history, the playbook_run text and the manifest note use this one sentence); "" when the replay reported nothing to say. */
-export function matchSentence(v: { amount: boolean; foreignCurrency?: boolean; matchedBy?: readonly string[]; fxRateUsed?: number }, currency?: string): string {
+export function matchSentence(v: { amount: boolean; foreignCurrency?: boolean; matchedBy?: readonly string[]; fxRateImplied?: number; rowCurrency?: string }, currency?: string): string {
   if (v.foreignCurrency && !v.amount) return FOREIGN_CURRENCY_NOTE;
   const names: Record<string, string> = { date: "date", amount: "amount", "amount-fx": "converted amount", reference: "reference" };
   const by = (v.matchedBy ?? []).flatMap((m) => names[m] ?? []);
   if (!by.length) return "";
-  const rate = v.matchedBy?.includes("amount-fx") && v.fxRateUsed !== undefined ? ` (${currency ? `to ${currency}` : "rate"} ${Number(v.fxRateUsed.toPrecision(4))})` : "";
+  const rate = v.matchedBy?.includes("amount-fx") && v.fxRateImplied !== undefined ? ` (${v.rowCurrency && currency ? `${v.rowCurrency}→${currency} ` : ""}${Number(v.fxRateImplied.toPrecision(4))})` : "";
   return `matched by ${LIST(by)}${rate}`;
 }
 
@@ -469,13 +469,13 @@ function mutate(site: string, fn: (pb: Playbook, now: string) => void): Playbook
 }
 
 /** `how` is the match sentence (see matchSentence), kept in the history. `match` updates the billing facts from an amount-verified run. */
-export function recordSuccess(site: string, how?: string, match?: { currency?: string; offsetDays?: number; fxRateUsed?: number; amountVerified: boolean }): Playbook | null {
+export function recordSuccess(site: string, how?: string, match?: { rowCurrency?: string; offsetDays?: number; fxRateImplied?: number; amountVerified: boolean }): Playbook | null {
   return mutate(site, (pb, now) => {
-    const b = pb.billing, cur = match?.currency;
+    const b = pb.billing, cur = match?.rowCurrency;
     if (match?.amountVerified && cur && match.offsetDays !== undefined && Number.isFinite(match.offsetDays)) {
       const same = b?.currency === cur;
       const mix = (old: number | undefined, v: number) => (old === undefined ? v : old * (1 - EMA) + v * EMA);
-      const rate = match.fxRateUsed !== undefined && Number.isFinite(match.fxRateUsed) && match.fxRateUsed > 0 ? match.fxRateUsed : undefined;
+      const rate = match.fxRateImplied !== undefined && Number.isFinite(match.fxRateImplied) && match.fxRateImplied > 0 ? match.fxRateImplied : undefined;
       const oldRate = same ? b?.rate : undefined;
       pb.billing = { currency: cur, dayOffset: Math.round(mix(same ? b?.dayOffset : undefined, match.offsetDays) * 10) / 10, ...(rate !== undefined || oldRate !== undefined ? { rate: Number(mix(oldRate, rate ?? oldRate!).toPrecision(6)) } : {}), samples: (same ? b!.samples : 0) + 1 };
     }

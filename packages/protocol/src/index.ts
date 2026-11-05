@@ -888,7 +888,7 @@ export interface Playbook {
   merchantMisses?: Record<string, number>;
   /** Short hash of the last transaction that missed, per keyword, so a retry of it is not counted twice. */
   merchantLastMiss?: Record<string, string>;
-  /** What replays learned about how the site bills: `currency` is the transaction currency a converted charge was compared in, `dayOffset` the average days from the transaction to the row's date, `rate` the average rate (row currency to `currency`) that made rows fit, over `samples` verified runs. */
+  /** What replays learned about how the site bills: `currency` is the currency the vendor bills in (the row's), `dayOffset` the average of bank date minus row date in days, `rate` the average rate (row currency to the transaction's currency) that made rows fit, over `samples` verified runs. */
   billing?: { currency: string; dayOffset: number; rate?: number; samples: number };
   /** Facts about the site (at most 8, one line, 200 characters). Advisory data shown to the model when it browses anyway; never replayed. */
   notes: PlaybookNote[];

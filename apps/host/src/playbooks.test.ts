@@ -279,17 +279,17 @@ describe("billing facts", () => {
   const fresh = () => { savePlaybook(validatePlaybook(base(), "example.com")); };
   it("are created on the first amount-verified run and refined on the next", () => {
     fresh();
-    const a = recordSuccess("example.com", "matched by date and converted amount", { currency: "SEK", offsetDays: 2, fxRateUsed: 10, amountVerified: true })!;
-    assert.deepEqual(a.billing, { currency: "SEK", dayOffset: 2, rate: 10, samples: 1 });
-    const b = recordSuccess("example.com", undefined, { currency: "SEK", offsetDays: 0, fxRateUsed: 10.4, amountVerified: true })!;
-    assert.deepEqual(b.billing, { currency: "SEK", dayOffset: 1, rate: 10.2, samples: 2 });
-    assert.equal(recordSuccess("example.com", undefined, { currency: "SEK", offsetDays: 1, amountVerified: true })!.billing!.rate, 10.2, "a same-currency run keeps the rate");
+    const a = recordSuccess("example.com", "matched by date and converted amount", { rowCurrency: "USD", offsetDays: 2, fxRateImplied: 10, amountVerified: true })!;
+    assert.deepEqual(a.billing, { currency: "USD", dayOffset: 2, rate: 10, samples: 1 });
+    const b = recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 0, fxRateImplied: 10.4, amountVerified: true })!;
+    assert.deepEqual(b.billing, { currency: "USD", dayOffset: 1, rate: 10.2, samples: 2 });
+    assert.equal(recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 1, amountVerified: true })!.billing!.rate, 10.2, "a same-currency run keeps the rate");
   });
   it("are not learned from a run whose amount was not verified, and restart when the currency changes", () => {
     fresh();
-    assert.equal(recordSuccess("example.com", undefined, { currency: "SEK", offsetDays: 1, fxRateUsed: 10, amountVerified: false })!.billing, undefined);
-    recordSuccess("example.com", undefined, { currency: "SEK", offsetDays: 1, fxRateUsed: 10, amountVerified: true });
-    assert.deepEqual(recordSuccess("example.com", undefined, { currency: "NOK", offsetDays: 3, amountVerified: true })!.billing, { currency: "NOK", dayOffset: 3, samples: 1 });
+    assert.equal(recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10, amountVerified: false })!.billing, undefined);
+    recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10, amountVerified: true });
+    assert.deepEqual(recordSuccess("example.com", undefined, { rowCurrency: "NOK", offsetDays: 3, amountVerified: true })!.billing, { currency: "NOK", dayOffset: 3, samples: 1 });
   });
   it("are validated on load", () => {
     const ok = { currency: "SEK", dayOffset: 1.5, rate: 10, samples: 3 };
@@ -298,7 +298,7 @@ describe("billing facts", () => {
     assert.equal(validatePlaybook(base({ billing: { ...ok, rate: -2 } }), "example.com").billing!.rate, undefined);
   });
   it("say how a match was made", () => {
-    assert.equal(matchSentence({ amount: true, matchedBy: ["date", "amount-fx"], fxRateUsed: 10.1 }, "SEK"), "matched by date and converted amount (to SEK 10.1)");
+    assert.equal(matchSentence({ amount: true, matchedBy: ["date", "amount-fx"], fxRateImplied: 10.1, rowCurrency: "USD" }, "SEK"), "matched by date and converted amount (USD→SEK 10.1)");
     assert.equal(matchSentence({ amount: true, matchedBy: ["reference"] }), "matched by reference");
     assert.equal(matchSentence({ amount: true, matchedBy: ["date", "amount", "reference"] }), "matched by date, amount and reference");
     assert.equal(matchSentence({ amount: false, foreignCurrency: true, matchedBy: ["date"] }), FOREIGN_CURRENCY_NOTE);

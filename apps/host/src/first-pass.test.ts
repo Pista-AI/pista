@@ -295,12 +295,12 @@ test("a foreign-currency vendor confirms its keyword on amount-verified runs; th
   const run = async (req: { site: string; merchant?: string; reference?: string; deferProof?: boolean }) => {
     seen.push(req.reference);
     noteMerchantOutcome(req.site, req.merchant!, "hit", { amountVerified: !req.deferProof });
-    return { ...downloaded(req.site, seen.length), how: "matched by date and converted amount (to SEK 10.1)" };
+    return { ...downloaded(req.site, seen.length), how: "matched by date and converted amount (USD→SEK 10.1)" };
   };
   await runFirstPass(paste, { playbooks: all, allow: async () => true, run, writeManifest: (r) => rows.push(...r) });
   assert.deepEqual(seen, ["2026-03-01 KAPPA CLOUD INV-4471 -99.00 SEK", "2026-03-02 KAPPA CLOUD -99.00 SEK"]);
   assert.deepEqual(getPlaybook("kappa.test")!.merchants, ["KAPPA CLOUD"]);
-  assert.equal(rows[0]!.note, "fetched by a saved playbook; matched by date and converted amount (to SEK 10.1)");
+  assert.equal(rows[0]!.note, "fetched by a saved playbook; matched by date and converted amount (USD→SEK 10.1)");
 });
 
 test("a date-only match (amount not verified) does not promote and says so in the manifest note", async () => {
