@@ -165,6 +165,7 @@ export type Candidate = {
 };
 export type RowMatch =
   | ({ kind: "one"; index: number; fxRateUsed?: number; /** the matched row's amount (absolute) and currency, when it showed one */ rowAmount?: number; rowCurrency?: string; /** invoice amount / row amount, when the currencies differ: the rate the vendor and bank really applied */ fxRateImplied?: number } & Pick<Candidate, "matchedBy" | "amountVerified" | "offsetDays" | "score">)
+  /** `index`, `score` and the evidence fields exist only on `one`; `many` lists `candidates` and `details`. */
   | { kind: "none" }
   | { kind: "many"; candidates: number[]; details: Candidate[] };
 
@@ -194,6 +195,8 @@ function decide(viable: Candidate[], margin: number, targetHasAmount: boolean): 
   if (rest[0] && top.score - rest[0].score < margin) return "many";
   if (!top.reference && (top.due || (top.guess && !exact))) return "many";
   if (top.reference) return "one";
+  // Two rows with the same exact amount (weekly invoices alike): only a reference can tell them apart, never the date.
+  if (exact && rest.some((c) => c.amount?.score === 1 && c.amount.rate === undefined)) return "many";
   // Without a reference, the date never separates rows that fit the amount about equally (any fit short of an exact same-currency one).
   if (!exact && rest.some((c) => (c.amount?.score ?? 0) >= 0.5 && (top.amount?.score ?? 0) - c.amount!.score < AMOUNT_GAP)) return "many";
   // A row with no amount only beats a rival that its amount contradicts outright, not one that merely scored low.

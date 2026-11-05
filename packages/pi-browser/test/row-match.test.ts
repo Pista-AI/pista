@@ -180,6 +180,12 @@ test("date alone never separates rows that fit the amount about equally", () => 
   assert.equal(scoreRows(rows, OCT).kind, "many");
 });
 
+test("rows with the same exact amount are told apart only by a reference, never by the date", () => {
+  const rows = [{ index: 0, text: "22 Oct 2026 2021,55 kr" }, { index: 1, text: "17 Oct 2026 2021,55 kr INV-55120" }];
+  assert.equal(scoreRows(rows, OCT).kind, "many");
+  assert.deepEqual(brief(scoreRows(rows, { ...OCT, reference: "OpenAI INV-55120" })), { kind: "one", index: 1 });
+});
+
 test("a row whose best date is a later due date is not conclusive", () => {
   const sek = "issued 21 Sep 2026 due 22 Oct 2026 2021,55 kr";
   assert.equal(scoreRows([{ index: 0, text: sek }], OCT).kind, "many");
