@@ -459,3 +459,53 @@ test("replay notes reach the playbook_run text", async () => {
   const t = runTool({ replay: async () => ({ ok: true, download: { path: "invoices/n.pdf", bytes: 1 }, steps: 2, urls: [], verified: { date: true, amount: true }, notes: ["step 1: 2 new tabs were open after the click; the newest one was used."] }) });
   assert.match(await t.run({ path: "invoices/n.pdf" }), /"replayNotes": \[\s*"step 1: 2 new tabs/);
 });
+
+const okReplay = (verified: Record<string, unknown>, seen: unknown[] = []) => async (_pb: unknown, o: unknown) => (seen.push(o), { ok: true, download: { path: "invoices/d.pdf", bytes: 1 }, steps: 2, urls: [], verified });
+
+test("billing facts are learned from a converted match, then the rate and a narrower band reach the replay", async () => {
+  save();
+  const seen: any[] = [];
+  const t = direct("full-access", true, okReplay({ date: true, amount: true, matchedBy: ["date", "amount-fx"], fxRateImplied: 10.1, rowCurrency: "USD", offsetDays: 2 }, seen));
+  const inv = { date: "2026-10-03", amount: 100, currency: "SEK" };
+  const first = await t.run({ invoice: inv, overwrite: true });
+  assert.equal(first.status, "downloaded");
+  assert.equal(seen[0].rateFor, undefined, "nothing learned yet: the built-in table and band");
+  assert.equal(seen[0].band, undefined);
+  assert.deepEqual(getPlaybook("127.0.0.1")!.billing, { currency: "USD", dayOffset: 2, rate: 10.1, rateTo: "SEK", samples: 1 });
+  assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /^replay succeeded; matched by date and converted amount \(USD→SEK 10\.1\)$/);
+  await t.run({ invoice: inv, overwrite: true });
+  assert.equal(seen[1].band, 0.05);
+  assert.equal(seen[1].rateFor("USD", "SEK"), 10.1);
+  assert.equal(seen[1].rateFor("SEK", "SEK"), undefined);
+  assert.equal(seen[1].rateFor("EUR", "SEK"), undefined);
+  assert.equal(getPlaybook("127.0.0.1")!.billing!.samples, 2);
+  await t.run({ invoice: inv, overwrite: true });
+  await t.run({ invoice: inv, overwrite: true });
+  assert.equal(seen[3].band, 0.04);
+  assert.equal((await t.run({ invoice: { date: "2026-10-03", amount: 9, currency: "EUR" }, overwrite: true }) as { status: string }).status, "downloaded");
+  assert.equal(seen[4].rateFor, undefined, "learned for the SEK transaction currency only");
+});
+
+test("the transaction text, without the merchant keywords, reaches the replay from the tool and from host code", async () => {
+  save();
+  savePlaybook({ ...getPlaybook("127.0.0.1")!, merchants: ["ACME CLOUD"] });
+  const seen: any[] = [];
+  const replay = okReplay({ date: true, amount: true }, seen);
+  const t = runTool({ replay });
+  await t.run({ merchant: "ACME CLOUD", reference: "2026-10-03 ACME CLOUD INV-4471 -9.00", overwrite: true });
+  assert.equal(seen[0].invoice.reference, "INV-4471", "dates and plain amounts are dropped");
+  await t.run({ overwrite: true });
+  assert.equal(seen[1].invoice.reference, undefined);
+  const d = direct("full-access", true, replay);
+  await d.run({ merchant: "ACME CLOUD", reference: "ACME CLOUD ref X55", overwrite: true });
+  assert.equal(seen[2].invoice.reference, "ref X55");
+});
+
+test("the playbook_run text says how the match was made, and that a date-only match did not verify the amount", async () => {
+  save();
+  const by = await runTool({ replay: okReplay({ date: true, amount: true, matchedBy: ["reference"] }) }).run({ overwrite: true });
+  assert.match(by, /Matched by reference\./);
+  const dateOnly = await runTool({ replay: okReplay({ date: true, amount: false, foreignCurrency: true, matchedBy: ["date"] }) }).run({ overwrite: true });
+  assert.match(dateOnly, /amount not verified/i);
+  assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /amount not verified/i);
+});

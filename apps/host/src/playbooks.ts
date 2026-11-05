@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDomain } from "tldts";
+import { rateFor as fxRate } from "@pista/pi-browser";
 import type { MerchantRefusal, Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
 import { BROAD_REASONS, broadReason, checkMerchant, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, mostSpecificKeyword, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
@@ -71,14 +72,32 @@ export function unfence(s: string): string {
 export const FOREIGN_CURRENCY_NOTE = "Amount not verified: the page shows another currency; only the date matched.";
 
 /** The history lines the host writes (and first-pass reads back). */
+/** The first letter in lower case, for a sentence that continues after a semicolon. */
+export const lowerFirst = (t: string): string => t.charAt(0).toLowerCase() + t.slice(1);
+
 export const HISTORY = {
   captured: "captured by host",
   repaired: (k: number) => `repaired after handoff at step ${k}`,
   shortcutLearned: "shortcut learned",
   replayFailed: "replay failed",
   replaySucceeded: "replay succeeded",
-  replaySucceededForeign: `replay succeeded. ${FOREIGN_CURRENCY_NOTE}`,
+  replaySucceededBy: (how: string) => `replay succeeded; ${lowerFirst(how)}`,
 };
+
+const LIST = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : (xs[0] ?? ""));
+/** Says how a replay's row or page was matched (the history, the playbook_run text and the manifest note use this one sentence); "" when the replay reported nothing to say. */
+export function matchSentence(v: { amount: boolean; foreignCurrency?: boolean; matchedBy?: readonly string[]; fxRateImplied?: number; rowCurrency?: string }, currency?: string): string {
+  if (v.foreignCurrency && !v.amount) return FOREIGN_CURRENCY_NOTE;
+  const names: Record<string, string> = { date: "date", amount: "amount", "amount-fx": "converted amount", reference: "reference" };
+  const by = (v.matchedBy ?? []).flatMap((m) => names[m] ?? []);
+  if (!by.length) return "";
+  const rate = v.matchedBy?.includes("amount-fx") && v.fxRateImplied !== undefined ? ` (${v.rowCurrency && currency ? `${v.rowCurrency}→${currency} ` : ""}${Number(v.fxRateImplied.toPrecision(4))})` : "";
+  return `matched by ${LIST(by)}${rate}`;
+}
+
+const EMA = 0.5;
+/** Band of the amount check for a rate learned from `samples` verified runs: wider while it is the built-in table's. */
+export const bandFor = (samples: number): number | undefined => (samples >= 3 ? 0.04 : samples >= 1 ? 0.05 : undefined);
 
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
 const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;
@@ -310,6 +329,10 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
   const misses = Object.fromEntries(merchants.flatMap((m) => (typeof missIn[m] === "number" && Number.isInteger(missIn[m]) && (missIn[m] as number) > 0 ? [[m, Math.min(missIn[m] as number, KEYWORD_MISS_LIMIT - 1)]] : [])));
   const lastIn = o.merchantLastMiss && typeof o.merchantLastMiss === "object" ? (o.merchantLastMiss as Record<string, unknown>) : {};
   const lastMiss = Object.fromEntries(Object.keys(misses).flatMap((m) => (typeof lastIn[m] === "string" && /^[0-9a-f]{12}$/.test(lastIn[m] as string) ? [[m, lastIn[m]]] : [])));
+  const bi = o.billing && typeof o.billing === "object" ? (o.billing as Record<string, unknown>) : undefined;
+  const billing = bi && typeof bi.currency === "string" && /^[A-Z]{3}$/.test(bi.currency) && typeof bi.dayOffset === "number" && Number.isFinite(bi.dayOffset) && typeof bi.samples === "number" && Number.isInteger(bi.samples) && bi.samples >= 0
+    ? { currency: bi.currency, dayOffset: bi.dayOffset, ...(typeof bi.rate === "number" && Number.isFinite(bi.rate) && bi.rate > 0 && typeof bi.rateTo === "string" && /^[A-Z]{3}$/.test(bi.rateTo) ? { rate: bi.rate, rateTo: bi.rateTo } : {}), samples: bi.samples }
+    : undefined;
   return {
     version: 1,
     site,
@@ -322,6 +345,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
     ...(Object.keys(why).length ? { merchantsPendingWhy: why } : {}),
     ...(Object.keys(misses).length ? { merchantMisses: misses } : {}),
     ...(Object.keys(lastMiss).length ? { merchantLastMiss: lastMiss } : {}),
+    ...(billing ? { billing } : {}),
     notes,
     avoid,
     createdAt: date(o.createdAt) ?? now,
@@ -448,13 +472,27 @@ function mutate(site: string, fn: (pb: Playbook, now: string) => void): Playbook
   return pb;
 }
 
-export function recordSuccess(site: string, foreignCurrency?: boolean): Playbook | null {
+/** `how` is the match sentence (see matchSentence), kept in the history. `match` updates the billing facts: from an amount-verified run, and a learned rate that did not verify is dropped. */
+export function recordSuccess(site: string, how?: string, match?: { to?: string; rowCurrency?: string; offsetDays?: number; fxRateImplied?: number; matchedBy?: readonly string[]; amountVerified: boolean }): Playbook | null {
   return mutate(site, (pb, now) => {
+    const b = pb.billing, cur = match?.rowCurrency, to = match?.to?.toUpperCase();
+    if (match && !match.amountVerified && b?.rate && b.rateTo === to) pb.billing = { currency: b.currency, dayOffset: b.dayOffset, samples: 0 }; // a bad learned rate must not stick
+    else if (match?.amountVerified && cur && match.offsetDays !== undefined && Number.isFinite(match.offsetDays)) {
+      const same = b?.currency === cur;
+      const moved = same && b!.rate !== undefined && !!to && b!.rateTo !== to; // paid in another currency now: the rate facts start over
+      const mix = (old: number | undefined, v: number) => (old === undefined ? v : old * (1 - EMA) + v * EMA);
+      const implied = match.fxRateImplied !== undefined && Number.isFinite(match.fxRateImplied) && match.fxRateImplied > 0 ? match.fxRateImplied : undefined;
+      const oldRate = same && !moved && (!to || b?.rateTo === to || b?.rateTo === undefined) ? b?.rate : undefined;
+      const table = to ? fxRate(cur, to) : undefined;
+      const seeded = implied !== undefined && !!to && oldRate === undefined && (!!match.matchedBy?.includes("reference") || (table !== undefined && Math.abs(implied / table - 1) <= 0.03));
+      const next = oldRate !== undefined ? mix(oldRate, implied ?? oldRate) : seeded ? implied : undefined;
+      pb.billing = { currency: cur, dayOffset: Math.round(mix(same && !moved ? b?.dayOffset : undefined, match.offsetDays) * 10) / 10, ...(next !== undefined ? { rate: Number(next.toPrecision(6)), rateTo: oldRate !== undefined ? b!.rateTo : to } : {}), samples: (same && !moved ? b!.samples : 0) + 1 };
+    }
     pb.successCount++;
     pb.failCount = 0;
     pb.status = "ok";
     pb.lastSucceeded = now;
-    pb.history.push({ at: now, summary: foreignCurrency ? HISTORY.replaySucceededForeign : HISTORY.replaySucceeded });
+    pb.history.push({ at: now, summary: how ? HISTORY.replaySucceededBy(how) : HISTORY.replaySucceeded });
   });
 }
 
