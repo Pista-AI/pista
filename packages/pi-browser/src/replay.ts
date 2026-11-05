@@ -140,10 +140,13 @@ const PAGE_DATES_MAX = 3;
 
 function foreignPageIsOneInvoice(text: string, date: string): boolean {
   const ds = new Map(parseDates(text).filter((d) => d.d).map((d) => [d.raw, d] as const));
-  if (ds.size !== 1) return false; // two dates cannot be told apart from two invoices on a list
+  if (ds.size > 2) return false;
+  if (new Set(parseAmounts(text, { strict: true }).filter((a) => a.value !== 0).map((a) => a.value)).size > 1) return false; // a detail page repeats its total; a list shows several
   const [y, m, d0] = date.slice(0, 10).split("-").map(Number) as [number, number, number];
   const t = Date.UTC(y, m - 1, d0) / 86400000;
-  return [...ds.values()].every((d) => Math.abs(Date.UTC(d.y, d.m - 1, d.d!) / 86400000 - t) <= 3);
+  const off = [...ds.values()].map((d) => Date.UTC(d.y, d.m - 1, d.d!) / 86400000 - t);
+  // One date is the invoice's; another may only be a due date (not before it, at most 45 days after).
+  return off.some((o) => Math.abs(o) <= 3) && off.every((o) => Math.abs(o) <= 3 || (o >= 0 && o <= 45));
 }
 
 /**
@@ -158,7 +161,7 @@ export function verifyPage(pageText: string, invoice: NonNullable<ReplayOptions[
   const amountSeen = invoice.amount !== undefined && amountShown(text, invoice.amount, invoice.currency);
   if (dateSeen && (invoice.amount === undefined || amountSeen)) return { ok: true, amount: amountSeen };
   // The page shows amounts only in another currency than the invoice: the date and the invoice-like checks above are all it can prove.
-  // Stricter than the same-currency path, as there is no amount to tell an invoice from a list: one distinct date, within the tolerance.
+  // Stricter than the same-currency path, as there is no amount to tell an invoice from a list: at most 2 dates (the invoice's, plus a due date), one amount.
   if (dateSeen && invoice.amount !== undefined && !amountComparable(text, invoice.currency) && foreignPageIsOneInvoice(text, invoice.date)) return { ok: true, amount: false, amountVerified: false };
   return { ok: false, detail: dateSeen ? "page shows the date but not the amount" : amountSeen ? `page doesn't show the invoice date ${date}` : `page showed neither the invoice date ${date} nor its amount` };
 }

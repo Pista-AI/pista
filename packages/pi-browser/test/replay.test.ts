@@ -369,8 +369,12 @@ test("a page showing only another currency is verified by its date, and says the
 
 test("a foreign-currency page must look like one invoice, not a list", () => {
   const sek = { date: "2026-10-22", amount: 2021.55, currency: "SEK" };
-  assert.equal(verifyPage("21 Oct 2026  200,00 US$\n22 Oct 2026  200,00 US$", sek).ok, false);
-  assert.equal(verifyPage("21 Oct 2026  200,00 US$\n22 Oct 2026  200,00 US$\n23 Oct 2026  200,00 US$", sek).ok, false);
-  assert.equal(verifyPage("Invoice date 21 Oct 2026\nPaid 12 Sep 2026\nTotal 200,00 US$", sek).ok, false);
-  assert.deepEqual(verifyPage("Invoice date 21 Oct 2026\nPaid 21 Oct 2026\nTotal 200,00 US$", sek), { ok: true, amount: false, amountVerified: false });
+  const bad = (t: string) => assert.equal(verifyPage(t, sek).ok, false, t);
+  bad("21 Oct 2026  200,00 US$\n22 Oct 2026  150,00 US$"); // two amounts
+  bad("Invoice date 21 Oct 2026\nPaid 12 Sep 2026\nTotal 200,00 US$"); // other date before the invoice
+  bad("21 Oct 2026  200,00 US$\n22 Oct 2026  200,00 US$\n23 Oct 2026  200,00 US$"); // three dates
+  bad("Issued 21 Oct 2026\nDue 20 Dec 2026\nTotal 200,00 US$"); // due date too far
+  const ok = { ok: true, amount: false, amountVerified: false };
+  assert.deepEqual(verifyPage("Invoice date 21 Oct 2026\nPaid 21 Oct 2026\nTotal 200,00 US$", sek), ok);
+  assert.deepEqual(verifyPage("Issued 21 Oct 2026\nDue 20 Nov 2026\nTotal 200,00 US$\nAmount due 200,00 US$", sek), ok);
 });
