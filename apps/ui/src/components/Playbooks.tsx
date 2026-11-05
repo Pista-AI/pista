@@ -58,6 +58,7 @@ export function Playbooks() {
     }
     openRef.current = site;
     setKwInput("");
+    setNoteInput("");
     setKwError(null);
     setOpen(site);
     setDetail(undefined);
@@ -69,6 +70,23 @@ export function Playbooks() {
         setDetail(null);
         setError(errText(e));
       }
+    }
+  };
+  const [noteInput, setNoteInput] = useState("");
+  /** Runs a notes change, then reloads the opened playbook so the list shows it. */
+  const changeNotes = async (site: string, fn: () => Promise<unknown>, clear = false) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      if (clear) setNoteInput("");
+      const pb = await host.call("playbook.get", { site });
+      if (alive.current && openRef.current === site) setDetail(pb);
+      await refresh();
+    } catch (e) {
+      if (alive.current) setError(errText(e));
+    } finally {
+      if (alive.current) setBusy(false);
     }
   };
   const [kwInput, setKwInput] = useState("");
@@ -123,7 +141,7 @@ export function Playbooks() {
             <div className="login-info">
               <strong>{p.site}</strong>
               {p.hosts && <small>Also visits {p.hosts.slice(1).join(", ")}</small>}
-              <small>{p.stepCount === 1 ? "1 step" : `${p.stepCount} steps`} · {lastSucceeded(p.lastSucceeded)}</small>
+              <small>{p.stepCount === 0 ? "No saved path yet" : `${p.stepCount === 1 ? "1 step" : `${p.stepCount} steps`} · ${lastSucceeded(p.lastSucceeded)}`}</small>
               {describeStart(p.startUrl, p.shortcutUrl).map((line) => <small key={line}>{line}</small>)}
             </div>
             <span className="playbook-actions">
@@ -169,6 +187,27 @@ export function Playbooks() {
                 <button type="submit" className="pill-btn" disabled={busy || !kwInput.trim()}>Add</button>
               </form>
               {kwError && <div role="alert" className="login-error">{kwError}</div>}
+            </div>
+          )}
+          {open === p.site && (
+            <div className="playbook-steps playbook-keywords">
+              <strong>Notes</strong>
+              <span className="help">Facts for later runs. They are shown to the model as information, never followed as steps. No passwords or personal data.</span>
+              {detail?.notes.map((n, i) => (
+                <small key={`n${i}`}>{n.text} ({n.by === "user" ? "you" : "Pista"}, {n.at.slice(0, 10)})
+                  <button type="button" className="pill-btn" aria-label={`Delete note ${i + 1} for ${p.site}`} disabled={busy} onClick={() => changeNotes(p.site, () => host.call("playbook.removeNote", { site: p.site, index: i }))}>Delete</button>
+                </small>
+              ))}
+              {detail && detail.avoid.length > 0 && <strong>Avoid</strong>}
+              {detail?.avoid.map((a, i) => (
+                <small key={`a${i}`}>{a.url}: {a.why}
+                  <button type="button" className="pill-btn" aria-label={`Delete avoid entry ${i + 1} for ${p.site}`} disabled={busy} onClick={() => changeNotes(p.site, () => host.call("playbook.removeAvoid", { site: p.site, index: i }))}>Delete</button>
+                </small>
+              ))}
+              <form className="kw-add" onSubmit={(e) => { e.preventDefault(); const t = noteInput.trim(); if (t) void changeNotes(p.site, () => host.call("playbook.addNote", { site: p.site, text: t }), true); }}>
+                <input value={noteInput} maxLength={200} placeholder="Invoices live on another portal" aria-label={`Add a note for ${p.site}`} onChange={(e) => setNoteInput(e.target.value)} />
+                <button type="submit" className="pill-btn" disabled={busy || !noteInput.trim()}>Add note</button>
+              </form>
             </div>
           )}
           {open === p.site && (

@@ -22,7 +22,7 @@ import {
 } from "@pista/protocol";
 import { setupCredentials } from "./auth-setup.ts";
 import { cancelLogin, currentSubject, forgetSubject, listModels, listProviders, login } from "./auth.ts";
-import { deletePlaybook, getPlaybook, dismissMerchant, confirmMerchant, listPlaybooks, removeMerchant, setMerchants } from "./playbooks.ts";
+import { addSiteNote, removeSiteNote, deletePlaybook, getPlaybook, dismissMerchant, confirmMerchant, listPlaybooks, removeMerchant, setMerchants } from "./playbooks.ts";
 import { readProjectFile, revealProjectInvoices } from "./project-files.ts";
 import { CLIENT_DIR, ConfigStore, piAgentDir } from "./config.ts";
 import { extensionsSummary } from "./policy.ts";
@@ -200,6 +200,18 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     return { ok: true, found: removeMerchant(site, merchant) };
   },
   "playbook.confirmMerchant": ({ site, merchant }) => confirmMerchant(site, merchant),
+  "playbook.addNote": ({ site, text }) => {
+    addSiteNote(site, { note: text }, "user");
+    return { ok: true };
+  },
+  "playbook.removeNote": ({ site, index }) => {
+    removeSiteNote(site, "notes", index);
+    return { ok: true };
+  },
+  "playbook.removeAvoid": ({ site, index }) => {
+    removeSiteNote(site, "avoid", index);
+    return { ok: true };
+  },
   "playbook.setMerchants": ({ site, merchants }) => {
     return { ok: true, refused: setMerchants(site, merchants) };
   },

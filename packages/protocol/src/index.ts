@@ -854,6 +854,9 @@ export function describeStep(step: PlaybookStep): string {
   }
 }
 
+export interface PlaybookNote { text: string; at: string; by: "model" | "user" }
+export interface PlaybookAvoid { url: string; why: string; at: string }
+
 export interface PlaybookShortcut { url: string; afterStep: number }
 
 export interface Playbook {
@@ -884,6 +887,10 @@ export interface Playbook {
   merchantMisses?: Record<string, number>;
   /** Short hash of the last transaction that missed, per keyword, so a retry of it is not counted twice. */
   merchantLastMiss?: Record<string, string>;
+  /** Facts about the site (at most 8, one line, 200 characters). Advisory data shown to the model when it browses anyway; never replayed. */
+  notes: PlaybookNote[];
+  /** Addresses on the playbook's hosts to stay away from (at most 8; origin and path only). Advisory, never replayed. */
+  avoid: PlaybookAvoid[];
   createdAt: string;
   updatedAt: string;
   lastSucceeded?: string;
@@ -991,6 +998,12 @@ export interface Methods {
   "playbook.removeMerchant": { params: { site: string; merchant: string }; result: { ok: true; found: boolean } };
   /** Moves one pending keyword to the confirmed ones in a single step. Refuses when it is no longer pending, too broad, or the list is full. */
   "playbook.confirmMerchant": { params: { site: string; merchant: string }; result: { ok: true; refused?: MerchantRefusal } };
+  /** Adds a note the owner wrote (`by: "user"`); the host trims and caps it and refuses an empty one. */
+  "playbook.addNote": { params: { site: string; text: string }; result: { ok: true } };
+  /** Removes the note at `index` (as listed in the playbook). */
+  "playbook.removeNote": { params: { site: string; index: number }; result: { ok: true } };
+  /** Removes the avoid entry at `index`. */
+  "playbook.removeAvoid": { params: { site: string; index: number }; result: { ok: true } };
 
   "mcp.status": { params: { threadId?: string }; result: McpServerStatus[] };
 
