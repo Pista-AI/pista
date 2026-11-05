@@ -350,8 +350,8 @@ function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
       const before = kept[kept.length - 1];
       const pageBefore = kept.slice(0, -1).reverse().map(urlOf).find(Boolean);
       if (noop && x.kind === "click" && x.periodContext && before?.kind === "replayed" && before.step.kind === "click" && before.step.target.period && before.step.target.role === x.locator.role && pageOf(x.urlAfter) !== pageOf(pageBefore)) kept.pop();
-      if (opens && x.kind === "click") x.openedTab = true; // the saved step is read from the trace row itself
-      kept.push(x);
+      // A copy: the trace ring is not touched, and the unpruned fallback path keeps the original row.
+      kept.push(opens && x.kind === "click" ? { ...x, openedTab: true } : x);
       continue;
     }
     if (x.kind === "click") {
@@ -433,7 +433,7 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
   const onPath = new Set(path.map((x) => trySiteKey(urlOf(x))).filter(Boolean));
   if (rows.some((x) => x.kind === "signIn" && !onPath.has(trySiteKey(x.origin) ?? ""))) return {};
   const summary = { created: HISTORY.captured, updated: k !== undefined ? HISTORY.repaired(k) : HISTORY.captured };
-  const save = (entries: TraceRow[]) => savePlaybookFromTrace(rows, entries.map((x) => x.n), undefined, threadId, invoice, trace.merchant, undefined, summary);
+  const save = (entries: TraceRow[]) => savePlaybookFromTrace(rows.map((r) => entries.find((e) => e.n === r.n) ?? r), entries.map((x) => x.n), undefined, threadId, invoice, trace.merchant, undefined, summary);
   // Dead ends are pruned first; if that path cannot be saved, the full one gets one try.
   const pruned = prune(path, invoice);
   let res = save(pruned);

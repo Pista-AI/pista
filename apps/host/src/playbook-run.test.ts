@@ -453,3 +453,9 @@ test("the approval gate resolves by merchant keyword: the card names the resolve
   assert.match(String(asks[0]!.action), /^Follow the saved playbook for chatgpt\.com\?/);
   assert.deepEqual(emitted, [[PLAYBOOK_DECLINED, "chatgpt.com"]]);
 });
+
+test("replay notes reach the playbook_run text", async () => {
+  save();
+  const t = runTool({ replay: async () => ({ ok: true, download: { path: "invoices/n.pdf", bytes: 1 }, steps: 2, urls: [], verified: { date: true, amount: true }, notes: ["step 1: 2 new tabs were open after the click; the newest one was used."] }) });
+  assert.match(await t.run({ path: "invoices/n.pdf" }), /"replayNotes": \[\s*"step 1: 2 new tabs/);
+});
