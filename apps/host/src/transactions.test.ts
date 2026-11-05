@@ -24,6 +24,11 @@ describe("parseTransactions", () => {
     assert.deepEqual([l.date, l.merchant, l.ok], ["2026-10-03", "SPOTIFY", true]);
   });
 
+  it("reads US$ as USD", () => {
+    const l = one("2026-10-03 OPENAI 200,00 US$");
+    assert.deepEqual([l.amount, l.currency, l.merchant, l.ok], [200, "USD", "OPENAI", true]);
+  });
+
   it("reads free-form lines", () => {
     const l = one("2026-10-03 TELNYX LLC 25.00 USD");
     assert.deepEqual([l.date, l.amount, l.currency, l.merchant, l.ok], ["2026-10-03", 25, "USD", "TELNYX LLC", true]);
@@ -155,5 +160,35 @@ describe("matchVendor", () => {
   });
   it("counts one site once", () => {
     assert.deepEqual(matchVendor("ACME PAY", [{ site: "x", merchants: ["ACME", "ACME PAY"] }]), { kind: "one", site: "x" });
+  });
+
+  describe("record layout", () => {
+    const rec = (d: string, type: string, m: string, amt: string, bal?: string) => [d, type, m, amt, ...(bal ? [bal] : [])].join("\n");
+    it("parses the five-line record", () => {
+      const lines = parseTransactions(rec("2026-10-22", "Kortköp/uttag", "OPENAI *CHATGPT SUBSC SAN FRANCISCO", "-2 021,55", "47 734,35")).lines;
+      assert.equal(lines.length, 1);
+      const l = lines[0]!;
+      assert.deepEqual([l.ok, l.date, l.amount, l.currency, l.lineNo], [true, "2026-10-22", 2021.55, "SEK", 1]);
+      assert.match(l.merchant!, /OPENAI \*CHATGPT SUBSC/);
+    });
+    it("parses several records in order, NBSP thousands, CRLF, a missing balance and digits in the merchant", () => {
+      const text = [rec("2026-10-22", "Kortköp/uttag", "OPENAI *CHATGPT SUBSC", "-2\u00a0021,55", "47\u202f734,35"), rec("2026-10-21", "Kortköp/uttag", "AMAZON SE* 123-456", "-99,00"), rec("2026-10-20", "Leverantörsbetalning", "SATS LIMHAMN 2", "-1 500,00", "10,00")].join("\r\n");
+      const lines = parseTransactions(text + "  \r\n").lines;
+      assert.deepEqual(lines.map((l) => [l.ok, l.date, l.amount, l.lineNo]), [[true, "2026-10-22", 2021.55, 1], [true, "2026-10-21", 99, 6], [true, "2026-10-20", 1500, 10]]);
+      assert.equal(lines[1]!.merchant, "AMAZON SE* 123-456");
+    });
+    it("prefers the name over an account number line", () => {
+      const l = parseTransactions(rec("2026-10-22", "Leverantörsbetalning", "1234567890123456", "-100,00") .replace("-100,00", "ACME AB\n-100,00")).lines[0]!;
+      assert.deepEqual([l.ok, l.merchant], [true, "ACME AB"]);
+    });
+    it("skips column titles above the first record", () => {
+      const head = "Datum\nTyp\nMottagare\nBelopp\nSaldo\n";
+      const lines = parseTransactions(head + rec("2026-10-22", "Kortköp/uttag", "OPENAI *CHATGPT", "-20,00", "5,00") + "\n" + rec("2026-10-21", "Kortköp/uttag", "ACME AB", "-10,00", "25,00")).lines;
+      assert.deepEqual(lines.map((l) => l.ok), [true, true]);
+    });
+    it("rejects income with an income reason", () => {
+      const l = parseTransactions(rec("2026-10-22", "Bankgiro inbetalning", "ACME AB", "1 000,00", "5 000,00")).lines[0]!;
+      assert.deepEqual([l.ok, l.reason], [false, "income (positive amount)"]);
+    });
   });
 });

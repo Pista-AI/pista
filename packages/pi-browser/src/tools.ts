@@ -338,7 +338,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         name: "browser_download",
         label: "Browser: download",
         description:
-          "Save a file from the website straight to disk, using the browser's login session; the file contents never enter the conversation. Give `url` (a direct link, e.g. a PDF link) or `ref` (a snapshot ref of the download link or button to click), and `path` (relative to the project folder, e.g. invoices/2026-01/acme-2026-01-15-49.00.pdf). Returns the saved path and size. If a file already exists there, a clearly broken one (empty, tiny, an HTML error page) is replaced; otherwise pass `overwrite: true` to replace it or choose another filename.",
+          "Save a file from the website straight to disk, using the browser's login session; the file contents never enter the conversation. Pass `ref`: the ref of the download button or link from the current snapshot (e.g. \"Download invoice\"). Pass `url` only for a direct file link; downloads that return a web page are refused. Give `path` (relative to the project folder, e.g. invoices/2026-01/acme-2026-01-15-49.00.pdf). Returns the saved path and size. If a file already exists there, a clearly broken one (empty, tiny, an HTML error page) is replaced; otherwise pass `overwrite: true` to replace it or choose another filename.",
         promptSnippet: "browser_download: save a file from the website to the project folder",
         parameters: Type.Object({
           url: Type.Optional(Type.String({ description: "Direct URL of the file" })),
@@ -348,7 +348,8 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
         }),
         execute: async (_id, { url: rawUrl, ref, path, overwrite }, signal): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> => {
           let url = rawUrl;
-          if (Boolean(url) === Boolean(ref)) throw new Error("Give exactly one of url or ref.");
+          if (!url && !ref) throw new Error("browser_download needs the ref of the download control (take it from browser_snapshot, e.g. the \"Download invoice\" button or link) or a direct file url.");
+          if (url && ref) throw new Error("browser_download takes either ref or url, not both.");
           const folder = root();
           if (!folder) throw new Error("browser_download: no project folder is known for this thread.");
           const d = await driver();

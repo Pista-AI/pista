@@ -95,6 +95,15 @@ describe("playbook_save", () => {
     assert.deepEqual(getPlaybook("vendor.com")?.hosts, ["vendor.com", "stripe.com"]);
   });
 
+  it("verifies a download by the page when it shows only another currency than the invoice", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: "https://chatgpt.com/billing" }); // 1
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["Download invoice"], clickedIndex: 0 }, pageText: "21 Oct 2026\nTotal 200,00 US$" }); // 2
+    const msg = savePlaybookFromTrace(t.list(), [1, 2], undefined, "t", { date: "2026-10-22", amount: 2021.55, currency: "SEK" }).message;
+    assert.match(msg, /verified by page/);
+    assert.deepEqual(getPlaybook("chatgpt.com")?.steps.at(-1), { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf", verify: "page" });
+  });
+
   it("verifies a download on a detail page by the page when its row shows no date, and says so", () => {
     const t = new PlaybookTrace();
     t.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1

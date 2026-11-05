@@ -165,7 +165,7 @@ export function playbookFromTrace(rows: readonly TraceRow[], chosen: number[], w
         if (invoice && r.rowContext) verifiedBy = "row"; // with no row or page text there is nothing the replay can check
         // A detail page shows the invoice date and amount itself; then the page proves the download, not a row.
         if (invoice && r.rowContext?.texts.length === 1 && !verifySingleRow(r.rowContext.texts[0] ?? "", invoice).ok) {
-          if (r.pageText && verifyPage(r.pageText, invoice).ok) verifiedBy = "page";
+          if (r.pageText && verifyPage(r.pageText, invoice).ok) verifiedBy = "page"; // also when the page shows another currency: date only
           else unverified = true;
         }
         if (row) byInvoice = true;

@@ -68,8 +68,8 @@ test("browser_download: needs exactly one of url or ref, and a driver that can d
   const driver = { download: async (o: unknown) => (saved.push(o), { bytes: 7 }), setActivity: () => undefined, state: async () => ({ url: "", title: "", loading: false }) } as unknown as BrowserDriver;
   registerBrowserTools(api, () => driver, { downloadRoot: () => folder, traceDir: "off" });
   const run = (args: object) => tools.get("browser_download")!.execute("1", args, undefined);
-  await assert.rejects(run({ path: "a.pdf" }), /exactly one/);
-  await assert.rejects(run({ url: "https://x.test/a", ref: "e1", path: "a.pdf" }), /exactly one/);
+  await assert.rejects(run({ path: "a.pdf" }), /needs the ref of the download control.*direct file url/);
+  await assert.rejects(run({ url: "https://x.test/a", ref: "e1", path: "a.pdf" }), /takes either ref or url, not both/);
   await assert.rejects(run({ url: "https://x.test/a", path: "../a.pdf" }), /inside the project folder/);
   await run({ url: "https://x.test/a.pdf", path: "inv/a.pdf" });
   assert.deepEqual(saved, [{ path: join(folder, "inv/a.pdf"), url: "https://x.test/a.pdf" }]);
