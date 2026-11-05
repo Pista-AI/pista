@@ -41,6 +41,7 @@ describe("playbook_save", () => {
     assert.match(describeTrace(t.list()), /^2 click link "Open invoice" -> .*detail-tab\.html \(opened a new tab\)$/m);
     savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t");
     assert.deepEqual(getPlaybook("127.0.0.1")!.steps.map((x) => x.kind), ["click", "download"]);
+    assert.equal((getPlaybook("127.0.0.1")!.steps[0] as { opensTab?: true }).opensTab, true);
   });
 
   it("keeps at most the last 200 entries, numbers never repeat", () => {

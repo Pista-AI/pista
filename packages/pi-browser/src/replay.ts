@@ -77,6 +77,8 @@ const LOCATE_WAIT_MS = 3000;
 const LOCATE_POLL_MS = 250;
 /** How long a click that should open a tab is given to show it before the click is repeated. */
 const NEW_TAB_WAIT_MS = 1000;
+/** How many times a link that should open a tab is clicked again when none showed. */
+const MAX_TAB_RETRIES = 1;
 
 class Handoff extends Error {
   constructor(readonly reason: ReplayReason, detail: string) {
@@ -335,9 +337,9 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       await within(sleep(o.pollMs ?? LOCATE_POLL_MS), (o.pollMs ?? LOCATE_POLL_MS) + 1000, o.signal, () => undefined);
     }
   };
-  /** Switches to the newest tab that was not open in `known`; returns how many new tabs there were. */
-  const adoptNewTab = async (known: Set<string>) => {
-    const fresh = ((await d.tabs?.().catch(() => undefined)) ?? []).filter((t) => !known.has(t.id));
+  /** Switches to the newest tab opened since `watch` was armed (or, without a watcher, since `known`); returns how many new tabs there were. */
+  const adoptNewTab = async (watch: (() => Promise<{ id: string }[]>) | undefined, known: Set<string>) => {
+    const fresh = watch ? await watch().catch(() => []) : ((await d.tabs?.().catch(() => undefined)) ?? []).filter((t) => !known.has(t.id));
     if (!fresh.length || !d.switchTab) return 0;
     await d.switchTab(fresh.at(-1)!.id);
     await settle(d);
@@ -360,20 +362,22 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       case "click": {
         const seen = { amount: false };
         const known = new Set(((await d.tabs?.().catch(() => undefined)) ?? []).map((t) => t.id));
+        const watch = step.opensTab ? await d.watchNewTabs?.().catch(() => undefined) : undefined;
         const r = await locateWaiting(step.target, step.fallbacks, seen);
         if (!("target" in r)) throw new Handoff(r.reason, r.detail);
         noteRule(step.target, seen);
         let res = await click(r.target, "click");
-        // The click should have opened a tab (the capture saw one). A tab can show up late, so look again before clicking a second time.
-        for (let attempt = 0; step.opensTab && d.tabs && !res.openedTab; attempt++) {
-          await within(sleep(NEW_TAB_WAIT_MS), NEW_TAB_WAIT_MS + 1000, o.signal, () => undefined);
-          const adopted = await adoptNewTab(known);
-          if (adopted) {
-            if (adopted > 1) notes.push(`step ${index}: repeating the click left ${adopted} new tabs open; the newest one was used.`);
-            break;
+        // The click should have opened a tab (the capture saw one). A tab can show up late, so look again before clicking a second time (a link only: a button may act twice).
+        if (step.opensTab && (watch || d.tabs) && !res.openedTab) {
+          const canRetry = !step.target.role || step.target.role === "link";
+          for (let attempt = 0; ; attempt++) {
+            if (!res.openedTab) await within(sleep(NEW_TAB_WAIT_MS), NEW_TAB_WAIT_MS + 1000, o.signal, () => undefined);
+            const adopted = await adoptNewTab(watch, known);
+            if (adopted > 1) notes.push(`step ${index}: ${adopted} new tabs were open after the click; the newest one was used.`);
+            if (adopted || res.openedTab) break;
+            if (!canRetry || attempt >= MAX_TAB_RETRIES) throw new Handoff("expectation-timeout", `expected a new tab after clicking ${describeLocator(step.target)}; none opened`);
+            res = await click(r.target, "click");
           }
-          if (attempt === 1) throw new Handoff("expectation-timeout", `expected a new tab after clicking ${describeLocator(step.target)}; none opened`);
-          res = await click(r.target, "click");
         }
         await stillOnSite();
         break;

@@ -90,8 +90,9 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
     const effect = describeEffect(watch.op, watch.before, now, watch.arg, watch.submit);
     return { outcome: [outcome, effect].filter(Boolean).join(" "), text: await snapshot(150, true, popup?.noNavigation) };
   };
-  /** The address plus the page's probe fingerprint: equal before and after a click when nothing visible happened. */
-  const pageFingerprint = async () => `${(await driver.state().catch(() => undefined))?.url}|${String(await driver.evaluate(scripts.probe()).catch(() => ""))}`;
+  /** The address, the probe fingerprint (controls), and the text length, hash and title: equal before and after a click when nothing visible happened. */
+  const pageFingerprint = async () =>
+    `${(await driver.state().catch(() => undefined))?.url}|${String(await driver.evaluate(scripts.probe()).catch(() => ""))}|${String(await driver.evaluate("(document.body ? document.body.innerText.length : 0) + '|' + location.hash + '|' + document.title").catch(() => ""))}`;
   /** Fingerprint before the action, so settle can tell when a popup list has appeared. */
   const baseline = async (role: string | undefined, roles: string[]): Promise<SettleOptions | undefined> =>
     role && roles.includes(role) ? { popupBaseline: String(await driver.evaluate(scripts.probe()).catch(() => "")) } : undefined;
