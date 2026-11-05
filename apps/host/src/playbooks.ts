@@ -327,7 +327,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
   const lastMiss = Object.fromEntries(Object.keys(misses).flatMap((m) => (typeof lastIn[m] === "string" && /^[0-9a-f]{12}$/.test(lastIn[m] as string) ? [[m, lastIn[m]]] : [])));
   const bi = o.billing && typeof o.billing === "object" ? (o.billing as Record<string, unknown>) : undefined;
   const billing = bi && typeof bi.currency === "string" && /^[A-Z]{3}$/.test(bi.currency) && typeof bi.dayOffset === "number" && Number.isFinite(bi.dayOffset) && typeof bi.samples === "number" && Number.isInteger(bi.samples) && bi.samples >= 0
-    ? { currency: bi.currency, dayOffset: bi.dayOffset, ...(typeof bi.rate === "number" && Number.isFinite(bi.rate) && bi.rate > 0 ? { rate: bi.rate } : {}), samples: bi.samples }
+    ? { currency: bi.currency, dayOffset: bi.dayOffset, ...(typeof bi.rate === "number" && Number.isFinite(bi.rate) && bi.rate > 0 && typeof bi.rateTo === "string" && /^[A-Z]{3}$/.test(bi.rateTo) ? { rate: bi.rate, rateTo: bi.rateTo } : {}), samples: bi.samples }
     : undefined;
   return {
     version: 1,
@@ -469,15 +469,16 @@ function mutate(site: string, fn: (pb: Playbook, now: string) => void): Playbook
 }
 
 /** `how` is the match sentence (see matchSentence), kept in the history. `match` updates the billing facts from an amount-verified run. */
-export function recordSuccess(site: string, how?: string, match?: { rowCurrency?: string; offsetDays?: number; fxRateImplied?: number; amountVerified: boolean }): Playbook | null {
+export function recordSuccess(site: string, how?: string, match?: { to?: string; rowCurrency?: string; offsetDays?: number; fxRateImplied?: number; amountVerified: boolean }): Playbook | null {
   return mutate(site, (pb, now) => {
     const b = pb.billing, cur = match?.rowCurrency;
     if (match?.amountVerified && cur && match.offsetDays !== undefined && Number.isFinite(match.offsetDays)) {
       const same = b?.currency === cur;
       const mix = (old: number | undefined, v: number) => (old === undefined ? v : old * (1 - EMA) + v * EMA);
       const rate = match.fxRateImplied !== undefined && Number.isFinite(match.fxRateImplied) && match.fxRateImplied > 0 ? match.fxRateImplied : undefined;
-      const oldRate = same ? b?.rate : undefined;
-      pb.billing = { currency: cur, dayOffset: Math.round(mix(same ? b?.dayOffset : undefined, match.offsetDays) * 10) / 10, ...(rate !== undefined || oldRate !== undefined ? { rate: Number(mix(oldRate, rate ?? oldRate!).toPrecision(6)) } : {}), samples: (same ? b!.samples : 0) + 1 };
+      const to = match.to?.toUpperCase();
+      const oldRate = same && (!to || b?.rateTo === to) ? b?.rate : undefined;
+      pb.billing = { currency: cur, dayOffset: Math.round(mix(same ? b?.dayOffset : undefined, match.offsetDays) * 10) / 10, ...((rate !== undefined && to) || oldRate !== undefined ? { rate: Number(mix(oldRate, rate ?? oldRate!).toPrecision(6)), rateTo: oldRate !== undefined && rate === undefined ? b!.rateTo : to } : {}), samples: (same ? b!.samples : 0) + 1 };
     }
     pb.successCount++;
     pb.failCount = 0;

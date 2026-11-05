@@ -471,7 +471,7 @@ test("billing facts are learned from a converted match, then the rate and a narr
   assert.equal(first.status, "downloaded");
   assert.equal(seen[0].rateFor, undefined, "nothing learned yet: the built-in table and band");
   assert.equal(seen[0].band, undefined);
-  assert.deepEqual(getPlaybook("127.0.0.1")!.billing, { currency: "USD", dayOffset: 2, rate: 10.1, samples: 1 });
+  assert.deepEqual(getPlaybook("127.0.0.1")!.billing, { currency: "USD", dayOffset: 2, rate: 10.1, rateTo: "SEK", samples: 1 });
   assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /^replay succeeded; matched by date and converted amount \(USD→SEK 10\.1\)$/);
   await t.run({ invoice: inv, overwrite: true });
   assert.equal(seen[1].band, 0.05);
@@ -483,7 +483,7 @@ test("billing facts are learned from a converted match, then the rate and a narr
   await t.run({ invoice: inv, overwrite: true });
   assert.equal(seen[3].band, 0.03);
   assert.equal((await t.run({ invoice: { date: "2026-10-03", amount: 9, currency: "EUR" }, overwrite: true }) as { status: string }).status, "downloaded");
-  assert.equal(seen[4].rateFor("USD", "EUR"), undefined, "learned for the SEK transaction currency only");
+  assert.equal(seen[4].rateFor, undefined, "learned for the SEK transaction currency only");
 });
 
 test("the transaction text, without the merchant keywords, reaches the replay from the tool and from host code", async () => {

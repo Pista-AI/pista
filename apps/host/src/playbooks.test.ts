@@ -279,20 +279,20 @@ describe("billing facts", () => {
   const fresh = () => { savePlaybook(validatePlaybook(base(), "example.com")); };
   it("are created on the first amount-verified run and refined on the next", () => {
     fresh();
-    const a = recordSuccess("example.com", "matched by date and converted amount", { rowCurrency: "USD", offsetDays: 2, fxRateImplied: 10, amountVerified: true })!;
-    assert.deepEqual(a.billing, { currency: "USD", dayOffset: 2, rate: 10, samples: 1 });
-    const b = recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 0, fxRateImplied: 10.4, amountVerified: true })!;
-    assert.deepEqual(b.billing, { currency: "USD", dayOffset: 1, rate: 10.2, samples: 2 });
+    const a = recordSuccess("example.com", "matched by date and converted amount", { to: "SEK", rowCurrency: "USD", offsetDays: 2, fxRateImplied: 10, amountVerified: true })!;
+    assert.deepEqual(a.billing, { currency: "USD", dayOffset: 2, rate: 10, rateTo: "SEK", samples: 1 });
+    const b = recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 0, fxRateImplied: 10.4, amountVerified: true })!;
+    assert.deepEqual(b.billing, { currency: "USD", dayOffset: 1, rate: 10.2, rateTo: "SEK", samples: 2 });
     assert.equal(recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 1, amountVerified: true })!.billing!.rate, 10.2, "a same-currency run keeps the rate");
   });
   it("are not learned from a run whose amount was not verified, and restart when the currency changes", () => {
     fresh();
     assert.equal(recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10, amountVerified: false })!.billing, undefined);
-    recordSuccess("example.com", undefined, { rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10, amountVerified: true });
+    recordSuccess("example.com", undefined, { to: "SEK", rowCurrency: "USD", offsetDays: 1, fxRateImplied: 10, amountVerified: true });
     assert.deepEqual(recordSuccess("example.com", undefined, { rowCurrency: "NOK", offsetDays: 3, amountVerified: true })!.billing, { currency: "NOK", dayOffset: 3, samples: 1 });
   });
   it("are validated on load", () => {
-    const ok = { currency: "SEK", dayOffset: 1.5, rate: 10, samples: 3 };
+    const ok = { currency: "SEK", dayOffset: 1.5, rate: 10, rateTo: "NOK", samples: 3 };
     assert.deepEqual(validatePlaybook(base({ billing: ok }), "example.com").billing, ok);
     for (const bad of [{ ...ok, currency: "sek" }, { ...ok, dayOffset: "1" }, { ...ok, samples: -1 }, { ...ok, dayOffset: Infinity }, "x"]) assert.equal(validatePlaybook(base({ billing: bad }), "example.com").billing, undefined);
     assert.equal(validatePlaybook(base({ billing: { ...ok, rate: -2 } }), "example.com").billing!.rate, undefined);
