@@ -2,7 +2,7 @@
 
 /** `amb` marks one reading of a numeric date that could be day-first or month-first; both readings are emitted. */
 export type CandidateDate = { y: number; m: number; d?: number; monthOnly?: boolean; amb?: "dmy" | "mdy"; raw: string };
-export type RowMatch = { kind: "one"; index: number } | { kind: "none" } | { kind: "many"; candidates: number[] };
+export type RowMatch = { kind: "one"; index: number; /** false: matched by date alone because the row shows only another currency */ amountVerified?: false } | { kind: "none" } | { kind: "many"; candidates: number[] };
 export type MatchRow = { index: number; text: string };
 export type Amount = { value: number; currency?: string };
 
@@ -68,10 +68,10 @@ export function parseDates(text: string, opts: { locales?: string[] } = {}): Can
 
 const CURRENCIES = new Set<string>((Intl as any).supportedValuesOf?.("currency") ?? ["EUR", "USD", "GBP", "SEK", "NOK", "DKK", "CHF"]);
 /** "kr" is a marker only: it does not say which krona, so it agrees with SEK, NOK, DKK and with no currency. */
-const SYM: Record<string, string> = { "€": "EUR", $: "USD", "£": "GBP", kr: "KR" };
+const SYM: Record<string, string> = { "€": "EUR", "US$": "USD", $: "USD", "£": "GBP", kr: "KR" };
 const KRONA = new Set(["KR", "SEK", "NOK", "DKK"]);
 const NUM = String.raw`\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?`;
-const CUR = String.raw`€|\$|£|\bkr\b|\b[A-Z]{3}\b`;
+const CUR = String.raw`€|US\$|\$|£|\bkr\b|\b[A-Z]{3}\b`;
 // groups: 1 currency, 2 "(", 3 leading "-", 4 number, 5 trailing "-", 6 ")", 7 currency after
 const AMOUNT_RE = new RegExp(`(?:(${CUR})\\s*)?(?:(\\()\\s*|(?<![\\w.,/])(-)\\s?|(?<![\\d.,/-]))(${NUM})(?![\\d/]|[.,]\\d|-\\w)(-(?!\\w))?(\\))?(?:\\s*(${CUR}))?`, "g");
 
@@ -111,6 +111,16 @@ const agrees = (a: string | undefined, t: string | undefined) => {
 /** Whether the text shows an amount equal to `amount` (a row without one is not evidence about it). */
 export const amountShown = (text: string, amount: number, currency?: string): boolean => parseAmounts(text, { strict: true }).some((a) => Math.abs(a.value - amount) <= 0.01 && agrees(a.currency, currency));
 
+/**
+ * Whether an invoice amount can be compared with the amounts in `text`: false only when the text shows amounts and every one carries a
+ * currency that is not the invoice's (a USD line against a SEK bank charge). A text without amounts, or with one that is in the
+ * invoice's currency or has no currency, is comparable.
+ */
+export const amountComparable = (text: string, currency?: string): boolean => {
+  const shown = parseAmounts(text, { strict: true });
+  return !shown.length || shown.some((a) => agrees(a.currency, currency));
+};
+
 const dayNum = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400000);
 const isoParts = (iso: string) => iso.split("-").map(Number) as [number, number, number];
 
@@ -143,19 +153,19 @@ export function matchRows(
   const [ty, tm, td] = isoParts(target.date);
   const t = dayNum(ty, tm, td);
   const order = listOrder(rows.map((r) => r.text));
-  let hits: { index: number; sure: boolean; amounts: Amount[] }[] = [];
+  let hits: { index: number; sure: boolean; amounts: Amount[]; foreign: boolean }[] = [];
   for (const r of rows) {
     const near = readings(r.text, order).filter((d) => Math.abs(dayNum(d.y, d.m, d.d!) - t) <= tol);
-    if (near.length) hits.push({ index: r.index, sure: near.some((d) => !d.amb), amounts: parseAmounts(r.text, { strict: true }) });
+    if (near.length) hits.push({ index: r.index, sure: near.some((d) => !d.amb), amounts: parseAmounts(r.text, { strict: true }), foreign: target.amount !== undefined && !amountComparable(r.text, target.currency) });
   }
   const equal = (h: { amounts: Amount[] }) => target.amount !== undefined && h.amounts.some((a) => Math.abs(a.value - target.amount!) <= 0.01 && agrees(a.currency, target.currency));
   if (target.amount !== undefined) {
     if (hits.some(equal)) hits = hits.filter(equal);
-    else hits = hits.filter((h) => !h.amounts.length);
+    else hits = hits.filter((h) => !h.amounts.length || h.foreign); // a row in another currency is judged by its date alone
   }
   if (!hits.length) return { kind: "none" };
   const doubtful = hits.some((h) => !h.sure && !equal(h));
-  return hits.length === 1 && !doubtful ? { kind: "one", index: hits[0]!.index } : { kind: "many", candidates: hits.map((h) => h.index) };
+  return hits.length === 1 && !doubtful ? { kind: "one", index: hits[0]!.index, ...(hits[0]!.foreign && !equal(hits[0]!) ? { amountVerified: false as const } : {}) } : { kind: "many", candidates: hits.map((h) => h.index) };
 }
 
 /** True for a short label that is itself a date or month ("October 2026", "1 Oct - 31 Oct 2026"): what a month or period selector shows. */

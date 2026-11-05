@@ -53,7 +53,7 @@ test("matchRows date, tolerance, none", () => {
 test("amount tiebreak, currency mismatch, identical rows", () => {
   const rows = [{ index: 0, text: "3 Nov 2026 12,00 EUR" }, { index: 1, text: "3 Nov 2026 99,00 EUR" }];
   assert.deepEqual(matchRows(rows, { ...T, amount: 99, currency: "EUR" }), { kind: "one", index: 1 });
-  assert.deepEqual(matchRows(rows, { ...T, amount: 99, currency: "SEK" }), { kind: "none" });
+  assert.deepEqual(matchRows(rows, { ...T, amount: 99, currency: "SEK" }), { kind: "many", candidates: [0, 1] }); // another currency: date alone
   assert.deepEqual(matchRows(rows, T), { kind: "many", candidates: [0, 1] });
   const same = [{ index: 0, text: "3 Nov 2026 12,00 EUR" }, { index: 1, text: "3 Nov 2026 12,00 EUR" }];
   assert.deepEqual(matchRows(same, { ...T, amount: 12 }), { kind: "many", candidates: [0, 1] });
@@ -75,7 +75,7 @@ test("amounts: negatives, kr, times", () => {
   assert.deepEqual(parseAmounts("Paid 14.30 and 14:30", { strict: true }), []);
   assert.deepEqual(matchRows([{ index: 0, text: "3 Nov 2026 -49.00 EUR" }], { ...T, amount: 49, currency: "EUR" }), { kind: "none" });
   assert.deepEqual(matchRows([{ index: 0, text: "3 Nov 2026 49 kr" }], { ...T, amount: 49, currency: "SEK" }), { kind: "one", index: 0 });
-  assert.deepEqual(matchRows([{ index: 0, text: "3 Nov 2026 49 kr" }], { ...T, amount: 49, currency: "EUR" }), { kind: "none" });
+  assert.deepEqual(matchRows([{ index: 0, text: "3 Nov 2026 49 kr" }], { ...T, amount: 49, currency: "EUR" }), { kind: "one", index: 0, amountVerified: false });
 });
 
 test("two dates in one row, and neighbouring rows, are many", () => {
@@ -108,4 +108,22 @@ test("matchPeriod", () => {
   const l = [{ index: 0, text: "October 2026" }, { index: 1, text: "nov. 2026" }];
   assert.deepEqual(matchPeriod(l, T), { kind: "one", index: 1 });
   assert.deepEqual(matchPeriod([{ index: 0, text: "Dec 2026" }], T), { kind: "none" });
+});
+
+test("a row in another currency matches by date alone and says the amount was not verified", () => {
+  const rows = [{ index: 0, text: "21 Oct 2026 \u00b7 200,00 US$" }, { index: 1, text: "3 Sep 2026 \u00b7 200,00 US$" }];
+  assert.deepEqual(parseAmounts("200,00 US$"), [{ value: 200, currency: "USD" }]);
+  assert.deepEqual(matchRows(rows, { date: "2026-10-22", amount: 2021.55, currency: "SEK" }), { kind: "one", index: 0, amountVerified: false });
+  assert.deepEqual(matchRows(rows, { date: "2026-10-22", amount: 200, currency: "USD" }), { kind: "one", index: 0 });
+  // The same currency stays strict.
+  assert.deepEqual(matchRows([{ index: 0, text: "21 Oct 2026 \u00b7 99,00 SEK" }], { date: "2026-10-22", amount: 2021.55, currency: "SEK" }), { kind: "none" });
+  assert.deepEqual(matchRows([{ index: 0, text: "21 Oct 2026 \u00b7 2021,55 kr" }], { date: "2026-10-22", amount: 2021.55, currency: "SEK" }), { kind: "one", index: 0 });
+});
+
+test("foreign-currency rows stay ambiguous when several could be the one", () => {
+  const sek = { date: "2026-10-22", amount: 2021.55, currency: "SEK" };
+  const two = [{ index: 0, text: "21 Oct 2026 \u00b7 200,00 US$" }, { index: 1, text: "22 Oct 2026 \u00b7 200,00 US$" }];
+  assert.deepEqual(matchRows(two, sek), { kind: "many", candidates: [0, 1] });
+  const mixed = [{ index: 0, text: "21 Oct 2026 \u00b7 200,00 US$" }, { index: 1, text: "22 Oct 2026 Paid" }];
+  assert.deepEqual(matchRows(mixed, sek), { kind: "many", candidates: [0, 1] });
 });

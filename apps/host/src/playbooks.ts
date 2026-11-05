@@ -73,7 +73,12 @@ export const HISTORY = {
   repaired: (k: number) => `repaired after handoff at step ${k}`,
   shortcutLearned: "shortcut learned",
   replayFailed: "replay failed",
+  replaySucceeded: "replay succeeded",
+  replaySucceededForeign: "replay succeeded, amount not verified (page shows another currency)",
 };
+
+/** Said wherever a download was verified by date alone because the page shows another currency than the invoice. */
+export const FOREIGN_CURRENCY_NOTE = "amount not verified (page shows another currency)";
 
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
 const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;
@@ -443,13 +448,13 @@ function mutate(site: string, fn: (pb: Playbook, now: string) => void): Playbook
   return pb;
 }
 
-export function recordSuccess(site: string): Playbook | null {
+export function recordSuccess(site: string, foreignCurrency?: boolean): Playbook | null {
   return mutate(site, (pb, now) => {
     pb.successCount++;
     pb.failCount = 0;
     pb.status = "ok";
     pb.lastSucceeded = now;
-    pb.history.push({ at: now, summary: "replay succeeded" });
+    pb.history.push({ at: now, summary: foreignCurrency ? HISTORY.replaySucceededForeign : HISTORY.replaySucceeded });
   });
 }
 

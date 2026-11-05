@@ -24,6 +24,11 @@ describe("parseTransactions", () => {
     assert.deepEqual([l.date, l.merchant, l.ok], ["2026-10-03", "SPOTIFY", true]);
   });
 
+  it("reads US$ as USD", () => {
+    const l = one("2026-10-03 OPENAI 200,00 US$");
+    assert.deepEqual([l.amount, l.currency, l.merchant, l.ok], [200, "USD", "OPENAI", true]);
+  });
+
   it("reads free-form lines", () => {
     const l = one("2026-10-03 TELNYX LLC 25.00 USD");
     assert.deepEqual([l.date, l.amount, l.currency, l.merchant, l.ok], ["2026-10-03", 25, "USD", "TELNYX LLC", true]);
