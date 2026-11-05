@@ -5,7 +5,7 @@ import { matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEnt
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, validatePlaybook } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -193,15 +193,16 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const fresh = validatePlaybook({ ...built, hosts: [...new Set([...built.hosts, ...(old?.hosts ?? [])])].slice(0, MAX_HOSTS) }, built.site);
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
     // Keywords on file carry over; a new one is added (pending, with the reason when broad) once the playbook is saved.
-    const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}) };
+    const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}), notes: old?.notes ?? [], avoid: old?.avoid ?? [] };
     const learnKeyword = (): string => {
       if (!keyword || !addPendingMerchant(built.site, keyword, { unsure })) return "";
       const why = getPlaybook(built.site)?.merchantsPendingWhy?.[keyword];
       return ` Suggested the merchant keyword ${keyword}; ${why ? "it is broad, so the owner confirms it" : "a later verified download for a matching transaction confirms it"} before it is used.`;
     };
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: "shortcut learned" }] : [];
-    if (!old) {
-      savePlaybook({ ...fresh, history: learned });
+    if (!old || !old.steps.length) {
+      // A notes-only playbook gets its first path here; its notes stay.
+      savePlaybook({ ...fresh, ...carry, ...(old ? { createdAt: old.createdAt } : {}), history: learned });
       return { message: `Saved a playbook for ${built.site} with ${fresh.steps.length} steps after the start page.${note}${learnKeyword()}`, event: { type: "playbook.event", threadId, kind: "learned", site: built.site, stepCount: fresh.steps.length } };
     }
     const max = Math.max(old.steps.length, fresh.steps.length);
@@ -248,6 +249,38 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
           const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant, unsure);
           if (r.event) emit(r.event);
           text = r.message;
+        }
+        return { content: [{ type: "text" as const, text }], details: {} };
+      },
+    }),
+  );
+}
+
+/** Hosts that are not a vendor site: localhost, IP addresses, .local, .internal and single-label names. */
+const internalHost = (host: string): boolean => /^(localhost|\[.*\]|\d+(\.\d+){3}|[^.]+|.*\.(local|internal|localhost))$/i.test(host);
+
+export function registerPlaybookNote(pi: ExtensionAPI): void {
+  pi.registerTool(
+    defineTool({
+      name: "playbook_note",
+      label: "Playbook: note",
+      description:
+        `Record a fact about a website for the next run: one factual sentence (at most ${NOTE_MAX} characters), e.g. which portal or account holds the invoices, or that a download only works through the page's button. Optionally \`avoid\`: an address on the site not to use, with the reason (at most ${WHY_MAX} characters). No credentials, no personal data. Notes are advisory information shown to later runs; they are never followed automatically.`,
+      promptSnippet: "playbook_note: record a fact about a site for the next run",
+      parameters: Type.Object({
+        site: Type.String({ description: "The vendor's address or domain" }),
+        note: Type.Optional(Type.String()),
+        avoid: Type.Optional(Type.Object({ url: Type.String(), why: Type.String() })),
+      }),
+      execute: async (_id, { site, note, avoid }) => {
+        let text: string;
+        try {
+          const url = /^https?:\/\//i.test(site.trim()) ? site.trim() : `https://${site.trim()}`;
+          if (internalHost(new URL(url).hostname)) throw new Error("internal host");
+          const key = siteKey(url);
+          text = notesBlock(addSiteNote(key, { note, avoid }, "model"));
+        } catch (e) {
+          text = `Not saved: ${e instanceof Error ? e.message : String(e)}`;
         }
         return { content: [{ type: "text" as const, text }], details: {} };
       },

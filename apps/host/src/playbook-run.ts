@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, recordFailure, recordSuccess, savePlaybook, siteKey, transactionKey } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteKey, transactionKey } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
@@ -37,7 +37,7 @@ export function playbookFor(site: unknown): Playbook | null {
 export function playbookGuardMessage(attempted: ReadonlySet<string>, toolName: string, input: unknown): string | undefined {
   if (toolName !== "browser_navigate" && toolName !== "browser_download") return undefined;
   const site = siteOf((input as { url?: unknown } | null)?.url);
-  if (!site || attempted.has(site) || !getPlaybook(site)) return undefined;
+  if (!site || attempted.has(site) || !getPlaybook(site)?.steps.length) return undefined; // a notes-only site has no path to try first
   return `Blocked: a saved playbook exists for ${site}. Call playbook_run with the site and the invoice first; if it hands off, continue from the page it leaves you on.`;
 }
 
@@ -130,7 +130,7 @@ export function unfence(s: string): string {
 }
 
 /** The handoff for the model. Everything from the website (detail, url, snapshot) sits in one delimited block of untrusted data. */
-export function formatHandoff(site: string, invoice: InvoiceParams, total: number, r: Extract<ReplayResult, { ok: false }>): string {
+export function formatHandoff(site: string, invoice: InvoiceParams, total: number, r: Extract<ReplayResult, { ok: false }>, notes = ""): string {
   const where = r.failedIndex === 0 ? "the start page" : `step ${r.failedIndex}`;
   if (r.reason === "declined" || r.reason === "aborted") return `The user ${r.reason === "declined" ? "declined" : "stopped"} ${where} of the playbook for ${site}. Don't do that step by hand; ask the user how to proceed.`;
   const looking = `dated ${invoice.date}${invoice.amount !== undefined ? `, amount ${invoice.amount}${invoice.currency ? ` ${invoice.currency}` : ""}` : ""}`;
@@ -145,6 +145,7 @@ export function formatHandoff(site: string, invoice: InvoiceParams, total: numbe
     `Page: ${unfence(r.url) || "(unknown)"}`,
     r.snapshot ? `Snapshot:\n${unfence(r.snapshot)}` : "No snapshot of this page.",
     CLOSE,
+    ...(notes ? ["", notes] : []),
   ].join("\n");
 }
 
@@ -253,6 +254,7 @@ export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRu
 async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
   const pb = playbookFor(req.site);
   if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
+  if (!pb.steps.length) return { status: "no-playbook", text: [`No saved path for ${pb.site} yet. Find the invoice with the browser tools, then call playbook_save.`, notesBlock(pb)].filter(Boolean).join("\n\n") };
   const invoice = checkInvoice(req.invoice);
   const root = deps.downloadRoot();
   if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
@@ -308,7 +310,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
   if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(learned.length ? { learned } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
-  return { status: "handoff", site: pb.site, reason: r.reason, text: formatHandoff(pb.site, invoice, pb.steps.length, r) };
+  return { status: "handoff", site: pb.site, reason: r.reason, text: formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb)) };
 }
 
 export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): void {
@@ -328,7 +330,10 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
       execute: async (_id, { site, invoice, path, overwrite }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
         const r = await runCore(deps, GATED, { site, invoice, path, overwrite }, signal);
-        if (r.status === "downloaded") return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).` }, null, 2));
+        if (r.status === "downloaded") {
+          const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).`, ...(notes ? { notes } : {}) }, null, 2));
+        }
         return text(r.text);
       },
     }),
