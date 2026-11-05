@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { manifestMergeExtension, mergeManifest } from "./manifest.ts";
+import { findRow, manifestMergeExtension, mergeManifest, upsertRow, vendorSlug } from "./manifest.ts";
 
 const e = (vendor: string, date: string, amount: number, status = "pending", file = "", note = "") => ({ vendor, date, amount, currency: "USD", status, file, note });
 const parse = (s: string) => JSON.parse(s) as ReturnType<typeof e>[];
@@ -81,4 +81,51 @@ test("only a top-level invoice-fetch thread gets the manifest extension", async 
   assert.ok(names({ role: "invoice-fetch", restricted: true, isChild: false }).includes("manifest-merge"));
   assert.ok(!names({ role: "implementer", restricted: true, isChild: true, hasParent: true }).includes("manifest-merge"));
   assert.ok(!names({ role: "invoice-fetch", restricted: true, isChild: true, hasParent: true }).includes("manifest-merge"));
+});
+
+const ws = (rows?: unknown[]) => {
+  const cwd = mkdtempSync(join(tmpdir(), "pista-up-"));
+  if (rows) { mkdirSync(join(cwd, "invoices")); writeFileSync(join(cwd, "invoices", "manifest.json"), JSON.stringify(rows)); }
+  return cwd;
+};
+const read = (cwd: string) => JSON.parse(readFileSync(join(cwd, "invoices", "manifest.json"), "utf8")) as ReturnType<typeof e>[];
+
+test("upsertRow updates the row with the same date and amount and keeps its vendor label", () => {
+  const cwd = ws([e("OpenAI", "2026-10-22", 2021.55), e("Slack", "2026-10-01", 10)]);
+  assert.ok(upsertRow(cwd, { date: "2026-10-22", amount: 2021.55, currency: "USD" }, { vendor: "chatgpt.com", status: "found", file: "invoices/x.pdf", note: "n" }));
+  const rows = read(cwd);
+  assert.equal(rows.length, 2);
+  assert.deepEqual([rows[0]!.vendor, rows[0]!.status, rows[0]!.file], ["OpenAI", "found", "invoices/x.pdf"]);
+  assert.equal(findRow(cwd, { date: "2026-10-22", amount: 2021.55 })?.vendor, "OpenAI");
+});
+
+test("upsertRow appends a row when none matches, also when currencies differ, and creates the file", () => {
+  const cwd = ws();
+  upsertRow(cwd, { date: "2026-10-22", amount: 5, currency: "USD" }, { vendor: "Acme", status: "found", file: "a.pdf" });
+  upsertRow(cwd, { date: "2026-10-22", amount: 5, currency: "EUR" }, { vendor: "Acme", status: "found", file: "b.pdf" });
+  upsertRow(cwd, { date: "2026-10-22", amount: 5 }, { vendor: "Acme", status: "found", file: "c.pdf" });
+  const rows = read(cwd);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]!.file, "c.pdf"); // a key without a currency matches the first row
+  assert.deepEqual(readdirSync(join(cwd, "invoices")), ["manifest.json"], "no temp file left");
+});
+
+test("upsertRow leaves a malformed manifest alone", () => {
+  const cwd = ws();
+  mkdirSync(join(cwd, "invoices"));
+  writeFileSync(join(cwd, "invoices", "manifest.json"), "{oops");
+  assert.equal(upsertRow(cwd, { date: "2026-01-01", amount: 1 }, { vendor: "A" }), false);
+  assert.equal(readFileSync(join(cwd, "invoices", "manifest.json"), "utf8"), "{oops");
+  assert.equal(existsSync(join(cwd, "invoices", "manifest.json.tmp")), false);
+});
+
+test("the vendor label becomes a file name slug", () => {
+  assert.equal(vendorSlug("OpenAI"), "openai");
+  assert.equal(vendorSlug("Acme Hosting, Inc."), "acme-hosting-inc");
+});
+
+test("merge matches a row on date and amount whatever the vendor label", () => {
+  const out = parse(mergeManifest(JSON.stringify([e("OpenAI", "2026-10-22", 2021.55)]), JSON.stringify([e("chatgpt.com", "2026-10-22", 2021.55, "found", "f.pdf")])));
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.status, "found");
 });

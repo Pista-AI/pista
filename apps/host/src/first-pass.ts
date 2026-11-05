@@ -1,9 +1,8 @@
 // The first pass for an invoice-fetch thread: pasted transactions of vendors with a saved playbook are fetched by the host, with no model call, before the model starts.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename } from "node:path";
 import type { FirstPassLine, HostEvent, Playbook } from "@pista/protocol";
 import { keywordMatches, type BroadReason } from "./merchants.ts";
-import { mergeManifest } from "./manifest.ts";
+import { upsertRow, vendorSlug } from "./manifest.ts";
 import { FOREIGN_CURRENCY_NOTE, HISTORY, confirmByProof, notesBlock, unfence } from "./playbooks.ts";
 import { playbookConsent, type PlaybookRunConsent, type PlaybookRunRequest, type PlaybookRunResult } from "./playbook-run.ts";
 import { matchVendor, parseTransactions, type ParsedLine } from "./transactions.ts";
@@ -18,6 +17,16 @@ export interface FirstPassDeps {
   /** One decision for the whole batch (see `batchGate`). */
   allow: (routed: Routed[]) => Promise<boolean>;
   writeManifest?: (rows: ManifestRow[]) => void;
+  /** The vendor label the manifest already has for this transaction (the model's row), so a fetched file is named after it. */
+  rowLabel?: (key: { date: string; amount: number; currency?: string }) => string | undefined;
+}
+
+const titleCase = (s: string) => s.toLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, a: string, b: string) => a + b.toUpperCase());
+/** The label for a new row: an existing row's vendor, else the playbook's confirmed keyword that matches the merchant in title case, else the site. */
+function labelFor(deps: FirstPassDeps, pb: Pb | undefined, line: ParsedLine, site: string, keyword?: string): string {
+  const key = { date: line.date!, amount: Math.abs(line.amount!), ...(line.currency ? { currency: line.currency } : {}) };
+  const kw = keyword ?? (pb?.merchants ?? []).filter((k) => !k.includes("*") && keywordMatches(k, line.merchant!)).sort((a, b) => b.length - a.length)[0];
+  return deps.rowLabel?.(key) || (kw ? titleCase(kw) : site);
 }
 export interface FirstPassOutcome { fetched: { line: ParsedLine; site: string; file: string; /** already in the project: not fetched again */ exists?: boolean }[]; /** keywords confirmed during this batch */ learned: { site: string; keyword: string }[]; handedOff: { line: ParsedLine; site: string; why: string; /** the step that failed, and what the page said and was at (website data) */ step?: string; detail?: string; url?: string; /** the site's notes block, when it has notes */ notes?: string }[]; /** the user said no (or the policy did): not for the model to fetch */ declined: { line: ParsedLine; site: string }[]; rest: Left[];
   /** The batch was allowed and not stopped. False when the whole batch was declined or refused: every routed line is in `declined`. */
@@ -98,6 +107,7 @@ export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: A
   if (!(await deps.allow(routed))) return { fetched: [], learned: [], handedOff: [], declined: routed.map((r) => ({ line: r.line, site: r.site })), rest, ran: false };
   const out: FirstPassOutcome = { fetched: [], learned: [], handedOff: [], declined: [], rest, ran: !signal?.aborted };
   const rows: ManifestRow[] = [];
+  const labels = new Map<ParsedLine, string>();
   const trials = new Map<string, { site: string; keyword: string; merchant: string; all: boolean; amount: boolean }>();
   for (const { line, site, trial, keyword } of routed) {
     if (signal?.aborted) { out.rest.push({ line, why: "stopped", site }); continue; }
@@ -105,7 +115,11 @@ export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: A
     const merchant = line.merchant!;
     let r: PlaybookRunResult;
     try {
-      r = await deps.run({ site, merchant, invoice: { date: line.date, amount: line.amount, currency: line.currency }, ...(trial ? { deferProof: true } : {}) }, signal);
+      const label = labelFor(deps, pb, line, site, keyword);
+      labels.set(line, label);
+      // Named after the row's vendor label, so a model row "OpenAI" keeps "openai-…" whichever site served it.
+      const path = `invoices/${line.date!.slice(0, 7)}/${vendorSlug(label)}-${line.date}-${Math.abs(line.amount!).toFixed(2)}.pdf`;
+      r = await deps.run({ site, merchant, invoice: { date: line.date, amount: line.amount, currency: line.currency }, ...(line.amount !== undefined ? { path } : {}), ...(trial ? { deferProof: true } : {}) }, signal);
     } catch (error) {
       r = { status: "error", text: error instanceof Error ? error.message.slice(0, 80) : "failed" };
     }
@@ -116,7 +130,7 @@ export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: A
     if (r.status === "downloaded") {
       out.fetched.push({ line, site, file: r.path });
       for (const keyword of r.learned ?? []) out.learned.push({ site, keyword });
-      rows.push({ vendor: site, date: line.date!, amount: Math.abs(line.amount!), currency: line.currency ?? "", status: "found", file: r.path, note: r.foreignCurrency ? `fetched by a saved playbook; ${FOREIGN_CURRENCY_NOTE}` : "fetched by a saved playbook" });
+      rows.push({ vendor: labels.get(line) ?? site, date: line.date!, amount: Math.abs(line.amount!), currency: line.currency ?? "", status: "found", file: r.path, note: r.foreignCurrency ? `fetched by a saved playbook; ${FOREIGN_CURRENCY_NOTE}` : "fetched by a saved playbook" });
     } else if (r.status === "exists") out.fetched.push({ line, site, file: "already saved, not fetched again", exists: true });
     else if (r.status === "declined") out.declined.push({ line, site });
     else if (r.status === "handoff") out.handedOff.push({ line, site, why: r.reason, step: r.step, detail: r.detail, url: r.url, ...(pb && notesBlock(pb) ? { notes: notesBlock(pb) } : {}) });
@@ -128,11 +142,9 @@ export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: A
   return out;
 }
 
-/** Adds the rows to `<project>/invoices/manifest.json`, keeping every entry already there. */
+/** Records each fetched file on the manifest row for its transaction (date and amount), appending a row when the model has none yet. */
 export function writeManifestRows(cwd: string, rows: ManifestRow[]): void {
-  const file = join(cwd, "invoices", "manifest.json");
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, mergeManifest(existsSync(file) ? readFileSync(file, "utf8") : undefined, JSON.stringify(rows)));
+  for (const { vendor, date, amount, currency, ...patch } of rows) upsertRow(cwd, { date, amount, ...(currency ? { currency } : {}) }, { vendor, ...patch });
 }
 
 /** A thread's first pass runs once: `ready` is true for a text that parses as transactions until `ran` is called, which the caller does once a batch really ran (not declined, not stopped). */

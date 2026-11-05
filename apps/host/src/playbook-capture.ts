@@ -7,6 +7,7 @@ import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type 
 import { merchantKeyword } from "./merchants.ts";
 import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
+import { upsertRow } from "./manifest.ts";
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
 export type ReplayedEntry = { kind: "replayed"; index: number; step: PlaybookStep };
@@ -379,6 +380,19 @@ function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
       return false;
     }
   });
+}
+
+/** After a validated browser_download (not rejected) for a known invoice: the manifest row for that transaction becomes found with the file, or is added (labelled with the download's site). */
+export function recordDownloadRow(cwd: string, trace: PlaybookTrace, resultText: string): void {
+  try {
+    const r = JSON.parse(resultText) as { path?: unknown; rejected?: unknown };
+    if (typeof r.path !== "string" || r.rejected) return;
+    const inv = checkInvoice(trace.invoice);
+    if (inv.amount === undefined) return;
+    const rows = trace.list();
+    const site = [rows.at(-1), rows.at(-2)].map((x) => (x ? trySiteKey(urlOf(x)) : undefined)).find(Boolean);
+    upsertRow(cwd, { date: inv.date, amount: inv.amount, currency: inv.currency }, { vendor: site ?? "unknown", status: "found", file: r.path, note: "downloaded and checked by the host" });
+  } catch {}
 }
 
 /**

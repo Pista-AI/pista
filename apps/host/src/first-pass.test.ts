@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Playbook } from "@pista/protocol";
@@ -7,6 +8,7 @@ import { setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("first-pass", { cleanup: "exit" });
 const { abortFirstPass, batchGate, endFirstPass, firstPassOnce, routeLines, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } = await import("./first-pass.ts");
+const { findRow } = await import("./manifest.ts");
 const { hostConsent } = await import("./playbook-run.ts");
 const { parseTransactions } = await import("./transactions.ts");
 const { getPlaybook, listPlaybooks, savePlaybook, validatePlaybook, noteMerchantOutcome } = await import("./playbooks.ts");
@@ -263,4 +265,24 @@ test("a pasted five-line record is ready and routes by keyword", () => {
   assert.deepEqual(pb.merchants, ["OPENAI"]);
   const { routed } = routeLines(parseTransactions(paste).lines, all());
   assert.deepEqual(routed.map((r) => [r.line.lineNo, r.site]), [[1, "openai.test"]]);
+});
+
+test("a fetched file updates the model's pending row (label kept, file named after it) instead of adding a second row", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pista-fp-"));
+  mkdirSync(join(dir, "invoices"));
+  writeFileSync(join(dir, "invoices", "manifest.json"), JSON.stringify([{ vendor: "OpenAI", date: "2026-10-22", amount: 49, currency: "USD", status: "pending", file: "", note: "" }]));
+  make("zebra.test", { merchants: ["ZEBRA PAY"] });
+  const paths: (string | undefined)[] = [];
+  await runFirstPass("2026-10-22 ZEBRA PAY -49.00 USD\n2026-10-23 ZEBRA PAY -20.00 USD", {
+    playbooks: all,
+    allow: async () => true,
+    rowLabel: (k) => (findRow(dir, k)?.vendor as string | undefined),
+    run: async (req) => { paths.push(req.path); return { status: "downloaded", site: req.site, path: req.path!, bytes: 1, steps: 1, amountVerified: true }; },
+    writeManifest: (r) => writeManifestRows(dir, r),
+  });
+  assert.deepEqual(paths, ["invoices/2026-10/openai-2026-10-22-49.00.pdf", "invoices/2026-10/zebra-pay-2026-10-23-20.00.pdf"]);
+  const rows = JSON.parse(readFileSync(join(dir, "invoices", "manifest.json"), "utf8"));
+  assert.equal(rows.length, 2);
+  assert.deepEqual([rows[0].vendor, rows[0].status, rows[0].file], ["OpenAI", "found", paths[0]]);
+  assert.equal(rows[1].vendor, "Zebra Pay", "a new row is labelled with the confirmed keyword in title case");
 });
