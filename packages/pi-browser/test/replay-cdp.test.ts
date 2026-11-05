@@ -75,7 +75,7 @@ test("a lone download without a row rule is checked against the invoice date bef
   const right = await lone({ date: "2026-09-03" }, "invoices/v2.pdf");
   assert.ok(right.ok, JSON.stringify(right));
   assert.ok(readFileSync(join(dir, "invoices/v2.pdf"), "latin1").includes("inv-2026-09"));
-  assert.deepEqual(right.verified, { date: true, amount: false }); // no amount given: nothing claimed about it
+  assert.deepEqual(right.verified, { date: true, amount: false, matchedBy: ["date"], offsetDays: 0 }); // no amount given: nothing claimed about it
   const withAmount = await lone({ date: "2026-09-03", amount: 49, currency: "EUR" }, "invoices/v4.pdf");
   assert.ok(withAmount.ok && withAmount.verified.amount && withAmount.verified.date, JSON.stringify(withAmount));
   const none = await lone(undefined, "invoices/v3.pdf");
@@ -187,7 +187,7 @@ test("a path recorded for one month's invoice replays for an invoice in another 
   const invoice = { date: "2026-10-20" };
   const labels = click.periodContext!.names.flatMap((text, index) => (text ? [{ index, text }] : []));
   assert.deepEqual(matchPeriod(labels, invoice), { kind: "one", index: click.periodContext!.clickedIndex });
-  assert.deepEqual(pickRow(dl.rowContext!.texts.map((_, i) => String(i)), dl.rowContext!.texts, invoice, ["date"]), { target: "1" });
+  assert.deepEqual(pickRow(dl.rowContext!.texts.map((_, i) => String(i)), dl.rowContext!.texts, invoice, ["date"]), { target: "1", seen: { amount: false, matchedBy: ["date"], offsetDays: 0 } });
   const steps: ReplayStep[] = [
     { kind: "click", target: { role: click.locator.role, period: true } },
     { kind: "download", target: { role: dl.locator!.role, name: dl.locator!.name, row: { match: ["date"] } }, fileType: "pdf" },
@@ -266,7 +266,7 @@ test("a click that opens a tab on a listed second host is followed, and the deta
   const invoice = { date: "2026-09-03", amount: 49, currency: "EUR" };
   const r = await runReplay(...hop("page"), { ...twoHosts("invoices/x1.pdf", ["127.0.0.1", "localhost"]), invoice });
   assert.ok(r.ok, JSON.stringify(r));
-  assert.deepEqual(r.verified, { date: true, amount: true });
+  assert.deepEqual(r.verified, { date: true, amount: true, matchedBy: ["date", "amount"], offsetDays: 0 });
   assert.ok(readFileSync(join(dir, "invoices/x1.pdf"), "latin1").includes("inv-2026-09"));
   await closeExtraTabs(before);
 });

@@ -5,8 +5,17 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { DomainRules } from "../src/domains.ts";
 import type { BrowserDriver } from "../src/driver.ts";
-import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay, verifyPage, verifySingleRow } from "../src/replay.ts";
+import { expectationMet, pickRow as pickRowFull, pollUntil, resolveAll, resolveLocator, runReplay, verifyPage as verifyPageFull, verifySingleRow as verifySingleRowFull } from "../src/replay.ts";
 import { rowTextOf } from "../src/row-match.ts";
+
+/** The answer without the evidence fields the matcher adds (what was matched on, the rate, the offset), for tests about the verdict. */
+const plain = <T extends object>(r: T): Partial<T> => {
+  const { matchedBy, offsetDays, fxRateUsed, seen, ...rest } = r as Record<string, unknown>;
+  return rest as Partial<T>;
+};
+const pickRow = (...a: Parameters<typeof pickRowFull>) => plain(pickRowFull(...a)) as ReturnType<typeof pickRowFull>;
+const verifyPage = (...a: Parameters<typeof verifyPageFull>) => plain(verifyPageFull(...a)) as ReturnType<typeof verifyPageFull>;
+const verifySingleRow = (...a: Parameters<typeof verifySingleRowFull>) => plain(verifySingleRowFull(...a)) as ReturnType<typeof verifySingleRowFull>;
 
 test("a detail page proves the invoice only with its date and, when the invoice has one, a matching amount", () => {
   const inv = { date: "2026-10-03", amount: 49, currency: "EUR" };
@@ -483,15 +492,20 @@ test("a row-not-found or ambiguous locate returns at once, without waiting", asy
   assert.deepEqual(slept, []);
 });
 
-test("a page showing only another currency is verified by its date, and says the amount was not", () => {
+test("a page showing the amount in another currency is verified through the rate band", () => {
   const sek = { date: "2026-10-22", amount: 2021.55, currency: "SEK" };
   const page = "Invoice\nDate of issue 21 oktober 2026\nTotal 200,00 US$\nAmount due 200,00 US$";
-  assert.deepEqual(verifyPage(page, sek), { ok: true, amount: false, amountVerified: false });
+  assert.deepEqual(verifyPage(page, sek), { ok: true, amount: true });
+  const full = verifyPageFull(page, sek);
+  assert.ok(full.ok && full.matchedBy?.includes("amount-fx") && full.offsetDays === -1 && Math.abs(full.fxRateUsed! - 10) < 0.01);
+  // Far outside the band the amount does not fit; a currency without a rate is judged by the date and says so.
+  assert.equal(verifyPage(page, { date: "2026-10-22", amount: 900, currency: "SEK" }).ok, false);
+  assert.deepEqual(verifyPage("Date 21 Oct 2026\nTotal 200,00 PLN", sek), { ok: true, amount: false, amountVerified: false });
   assert.deepEqual(verifyPage(page, { date: "2026-10-22", amount: 200, currency: "USD" }), { ok: true, amount: true });
   // The same currency stays strict, and a page with no amount at all is still refused.
   assert.equal(verifyPage("Date 21 oktober 2026\nTotal 99,00 kr", sek).ok, false);
   assert.equal(verifyPage("Date 21 oktober 2026\nThank you", sek).ok, false);
-  assert.deepEqual(verifySingleRow("21 Oct 2026 \u00b7 200,00 US$", sek), { ok: true, amount: false, amountVerified: false });
+  assert.deepEqual(verifySingleRow("21 Oct 2026 \u00b7 200,00 US$", sek), { ok: true, amount: true });
 });
 
 test("a foreign-currency page must look like one invoice, not a list", () => {
@@ -501,7 +515,7 @@ test("a foreign-currency page must look like one invoice, not a list", () => {
   bad("Invoice date 21 Oct 2026\nPaid 12 Sep 2026\nTotal 200,00 US$"); // other date before the invoice
   bad("21 Oct 2026  200,00 US$\n22 Oct 2026  200,00 US$\n23 Oct 2026  200,00 US$"); // three dates
   bad("Issued 21 Oct 2026\nDue 20 Dec 2026\nTotal 200,00 US$"); // due date too far
-  const ok = { ok: true, amount: false, amountVerified: false };
+  const ok = { ok: true, amount: true };
   assert.deepEqual(verifyPage("Invoice date 21 Oct 2026\nPaid 21 Oct 2026\nTotal 200,00 US$", sek), ok);
   assert.deepEqual(verifyPage("Issued 21 Oct 2026\nDue 20 Nov 2026\nTotal 200,00 US$\nAmount due 200,00 US$", sek), ok);
 });
