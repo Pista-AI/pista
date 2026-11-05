@@ -73,7 +73,6 @@ export const HISTORY = {
   repaired: (k: number) => `repaired after handoff at step ${k}`,
   shortcutLearned: "shortcut learned",
   replayFailed: "replay failed",
-  refused: (why: string) => `not saved: ${why}`,
 };
 
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
@@ -274,8 +273,7 @@ function cleanAvoid(v: unknown, hosts: Sites): Playbook["avoid"] {
 }
 
 /** Builds a fresh Playbook from untrusted input, keeping known fields only. Throws with a short reason. */
-/** `heal`: identical consecutive steps are collapsed (reading a stored file) instead of refused (saving). */
-export function validatePlaybook(input: unknown, site: string, heal = false): Playbook {
+export function validatePlaybook(input: unknown, site: string): Playbook {
   const o = obj(input);
   if (o.site !== undefined && o.site !== site) throw new Error("site does not match");
   // Older files have no `hosts`: the playbook then spans its own site only. The site always comes first.
@@ -296,12 +294,7 @@ export function validatePlaybook(input: unknown, site: string, heal = false): Pl
         }
       }).slice(-MAX_HISTORY)
     : [];
-  let steps = o.steps.flatMap((s) => step(s, hosts) ?? []);
-  // Period clicks may repeat on purpose (pick the year, then the month); any other repeat is a mistake.
-  const repeats = (s: PlaybookStep, i: number) => i > 0 && !(s.kind === "click" && s.target.period) && JSON.stringify(s) === JSON.stringify(steps[i - 1]);
-  if (heal) steps = steps.filter((s, i) => !repeats(s, i));
-  const dup = steps.findIndex(repeats);
-  if (dup > 0) throw new Error(`steps ${dup} and ${dup + 1} are identical; a path should not repeat the same step`);
+  const steps = o.steps.flatMap((s) => step(s, hosts) ?? []);
   const notes = cleanNotes(o.notes), avoid = cleanAvoid(o.avoid, hosts);
   const shortcut = shortcutOf(o.shortcut, hosts, steps), candidate = shortcutOf(o.shortcutCandidate, hosts, steps);
   const merchants = cleanUserMerchants(o.merchants);
@@ -350,7 +343,7 @@ export function getPlaybook(site: string): Playbook | null {
     return null;
   }
   try {
-    return validatePlaybook(JSON.parse(raw), site, true);
+    return validatePlaybook(JSON.parse(raw), site);
   } catch {
     return null; // corrupt or tampered file: treat as absent
   }
@@ -468,13 +461,6 @@ export function recordFailure(site: string, reason?: string, count = true): Play
       if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
     }
     pb.history.push({ at: now, summary: reason ? `${HISTORY.replayFailed}: ${reason}` : HISTORY.replayFailed });
-  });
-}
-
-/** Logs that a captured path was not saved, on the site's existing playbook (nothing happens when it has none). */
-export function recordRefusal(site: string, why: string): Playbook | null {
-  return mutate(site, (pb, now) => {
-    pb.history.push({ at: now, summary: HISTORY.refused(why) });
   });
 }
 

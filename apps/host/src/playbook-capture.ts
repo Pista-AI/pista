@@ -5,7 +5,7 @@ import { matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEnt
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, recordRefusal, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -305,47 +305,59 @@ export function registerPlaybookNote(pi: ExtensionAPI): void {
   );
 }
 
+/** An address compared without its fragment (a `#` change is not a new page). */
+const pageOf = (u: string | undefined) => u?.split("#")[0];
+const isClickRow = (r: TraceRow) => r.kind === "click" || (r.kind === "replayed" && r.step.kind === "click");
+
 /** Whether the last kept row is a click that left the page where it was and opened no tab. */
 function isNoOp(kept: TraceRow[]): boolean {
   const last = kept[kept.length - 1];
   if (last?.kind !== "click" || last.openedTab) return false;
   const before = kept.slice(0, -1).reverse().map(urlOf).find(Boolean);
-  return before === last.urlAfter;
+  return pageOf(before) === pageOf(last.urlAfter);
 }
 
-/** What a click row (or a replayed click step) does, for telling repeats apart; undefined for anything else. Period clicks match whatever month they named. */
+/** What a click row (or a replayed click step) does, for telling repeats apart. Period clicks are told apart by the label clicked; a replayed period step has none, so it has no key. */
 function clickKey(r: TraceRow | undefined): string | undefined {
   if (r?.kind === "click") {
     const { role, name, text } = r.locator;
-    return r.periodContext ? `period|${role}` : r.rowContext ? `row|${role}|${name}|${text}|${r.rowContext.clickedIndex}` : `${role}|${name}|${text}`;
+    const pc = r.periodContext;
+    return pc ? `period|${role}|${pc.names[pc.clickedIndex] ?? ""}` : r.rowContext ? `row|${role}|${name}|${text}|${r.rowContext.clickedIndex}` : `${role}|${name}|${text}`;
   }
   if (r?.kind === "replayed" && r.step.kind === "click") {
     const t = r.step.target;
-    return t.period ? `period|${t.role}` : t.row ? undefined : `${t.role}|${t.name}|${t.text}`;
+    return t.period || t.row ? undefined : `${t.role}|${t.name}|${t.text}`;
   }
   return undefined;
 }
 
 /**
  * Takes dead ends out of a captured path: clicks between a page and the click that came back to it, and clicks on a different row of a list than the one the invoice names.
- * Other clicks stay (a menu click changes no address). Replayed steps, sign-ins and the download are never dropped.
+ * A click that changed nothing is folded into the next click when both are the same click, and a replayed step is folded into the model's immediately following click
+ * when both are the same click. Everything else stays (a menu click changes no address; a year and then a month are two clicks). Sign-ins and the download are never dropped.
  */
 function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
   const kept: TraceRow[] = [];
   for (const x of path) {
     const key = clickKey(x);
-    // The same click twice in a row is one action when the first did nothing (no address change, no new tab) or was a replayed step the model re-clicked: the last one stays. Two clicks that each did work (a year, then a month) both stay.
     const prev = kept[kept.length - 1];
-    if (key && key === clickKey(prev) && (prev!.kind === "replayed" || isNoOp(kept))) {
+    if (key && prev && key === clickKey(prev) && (prev.kind === "replayed" || isNoOp(kept))) {
+      const noop = prev.kind === "click";
       kept.pop();
+      // A period step the replay ran that changed nothing, then a no-op re-click, then the click that worked: one action.
+      const before = kept[kept.length - 1];
+      if (noop && x.kind === "click" && x.periodContext && before?.kind === "replayed" && before.step.kind === "click" && before.step.target.period) kept.pop();
       kept.push(x);
       continue;
     }
     if (x.kind === "click") {
       const at = kept.findIndex((e) => urlOf(e) === x.urlAfter);
-      if (at >= 0 && at < kept.length - 1 && kept.slice(at + 1).every((e) => clickKey(e))) {
+      const between = kept.slice(at + 1);
+      // A loop needs a step away first: some row in between has another address. Clicks that never left the page (a menu, a tab, year then month) are not a loop.
+      const cameBack = between.some((e) => { const u = urlOf(e); return u && pageOf(u) !== pageOf(x.urlAfter); });
+      if (at >= 0 && between.length && cameBack && between.every(isClickRow)) {
         // Replayed steps worked, so they stay; only the model's own dead-end clicks go.
-        const replayed = kept.slice(at + 1).filter((e) => e.kind === "replayed");
+        const replayed = between.filter((e) => e.kind === "replayed");
         kept.length = at + 1;
         kept.push(...replayed);
         continue;
@@ -422,7 +434,6 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
   const pruned = prune(path, invoice);
   let res = save(pruned);
   if (!res.saved && pruned.length !== path.length) res = save(path);
-  if (!res.saved && /^steps \d+ and \d+ are identical/.test(res.reason ?? "")) recordRefusal(trySiteKey(urlOf(rows[start]!)) ?? "", res.reason!);
   if (res.saved) {
     trace.invoice = undefined;
     trace.merchant = undefined;

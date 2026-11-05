@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
 import { setupHome } from "./test-helpers.ts";
 import { traceOf, type TraceEntry } from "./test-trace-fixtures.ts";
@@ -188,18 +186,6 @@ test("a menu click followed by a different click on the same page keeps both", (
   assert.match(r.note ?? "", /\(3 steps/);
 });
 
-test("a path with two identical consecutive steps is refused and the refusal goes to the history", () => {
-  fresh();
-  savePlaybook(validatePlaybook({ startUrl: B, steps: [{ kind: "click", target: { role: "link", name: "Invoices" } }, { kind: "download", target: { role: "link", name: "Download" }, fileType: "pdf" }] }, "example.com"));
-  assert.throws(() => validatePlaybook({ startUrl: B, steps: [{ kind: "click", target: { role: "link", name: "A" } }, { kind: "click", target: { role: "link", name: "A" } }] }, "example.com"), /steps 1 and 2 are identical/);
-  // Two clicks whose opaque names are dropped on save end up as the same step.
-  const opaque = (n: string) => ({ kind: "click" as const, locator: { role: "link", name: n }, urlAfter: B });
-  const d = trace([{ kind: "navigate", url: `${B}start` }, opaque("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"), opaque("z1y2x3w4v5u6t7s8r9q0p1o2n3m4l5k6j7"), dl]);
-  const r = autoCapture(d, OK, "t");
-  assert.match(r.note ?? "", /^Not captured automatically: steps 1 and 2 are identical/);
-  assert.ok(getPlaybook("example.com")!.history.some((h) => h.summary.startsWith("not saved: steps 1 and 2")));
-});
-
 test("two period clicks that each changed the page (year, then month) stay two steps", () => {
   fresh();
   const period = { names: ["September 2026", "October 2026", null], clickedIndex: 1 };
@@ -210,15 +196,24 @@ test("two period clicks that each changed the page (year, then month) stay two s
   assert.deepEqual(getPlaybook("example.com")!.steps.map((s) => s.kind === "click" && s.target.period), [true, true, false]);
 });
 
-test("a stored playbook with identical consecutive steps loads healed, keeping its notes and history", () => {
+test("a year click then a month click with no address change stay two steps", () => {
   fresh();
-  const pb = validatePlaybook({ startUrl: B, steps: [{ kind: "click", target: { role: "link", name: "A" } }, { kind: "download", target: { role: "link", name: "D" }, fileType: "pdf" }], notes: [{ text: "keep me", at: new Date().toISOString(), by: "user" }], history: [{ at: new Date().toISOString(), summary: "old line" }] }, "example.com");
-  const raw = { ...pb, steps: [pb.steps[0], pb.steps[0], pb.steps[1]] };
-  const dir = join(process.env.PISTA_HOME!, "playbooks");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "example.com.json"), JSON.stringify(raw));
-  const loaded = getPlaybook("example.com")!;
-  assert.equal(loaded.steps.length, 2);
-  assert.equal(loaded.notes[0]?.text, "keep me");
-  assert.ok(loaded.history.some((h) => h.summary === "old line"));
+  const yr = { kind: "click" as const, locator: { role: "link", name: "Oct 2026" }, urlAfter: `${B}s`, periodContext: { names: ["Oct 2026", "Sep 2026", null], clickedIndex: 0 } };
+  const mo = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: `${B}s`, periodContext: { names: ["September 2026", "October 2026", null], clickedIndex: 1 } };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, yr, mo, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+});
+
+test("a click that only differs by address fragment is a no-op and folds into the next identical click", () => {
+  fresh();
+  const a = { kind: "click" as const, locator: { role: "link", name: "Invoices" }, urlAfter: `${B}s#top` };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, a, { ...a, urlAfter: `${B}invoices` }, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(2 steps/);
+});
+
+test("a tab click after an address-less replayed prefix is not treated as a dead end", () => {
+  fresh();
+  const tab = { kind: "click" as const, locator: { role: "tab", name: "Billing" }, urlAfter: `${B}s` };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, { kind: "replayed", index: 0, step: { kind: "click", target: { role: "button", name: "Menu" } } }, tab, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
 });
