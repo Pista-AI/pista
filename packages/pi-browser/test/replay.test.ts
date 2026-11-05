@@ -289,6 +289,31 @@ test("a period step needs the invoice and hands off when no month, or several, c
   assert.equal(await run(["October 2026", "Oct 2026"], { date: "2026-10-04" }), "row-ambiguous");
 });
 
+test("a period step waits while the page lists no period labels yet, but returns at once when labels exist and none fits", async () => {
+  const run = async (appearsAtSnapshot: number, names: string[]) => {
+    let snapshots = 0;
+    let t = 0;
+    const slept: number[] = [];
+    const evaluate = async (code: string) => {
+      if (!String(code).includes("omitted")) return "";
+      snapshots++;
+      return { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: snapshots >= appearsAtSnapshot ? names.map((n, i) => ({ ref: `e${i + 1}`, role: "tab", name: n })) : [] };
+    };
+    const driver = { state: async () => ({ url: "https://x.test/list", title: "", loading: false }), navigate: async () => ({}), evaluate } as unknown as BrowserDriver;
+    const r = await runReplay(
+      { startUrl: "https://x.test/list", steps: [{ kind: "click", target: { role: "tab", period: true } }] },
+      { driver, allowUrl: () => true, downloadRoot: "/nonexistent", downloadPath: "a.pdf", invoice: { date: "2026-10-22" }, now: () => t, sleep: async (ms) => (slept.push(ms), (t += ms), undefined) },
+    );
+    return { r, slept };
+  };
+  const late = await run(3, ["October 2026"]);
+  assert.notEqual(!late.r.ok && late.r.reason, "row-not-found"); // matched on the third snapshot
+  assert.deepEqual(late.slept.slice(0, 2), [250, 250]);
+  const nonMatching = await run(1, ["September 2026"]);
+  assert.equal(!nonMatching.r.ok && nonMatching.r.reason, "row-not-found");
+  assert.deepEqual(nonMatching.slept, []);
+});
+
 test("a shortcut opens the list directly and skips the earlier steps; a page without the expectation falls back to the full path", async () => {
   const root = mkdtempSync(join(tmpdir(), "replay-"));
   const steps = [

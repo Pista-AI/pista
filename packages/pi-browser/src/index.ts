@@ -11,6 +11,7 @@ export { PAGE_VIEW_TOOLS, prunePageViews, registerContextPruning, createPageView
 export {
   applyCollapse,
   collapsePageViews,
+  docKey,
   DEFAULT_STALE_DOCUMENT_TURNS,
   type CollapseOptions,
   type CollapseResult,

@@ -67,6 +67,9 @@ export function unfence(s: string): string {
   return s;
 }
 
+/** Said wherever a download was verified by date alone because the page shows another currency than the invoice. */
+export const FOREIGN_CURRENCY_NOTE = "Amount not verified: the page shows another currency; only the date matched.";
+
 /** The history lines the host writes (and first-pass reads back). */
 export const HISTORY = {
   captured: "captured by host",
@@ -74,11 +77,8 @@ export const HISTORY = {
   shortcutLearned: "shortcut learned",
   replayFailed: "replay failed",
   replaySucceeded: "replay succeeded",
-  replaySucceededForeign: "replay succeeded, amount not verified (page shows another currency)",
+  replaySucceededForeign: `replay succeeded. ${FOREIGN_CURRENCY_NOTE}`,
 };
-
-/** Said wherever a download was verified by date alone because the page shows another currency than the invoice. */
-export const FOREIGN_CURRENCY_NOTE = "amount not verified (page shows another currency)";
 
 // Whole words split by `_`/`-`, so `access_token` and `X-Auth` match but `monkey` and `passenger` do not.
 const SECRET_KEY = /(^|[_-])(token|code|state|nonce|session|sid|auth|key|signature|sig|expires|otp|password|pwd|pass|ticket|jwt|access|refresh|secret|credential|saml)($|[_-])|^utm_/i;

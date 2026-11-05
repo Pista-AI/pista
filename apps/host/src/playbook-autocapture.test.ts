@@ -225,3 +225,12 @@ test("a replayed year, a no-op month click and an effective month click with no 
   const t = trace([{ kind: "navigate", url: S }, { kind: "replayed", index: 0, step: { kind: "click", target: { role: "link", period: true } } }, month, month, dl]);
   assert.match(autoCapture(t, OK, "t").note ?? "", /\(3 steps/);
 });
+
+test("the model's re-click that replaces a replayed click which opened a tab keeps opensTab", () => {
+  fresh();
+  const replayed = { kind: "replayed" as const, index: 1, step: { kind: "click" as const, target: { role: "link", name: "Invoices", text: "Invoices" }, opensTab: true as const } };
+  const t = trace([{ kind: "navigate", url: B }, replayed, click, dl]); // the replay already followed the tab, so the re-click saw none
+  assert.match(autoCapture(t, OK, "t").note ?? "", /\(2 steps/);
+  const clicks = getPlaybook("example.com")!.steps.filter((s) => s.kind === "click") as { opensTab?: true }[];
+  assert.deepEqual(clicks.map((c) => c.opensTab), [true]);
+});

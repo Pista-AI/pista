@@ -1,7 +1,7 @@
 // Captures what the browser tools did in a thread and turns the model's chosen subset into a stored playbook.
 // The model only picks entry numbers from what the host recorded, so it cannot invent URLs or selectors.
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
+import { docKey, matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { merchantKeyword } from "./merchants.ts";
@@ -305,8 +305,7 @@ export function registerPlaybookNote(pi: ExtensionAPI): void {
   );
 }
 
-/** An address compared without its fragment (a `#` change is not a new page). */
-const pageOf = (u: string | undefined) => u?.split("#")[0];
+const pageOf = (u: string | undefined) => (u === undefined ? undefined : docKey(u));
 const isClickRow = (r: TraceRow) => r.kind === "click" || (r.kind === "replayed" && r.step.kind === "click");
 
 /** Whether the last kept row is a click that left the page where it was and opened no tab. */
@@ -345,11 +344,14 @@ function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
     if (key && prev && key === clickKey(prev) && (prev.kind === "replayed" || isNoOp(kept))) {
       const noop = prev.kind === "click";
       kept.pop();
+      // The replay already followed the tab its click opened, so the model's re-click saw none; the kept click still opens one.
+      const opens = prev.kind === "replayed" && prev.step.kind === "click" && prev.step.opensTab === true;
       // A period step the replay ran that changed nothing, then a no-op re-click, then the click that worked: one action.
       const before = kept[kept.length - 1];
       const pageBefore = kept.slice(0, -1).reverse().map(urlOf).find(Boolean);
       if (noop && x.kind === "click" && x.periodContext && before?.kind === "replayed" && before.step.kind === "click" && before.step.target.period && before.step.target.role === x.locator.role && pageOf(x.urlAfter) !== pageOf(pageBefore)) kept.pop();
-      kept.push(x);
+      // A copy: the trace ring is not touched, and the unpruned fallback path keeps the original row.
+      kept.push(opens && x.kind === "click" ? { ...x, openedTab: true } : x);
       continue;
     }
     if (x.kind === "click") {
@@ -431,7 +433,7 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
   const onPath = new Set(path.map((x) => trySiteKey(urlOf(x))).filter(Boolean));
   if (rows.some((x) => x.kind === "signIn" && !onPath.has(trySiteKey(x.origin) ?? ""))) return {};
   const summary = { created: HISTORY.captured, updated: k !== undefined ? HISTORY.repaired(k) : HISTORY.captured };
-  const save = (entries: TraceRow[]) => savePlaybookFromTrace(rows, entries.map((x) => x.n), undefined, threadId, invoice, trace.merchant, undefined, summary);
+  const save = (entries: TraceRow[]) => savePlaybookFromTrace(rows.map((r) => entries.find((e) => e.n === r.n) ?? r), entries.map((x) => x.n), undefined, threadId, invoice, trace.merchant, undefined, summary);
   // Dead ends are pruned first; if that path cannot be saved, the full one gets one try.
   const pruned = prune(path, invoice);
   let res = save(pruned);
