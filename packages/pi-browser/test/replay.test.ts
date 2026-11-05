@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { DomainRules } from "../src/domains.ts";
 import type { BrowserDriver } from "../src/driver.ts";
 import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay, verifyPage, verifySingleRow } from "../src/replay.ts";
 import { rowTextOf } from "../src/row-match.ts";
@@ -478,4 +479,38 @@ test("a foreign-currency page must look like one invoice, not a list", () => {
   const ok = { ok: true, amount: false, amountVerified: false };
   assert.deepEqual(verifyPage("Invoice date 21 Oct 2026\nPaid 21 Oct 2026\nTotal 200,00 US$", sek), ok);
   assert.deepEqual(verifyPage("Issued 21 Oct 2026\nDue 20 Nov 2026\nTotal 200,00 US$\nAmount due 200,00 US$", sek), ok);
+});
+
+/** A page on `page` with a "Download" button (no href) whose click saves a PDF fetched through `chain`; */
+async function buttonDownload(chain: string[], o: { page?: string; domainRules?: DomainRules } = {}) {
+  let url = o.page ?? "https://ok.test/p";
+  const snap = { lines: [], count: 1, omitted: 0, scroll: { y: 0, height: 0, viewport: 0 }, elements: [{ ref: "e1", role: "button", name: "Download" }] };
+  const driver = {
+    state: async () => ({ url, title: "", loading: false }),
+    navigate: async () => ({ url, title: "", loading: false }),
+    evaluate: async (code: string) => {
+      const c = String(code);
+      if (c.includes("omitted")) return snap;
+      if (c.startsWith("Object.fromEntries")) return {};
+      if (c.includes("prepare") || (c.includes("__pista") && c.includes("click"))) return { x: 1, y: 1, kind: "button", label: 'button "Download"', name: "Download", role: "button" };
+      return "";
+    },
+    input: async () => true,
+    download: async ({ path, trigger }: { path: string; trigger?: () => Promise<unknown> }) => {
+      await trigger?.();
+      writeFileSync(path, "%PDF-1.4");
+      return { bytes: 8, contentType: "application/pdf", urlChain: chain };
+    },
+  } as unknown as BrowserDriver;
+  const dir = mkdtempSync(join(tmpdir(), "dlr-"));
+  return runReplay({ startUrl: "https://ok.test/p", steps: [{ kind: "download", target: { role: "button", name: "Download" } }] }, { driver, allowUrl: site, domainRules: o.domainRules, downloadRoot: dir, downloadPath: "a.pdf" });
+}
+
+test("a clicked download may be fetched from another host after a redirect, within the admin domain rules", async () => {
+  const chain = ["https://ok.test/f", "https://files.example-cdn.test/x.pdf"];
+  assert.equal(reasonOf(await buttonDownload(chain)), "ok");
+  assert.equal(reasonOf(await buttonDownload(chain, { domainRules: { deniedDomains: ["files.example-cdn.test"] } })), "1:blocked");
+  assert.equal(reasonOf(await buttonDownload(["https://ok.test/f", "http://files.example-cdn.test/x.pdf"])), "1:blocked");
+  // A page already off the playbook's hosts is still refused before the click.
+  assert.equal(reasonOf(await buttonDownload(chain, { page: "https://elsewhere.test/p" })), "0:blocked");
 });
