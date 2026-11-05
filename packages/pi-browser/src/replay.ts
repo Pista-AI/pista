@@ -453,7 +453,12 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         let cancelled = false;
         const validate = (file: string, got: { contentType?: string; urlChain?: string[] }) => {
           if (cancelled) throw new Handoff("error", "The download finished after replay gave up on it.");
-          for (const u of got.urlChain ?? []) guardUrl(u, "The download came from");
+          // A click's file may come from a storage host after a redirect (an S3 bucket behind a "Download" button): the click already passed
+          // the page guard, so each hop need only be https and clear the admin domain rules. A fixed address keeps the playbook's hosts.
+          for (const u of got.urlChain ?? []) {
+            if ("url" in source) guardUrl(u, "The download came from");
+            else if (!/^https:\/\//i.test(u) || checkUrl(u, o.domainRules ?? {})) throw new Handoff("blocked", `The download came from ${u.slice(0, BLOCKED_URL_MAX)} is outside this playbook's site or not an http(s) address.`);
+          }
           const reject = (why: string) => {
             throw new Handoff("error", `The downloaded file was not kept: ${why}.`);
           };
