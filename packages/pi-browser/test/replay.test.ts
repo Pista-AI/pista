@@ -10,7 +10,7 @@ import { rowTextOf } from "../src/row-match.ts";
 
 /** The answer without the evidence fields the matcher adds (what was matched on, the rate, the offset), for tests about the verdict. */
 const plain = <T extends object>(r: T): Partial<T> => {
-  const { matchedBy, offsetDays, fxRateUsed, seen, ...rest } = r as Record<string, unknown>;
+  const { matchedBy, offsetDays, fxRateUsed, rowAmount, rowCurrency, fxRateImplied, seen, ...rest } = r as Record<string, unknown>;
   return rest as Partial<T>;
 };
 const pickRow = (...a: Parameters<typeof pickRowFull>) => plain(pickRowFull(...a)) as ReturnType<typeof pickRowFull>;
@@ -20,9 +20,9 @@ const verifySingleRow = (...a: Parameters<typeof verifySingleRowFull>) => plain(
 test("a detail page proves the invoice only with its date and, when the invoice has one, a matching amount", () => {
   const inv = { date: "2026-10-03", amount: 49, currency: "EUR" };
   assert.deepEqual(verifyPage("Invoice date: 3 Oct 2026\nTotal 49.00 EUR", inv), { ok: true, amount: true });
-  const dueOnly = verifyPage("Due date: 5 Oct 2026\nTotal 12.00 EUR", inv);
+  const dueOnly = verifyPage("Due date: 1 Oct 2026\nTotal 12.00 EUR", inv);
   assert.ok(!dueOnly.ok && dueOnly.detail.includes("neither") === false, JSON.stringify(dueOnly)); // date in tolerance, wrong amount
-  const noAmount = verifyPage("Invoice date: 5 Oct 2026\nThank you", inv);
+  const noAmount = verifyPage("Invoice date: 1 Oct 2026\nThank you", inv);
   assert.ok(!noAmount.ok && noAmount.detail === "page shows the date but not the amount", JSON.stringify(noAmount));
   assert.deepEqual(verifyPage("Invoice date: 3 Oct 2026", { date: "2026-10-03" }), { ok: true, amount: false });
   const list = verifyPage("1 Oct 2026 10.00 EUR\n3 Oct 2026 49.00 EUR\n1 Nov 2026 49.00 EUR\n1 Dec 2026 49.00 EUR", inv);
@@ -497,7 +497,7 @@ test("a page showing the amount in another currency is verified through the rate
   const page = "Invoice\nDate of issue 21 oktober 2026\nTotal 200,00 US$\nAmount due 200,00 US$";
   assert.deepEqual(verifyPage(page, sek), { ok: true, amount: true });
   const full = verifyPageFull(page, sek);
-  assert.ok(full.ok && full.matchedBy?.includes("amount-fx") && full.offsetDays === -1 && Math.abs(full.fxRateUsed! - 10) < 0.01);
+  assert.ok(full.ok && full.matchedBy?.includes("amount-fx") && full.offsetDays === 1 && full.rowAmount === 200 && full.rowCurrency === "USD" && Math.abs(full.fxRateImplied! - 10.10775) < 1e-6 && Math.abs(full.fxRateUsed! - 10) < 0.01);
   // Far outside the band the amount does not fit; a currency without a rate is judged by the date and says so.
   assert.equal(verifyPage(page, { date: "2026-10-22", amount: 900, currency: "SEK" }).ok, false);
   assert.deepEqual(verifyPage("Date 21 Oct 2026\nTotal 200,00 PLN", sek), { ok: true, amount: false, amountVerified: false });
