@@ -9,7 +9,7 @@ export { denyToolCall };
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, autoCapture, registerPlaybookNote, registerPlaybookSave } from "./playbook-capture.ts";
-import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, resolvePlaybook, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
+import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookGuardMessage, registerPlaybookRun, resolvePlaybook, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
 import { batchGate, endFirstPass, firstPassEvent, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
 export { hostConsent } from "./playbook-run.ts";
