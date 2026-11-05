@@ -119,3 +119,11 @@ test("a row in another currency matches by date alone and says the amount was no
   assert.deepEqual(matchRows([{ index: 0, text: "21 Oct 2026 \u00b7 99,00 SEK" }], { date: "2026-10-22", amount: 2021.55, currency: "SEK" }), { kind: "none" });
   assert.deepEqual(matchRows([{ index: 0, text: "21 Oct 2026 \u00b7 2021,55 kr" }], { date: "2026-10-22", amount: 2021.55, currency: "SEK" }), { kind: "one", index: 0 });
 });
+
+test("foreign-currency rows stay ambiguous when several could be the one", () => {
+  const sek = { date: "2026-10-22", amount: 2021.55, currency: "SEK" };
+  const two = [{ index: 0, text: "21 Oct 2026 \u00b7 200,00 US$" }, { index: 1, text: "22 Oct 2026 \u00b7 200,00 US$" }];
+  assert.deepEqual(matchRows(two, sek), { kind: "many", candidates: [0, 1] });
+  const mixed = [{ index: 0, text: "21 Oct 2026 \u00b7 200,00 US$" }, { index: 1, text: "22 Oct 2026 Paid" }];
+  assert.deepEqual(matchRows(mixed, sek), { kind: "many", candidates: [0, 1] });
+});

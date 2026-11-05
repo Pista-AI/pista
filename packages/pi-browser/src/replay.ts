@@ -138,6 +138,14 @@ export const PAGE_TEXT_MAX = 20_000;
 /** A page with more distinct dates than this (invoice, due, paid) is a list or a statement, not one invoice. */
 const PAGE_DATES_MAX = 3;
 
+function foreignPageIsOneInvoice(text: string, date: string): boolean {
+  const ds = new Map(parseDates(text).filter((d) => d.d).map((d) => [d.raw, d] as const));
+  if (ds.size !== 1) return false; // two dates cannot be told apart from two invoices on a list
+  const [y, m, d0] = date.slice(0, 10).split("-").map(Number) as [number, number, number];
+  const t = Date.UTC(y, m - 1, d0) / 86400000;
+  return [...ds.values()].every((d) => Math.abs(Date.UTC(d.y, d.m - 1, d.d!) / 86400000 - t) <= 3);
+}
+
 /**
  * Verifies the invoice on a detail page (the download control sits in no row): the page text must show the invoice date and, when the
  * invoice has an amount, that amount (strictly parsed; the date alone is not enough). Same date tolerance as a row. The detail never quotes the page's text.
@@ -150,7 +158,8 @@ export function verifyPage(pageText: string, invoice: NonNullable<ReplayOptions[
   const amountSeen = invoice.amount !== undefined && amountShown(text, invoice.amount, invoice.currency);
   if (dateSeen && (invoice.amount === undefined || amountSeen)) return { ok: true, amount: amountSeen };
   // The page shows amounts only in another currency than the invoice: the date and the invoice-like checks above are all it can prove.
-  if (dateSeen && invoice.amount !== undefined && !amountComparable(text, invoice.currency)) return { ok: true, amount: false, amountVerified: false };
+  // Stricter than the same-currency path, as there is no amount to tell an invoice from a list: one distinct date, within the tolerance.
+  if (dateSeen && invoice.amount !== undefined && !amountComparable(text, invoice.currency) && foreignPageIsOneInvoice(text, invoice.date)) return { ok: true, amount: false, amountVerified: false };
   return { ok: false, detail: dateSeen ? "page shows the date but not the amount" : amountSeen ? `page doesn't show the invoice date ${date}` : `page showed neither the invoice date ${date} nor its amount` };
 }
 
@@ -320,7 +329,8 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
     if (!o.invoice || !(t.row || t.period)) return;
     verified.date = true;
     if (seen.amount) verified.amount = true;
-    else if (seen.foreign) verified.foreignCurrency = true;
+    else if (seen.foreign && !verified.amount) verified.foreignCurrency = true;
+    if (verified.amount) delete verified.foreignCurrency;
   };
 
   const click = async (target: string, what: string) => {
@@ -384,13 +394,15 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
             if (!v.ok) throw new Handoff("ambiguous", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
             verified.date = true;
             if (v.amount) verified.amount = true;
-            else if (v.amountVerified === false) verified.foreignCurrency = true;
+            else if (v.amountVerified === false && !verified.amount) verified.foreignCurrency = true;
+            if (verified.amount) delete verified.foreignCurrency;
           } else if (o.invoice && !step.target.row && !step.target.period) {
             const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
             if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
             verified.date = true;
             if (v.amount) verified.amount = true;
-            else if (v.amountVerified === false) verified.foreignCurrency = true;
+            else if (v.amountVerified === false && !verified.amount) verified.foreignCurrency = true;
+            if (verified.amount) delete verified.foreignCurrency;
           }
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");

@@ -100,14 +100,14 @@ function removeRaws(text: string, raws: string[]): string {
 
 const KNOWN_CUR = new Set<string>((Intl as any).supportedValuesOf?.("currency") ?? ["EUR", "USD", "GBP", "SEK", "NOK", "DKK", "CHF"]);
 const NUM = String.raw`\d{1,3}(?:[   ]\d{3})+(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?`;
-const CUR = String.raw`€|\$|£|\bkr\b|\b[A-Z]{3}\b`;
+const CUR = String.raw`€|US\$|\$|£|\bkr\b|\b[A-Z]{3}\b`;
 const AMOUNT_TEXT = new RegExp(`(?:(${CUR})\\s*)?[-(]?\\s?(?:${NUM})-?\\)?(?:\\s*(${CUR}))?`, "g");
 
 /** Removes amount and currency tokens that parseAmounts accepts; a three-letter word that is not a currency (LLC) stays. */
 function removeAmounts(text: string): string {
   return text.replace(AMOUNT_TEXT, (m, a?: string, b?: string) => {
     if (parseAmounts(m, { strict: true }).length !== 1) return m;
-    const keep = [a, b].filter((c) => c && c.length === 3 && !KNOWN_CUR.has(c));
+    const keep = [a, b].filter((c) => c && /^[A-Z]{3}$/.test(c) && !KNOWN_CUR.has(c));
     return keep.length ? ` ${keep.join(" ")} ` : " ";
   });
 }

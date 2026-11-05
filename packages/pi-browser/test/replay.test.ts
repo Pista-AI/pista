@@ -366,3 +366,11 @@ test("a page showing only another currency is verified by its date, and says the
   assert.equal(verifyPage("Date 21 oktober 2026\nThank you", sek).ok, false);
   assert.deepEqual(verifySingleRow("21 Oct 2026 \u00b7 200,00 US$", sek), { ok: true, amount: false, amountVerified: false });
 });
+
+test("a foreign-currency page must look like one invoice, not a list", () => {
+  const sek = { date: "2026-10-22", amount: 2021.55, currency: "SEK" };
+  assert.equal(verifyPage("21 Oct 2026  200,00 US$\n22 Oct 2026  200,00 US$", sek).ok, false);
+  assert.equal(verifyPage("21 Oct 2026  200,00 US$\n22 Oct 2026  200,00 US$\n23 Oct 2026  200,00 US$", sek).ok, false);
+  assert.equal(verifyPage("Invoice date 21 Oct 2026\nPaid 12 Sep 2026\nTotal 200,00 US$", sek).ok, false);
+  assert.deepEqual(verifyPage("Invoice date 21 Oct 2026\nPaid 21 Oct 2026\nTotal 200,00 US$", sek), { ok: true, amount: false, amountVerified: false });
+});

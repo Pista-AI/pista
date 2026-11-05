@@ -5,7 +5,7 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
+import { FOREIGN_CURRENCY_NOTE, deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
@@ -78,12 +78,10 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
 }
 
 /** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
-const FOREIGN_NOTE = "amount not verified (page shows another currency)";
-
 export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
-    recordSuccess(site, r.verified.foreignCurrency ? FOREIGN_NOTE : undefined);
+    recordSuccess(site, r.verified.foreignCurrency);
     noteShortcut(site, r);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
@@ -318,7 +316,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         const r = await runCore(deps, GATED, { site, invoice, path, overwrite }, signal);
         if (r.status === "downloaded") {
           const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
-          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).${r.foreignCurrency ? ` The ${FOREIGN_NOTE}; only the date matched.` : ""}`, ...(notes ? { notes } : {}) }, null, 2));
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).${r.foreignCurrency ? ` The ${FOREIGN_CURRENCY_NOTE}; only the date matched.` : ""}`, ...(notes ? { notes } : {}) }, null, 2));
         }
         return text(r.text);
       },
