@@ -472,7 +472,7 @@ test("billing facts are learned from a converted match, then the rate and a narr
   assert.equal(seen[0].rateFor, undefined, "nothing learned yet: the built-in table and band");
   assert.equal(seen[0].band, undefined);
   assert.deepEqual(getPlaybook("127.0.0.1")!.billing, { currency: "USD", dayOffset: 2, rate: 10.1, samples: 1 });
-  assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /^replay succeeded; matched by date and converted amount \(to SEK 10\.1\)$/);
+  assert.match(getPlaybook("127.0.0.1")!.history.at(-1)!.summary, /^replay succeeded; matched by date and converted amount \(USD→SEK 10\.1\)$/);
   await t.run({ invoice: inv, overwrite: true });
   assert.equal(seen[1].band, 0.05);
   assert.equal(seen[1].rateFor("USD", "SEK"), 10.1);
