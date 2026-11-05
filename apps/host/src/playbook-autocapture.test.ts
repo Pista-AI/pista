@@ -150,3 +150,15 @@ test("a handoff on the second host is repaired with both hosts", () => {
   assert.deepEqual(pb.hosts.sort(), ["example.com", "shop.test"]);
   assert.ok(pb.history.some((h) => h.summary.startsWith("repaired after handoff at step 3")));
 });
+
+test("a path that crosses sites through a click that opens a tab is captured with both hosts", () => {
+  fresh();
+  deletePlaybook("shop.test");
+  const t = trace([
+    { kind: "navigate", url: "https://shop.test/orders" },
+    { kind: "click", locator: { role: "link", name: "Invoice", text: "Invoice" }, urlAfter: `${B}view`, openedTab: true },
+    dl,
+  ]);
+  assert.match(autoCapture(t, OK, "t").note ?? "", /^Saved a playbook for shop\.test/);
+  assert.deepEqual(getPlaybook("shop.test")!.hosts, ["shop.test", "example.com"]);
+});

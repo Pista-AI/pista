@@ -252,5 +252,6 @@ test("a needs-attention site is skipped with its failures and last reason, and a
 test("a paste whose only matching site needs attention still gets a summary with the skip line", async () => {
   make("eps.test", { merchants: ["EPSILON"], status: "needs-attention", failCount: 3, history: [{ at: "2026-01-01T00:00:00Z", summary: "replay failed: not-found" }] });
   const out = await runFirstPass("2026-01-15 EPSILON LTD 9.00 USD", { playbooks: () => all().filter((p) => p.site === "eps.test"), allow: async () => true, run: async (r) => downloaded(r.site, 1) });
+  assert.deepEqual([out!.ran, out!.skipOnly], [false, true], "the thread's first pass stays unused");
   assert.match(summarise(out!), /skipped: eps\.test needs attention after 3 failures \(last: not-found\)/);
 });
