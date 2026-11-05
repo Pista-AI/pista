@@ -165,10 +165,7 @@ gated(
     const pb = getPlaybook(SITE_A)!;
     assert.deepEqual(pb.hosts, [SITE_A, "vendor-b.test"]);
     assert.equal(pb.steps.find((s) => s.kind === "download")?.verify, "page", JSON.stringify(pb.steps));
-  },
-  // Product defect: runCore (playbook-run.ts) returns "no-playbook" before it sets trace.invoice, so autoCapture finds no invoice in context and stays silent
-  // for a site that has no playbook yet; the host only auto-captures after a playbook_run that had a playbook (a repair).
-  "playbook_run with no playbook never records the invoice on the trace, so the first download is not auto-captured",
+  }
 );
 
 gated("1b. cross-host save with playbook_save, then the next invoice is replayed across both hosts with the page verified", async () => {
@@ -277,11 +274,7 @@ gated(
   async () => {
     const site = "vendor-d.test";
     await handoffThenRepair(site, `${origin("d", "books")}/invoices/chain-list-menu.html`, [site, "vendor-b.test"], brokenSteps({ kind: "click", target: { role: "link", name: "Open invoice", row: { match: ["date", "amount"] } } }), "repair-x");
-  },
-  // Product defect: autoCapture (playbook-capture.ts, the `hosts.includes(hostOf(nav.url))` start-of-replay check) only recognises the replay's start page when it is on
-  // the download's host or the host before it, so a replay that hopped to another site in step 1 is not found and the model's download ends with
-  // "Not captured automatically: no page opened by address on this site is in the recorded trace".
-  "after a handoff on the second host of a cross-host playbook the host cannot find the replay's start page, so it does not repair the playbook",
+  }
 );
 
 // The sign of a pasted amount is only clear from a list of lines, so each paste has three.
@@ -318,7 +311,5 @@ gated(
   async () => {
     const { seen } = await run([], PASTE_ONLY_SKIPPED);
     assert.match(seen[0]!, new RegExp(`skipped: ${SITE_E} needs attention after 3 failures \\(last: not-found`), seen[0]!);
-  },
-  // Product defect: runFirstPass (first-pass.ts) returns undefined when no line is routed, so the skipped reasons from routeLines never reach the model unless another line ran.
-  "with no routed line the first pass says nothing, so the model is not told why the site was skipped",
+  }
 );
