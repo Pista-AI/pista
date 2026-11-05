@@ -158,3 +158,70 @@ test("a path that crosses sites through a click that opens a tab is captured wit
   assert.match(autoCapture(t, OK, "t").note ?? "", /^Saved a playbook for shop\.test/);
   assert.deepEqual(getPlaybook("shop.test")!.hosts, ["shop.test", "example.com"]);
 });
+
+test("a repair that re-clicks the replayed period link keeps three steps, not five", () => {
+  fresh();
+  const S = "https://chatgpt.com/settings/billing";
+  const period = { names: ["September 2026", "October 2026", null], clickedIndex: 1 };
+  const loc = { role: "link", name: "October 2026", text: "October 2026" };
+  const t = trace([
+    { kind: "navigate", url: S },
+    { kind: "replayed", index: 0, step: { kind: "click", target: { role: "button", name: "Fakturering" } } },
+    { kind: "replayed", index: 1, step: { kind: "click", target: { role: "link", period: true } } },
+    { kind: "click", locator: loc, urlAfter: S, periodContext: period },
+    { kind: "click", locator: loc, urlAfter: "https://invoice.stripe.com/i/abc", periodContext: period },
+    { kind: "download", source: "ref", locator: { role: "button", name: "Ladda ner faktura" }, contentType: "application/pdf", path: "invoices/a.pdf", url: "https://invoice.stripe.com/i/abc" },
+  ]);
+  const r = autoCapture(t, OK, "t");
+  assert.match(r.note ?? "", /^Saved a playbook for chatgpt\.com \(3 steps/);
+  const pb = getPlaybook("chatgpt.com")!;
+  assert.deepEqual(pb.steps.map((s) => (s.kind === "click" ? (s.target.period ? "period" : s.target.name) : s.kind)), ["Fakturering", "period", "download"]);
+  deletePlaybook("chatgpt.com");
+});
+
+test("a menu click followed by a different click on the same page keeps both", () => {
+  fresh();
+  const menu = { kind: "click" as const, locator: { role: "button", name: "Menu", text: "Menu" }, urlAfter: B };
+  const r = autoCapture(trace([{ kind: "navigate", url: B }, menu, click, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+});
+
+test("two period clicks that each changed the page (year, then month) stay two steps", () => {
+  fresh();
+  const period = { names: ["September 2026", "October 2026", null], clickedIndex: 1 };
+  const yr = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: `${B}y`, periodContext: period };
+  const mo = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: `${B}m`, periodContext: period };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}start` }, yr, mo, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+  assert.deepEqual(getPlaybook("example.com")!.steps.map((s) => s.kind === "click" && s.target.period), [true, true, false]);
+});
+
+test("a year click then a month click with no address change stay two steps", () => {
+  fresh();
+  const yr = { kind: "click" as const, locator: { role: "link", name: "Oct 2026" }, urlAfter: `${B}s`, periodContext: { names: ["Oct 2026", "Sep 2026", null], clickedIndex: 0 } };
+  const mo = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: `${B}s`, periodContext: { names: ["September 2026", "October 2026", null], clickedIndex: 1 } };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, yr, mo, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+});
+
+test("a click that only differs by address fragment is a no-op and folds into the next identical click", () => {
+  fresh();
+  const a = { kind: "click" as const, locator: { role: "link", name: "Invoices" }, urlAfter: `${B}s#top` };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, a, { ...a, urlAfter: `${B}invoices` }, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(2 steps/);
+});
+
+test("a tab click after an address-less replayed prefix is not treated as a dead end", () => {
+  fresh();
+  const tab = { kind: "click" as const, locator: { role: "tab", name: "Billing" }, urlAfter: `${B}s` };
+  const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, { kind: "replayed", index: 0, step: { kind: "click", target: { role: "button", name: "Menu" } } }, tab, dl]), OK, "t");
+  assert.match(r.note ?? "", /\(3 steps/);
+});
+
+test("a replayed year, a no-op month click and an effective month click with no address change keep all three", () => {
+  fresh();
+  const S = `${B}s`;
+  const month = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: S, periodContext: { names: ["September 2026", "October 2026", null], clickedIndex: 1 } };
+  const t = trace([{ kind: "navigate", url: S }, { kind: "replayed", index: 0, step: { kind: "click", target: { role: "link", period: true } } }, month, month, dl]);
+  assert.match(autoCapture(t, OK, "t").note ?? "", /\(3 steps/);
+});
