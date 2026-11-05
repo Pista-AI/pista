@@ -334,7 +334,8 @@ function clickKey(r: TraceRow | undefined): string | undefined {
 /**
  * Takes dead ends out of a captured path: clicks between a page and the click that came back to it, and clicks on a different row of a list than the one the invoice names.
  * A click that changed nothing is folded into the next click when both are the same click, and a replayed step is folded into the model's immediately following click
- * when both are the same click. Everything else stays (a menu click changes no address; a year and then a month are two clicks). Sign-ins and the download are never dropped.
+ * when both are the same click. The one other drop of a replayed step: a replayed period step, a no-op re-click of a period link of the same role, then a period click that moved the page
+ * to another address than the one before the replayed step (the replay's click had no effect, the model redid it); without that move (a client-side year, then month picker) all three stay. Everything else stays (a menu click changes no address; a year and then a month are two clicks). Sign-ins and the download are never dropped.
  */
 function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
   const kept: TraceRow[] = [];
@@ -346,12 +347,13 @@ function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
       kept.pop();
       // A period step the replay ran that changed nothing, then a no-op re-click, then the click that worked: one action.
       const before = kept[kept.length - 1];
-      if (noop && x.kind === "click" && x.periodContext && before?.kind === "replayed" && before.step.kind === "click" && before.step.target.period) kept.pop();
+      const pageBefore = kept.slice(0, -1).reverse().map(urlOf).find(Boolean);
+      if (noop && x.kind === "click" && x.periodContext && before?.kind === "replayed" && before.step.kind === "click" && before.step.target.period && before.step.target.role === x.locator.role && pageOf(x.urlAfter) !== pageOf(pageBefore)) kept.pop();
       kept.push(x);
       continue;
     }
     if (x.kind === "click") {
-      const at = kept.findIndex((e) => urlOf(e) === x.urlAfter);
+      const at = kept.findIndex((e) => pageOf(urlOf(e)) === pageOf(x.urlAfter));
       const between = kept.slice(at + 1);
       // A loop needs a step away first: some row in between has another address. Clicks that never left the page (a menu, a tab, year then month) are not a loop.
       const cameBack = between.some((e) => { const u = urlOf(e); return u && pageOf(u) !== pageOf(x.urlAfter); });

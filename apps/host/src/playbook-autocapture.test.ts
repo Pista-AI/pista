@@ -217,3 +217,11 @@ test("a tab click after an address-less replayed prefix is not treated as a dead
   const r = autoCapture(trace([{ kind: "navigate", url: `${B}s` }, { kind: "replayed", index: 0, step: { kind: "click", target: { role: "button", name: "Menu" } } }, tab, dl]), OK, "t");
   assert.match(r.note ?? "", /\(3 steps/);
 });
+
+test("a replayed year, a no-op month click and an effective month click with no address change keep all three", () => {
+  fresh();
+  const S = `${B}s`;
+  const month = { kind: "click" as const, locator: { role: "link", name: "October 2026" }, urlAfter: S, periodContext: { names: ["September 2026", "October 2026", null], clickedIndex: 1 } };
+  const t = trace([{ kind: "navigate", url: S }, { kind: "replayed", index: 0, step: { kind: "click", target: { role: "link", period: true } } }, month, month, dl]);
+  assert.match(autoCapture(t, OK, "t").note ?? "", /\(3 steps/);
+});
