@@ -16,6 +16,7 @@ export {
   type CollapseResult,
   type CollapseState,
 } from "./collapse.ts";
+export { docKey } from "./collapse.ts";
 export { findBrowser, type BrowserKind, type FoundBrowser, type FindEnv } from "./chrome/find.ts";
 export { launchBrowser, ProfileInUseError, pistaChromeProfileDir, type LaunchedBrowser, type LaunchDeps } from "./chrome/launch.ts";
 export { PipeTransport, type CdpTransport, type CdpEvent } from "./chrome/pipe.ts";

@@ -88,7 +88,7 @@ class Handoff extends Error {
 
 const norm = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
-export type Resolution = { target: string } | { reason: "not-found" | "ambiguous" | "row-not-found" | "row-ambiguous"; detail: string };
+export type Resolution = { target: string } | { reason: "not-found" | "ambiguous" | "row-not-found" | "row-ambiguous"; detail: string; /** nothing to choose from yet (no period labels), so the page may still be building */ empty?: true };
 type Candidate = { ref: string; role: string; name: string; href?: string };
 
 const tiersOf = (l: ReplayLocator): ((e: Candidate) => boolean)[] => {
@@ -266,7 +266,7 @@ async function locate(d: BrowserDriver, target: ReplayLocator, fallbacks: readon
     const labels = snap.elements.filter((e) => e.role === target.role && isPeriodLabel(e.name));
     const m = matchPeriod(labels.map((e, index) => ({ index, text: e.name })), invoice);
     if (m.kind === "one") return { target: labels[m.index]!.ref };
-    return m.kind === "none" ? { reason: "row-not-found", detail: `No ${target.role} of ${labels.length} period labels covers ${describeInvoice(invoice)}.` } : { reason: "row-ambiguous", detail: `${m.candidates.length} period labels cover ${describeInvoice(invoice)}.` };
+    return m.kind === "none" ? { reason: "row-not-found", detail: `No ${target.role} of ${labels.length} period labels covers ${describeInvoice(invoice)}.`, ...(labels.length ? {} : { empty: true as const }) } : { reason: "row-ambiguous", detail: `${m.candidates.length} period labels cover ${describeInvoice(invoice)}.` };
   }
   if (target.row) {
     if (!invoice) throw new Handoff("needs-invoice", "This step picks a row by the invoice, and the job gave no invoice date.");
@@ -334,26 +334,30 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   const stillOnSite = async () => guardUrl((await d.state()).url, "The page moved to");
   let saved: { path: string; bytes: number; contentType?: string } | undefined;
   const verified: { date: boolean; amount: boolean; foreignCurrency?: true } = { date: false, amount: false };
+  /** Records that the date was compared, and whether the amount was or only another currency was seen. */
+  const noteAmount = (amount: boolean | undefined, foreign: boolean | undefined) => {
+    verified.date = true;
+    if (amount) verified.amount = true;
+    else if (foreign && !verified.amount) verified.foreignCurrency = true;
+    if (verified.amount) delete verified.foreignCurrency;
+  };
   /** Notes what a located step's row or period rule compared against the invoice. */
   const noteRule = (t: ReplayLocator, seen: { amount: boolean; foreign?: boolean }) => {
     if (!o.invoice || !(t.row || t.period)) return;
-    verified.date = true;
-    if (seen.amount) verified.amount = true;
-    else if (seen.foreign && !verified.amount) verified.foreignCurrency = true;
-    if (verified.amount) delete verified.foreignCurrency;
+    noteAmount(seen.amount, seen.foreign);
   };
 
   const click = async (target: string, what: string) => {
-    const r = await runPageAction(d, { action: "click", target }, riskApprove);
+    const r = await runPageAction(d, { action: "click", target }, riskApprove, o.signal);
     if (r.note) throw new Handoff(o.signal?.aborted ? "aborted" : /^Stopped/.test(r.note) ? "declined" : "error", `${what}: ${r.note}`);
     return r;
   };
-  /** Like `locate`, but a `not-found` is retried on a fresh snapshot for a few seconds: the page may still be building. */
-  const locateWaiting = async (target: ReplayLocator, fallbacks?: readonly ReplayLocator[], seen?: { amount: boolean }) => {
+  /** Like `locate`, but a `not-found` (or a period step with no labels yet) is retried on a fresh snapshot for a few seconds: the page may still be building. */
+  const locateWaiting = async (target: ReplayLocator, fallbacks?: readonly ReplayLocator[], seen?: { amount: boolean; foreign?: boolean }) => {
     const start = now();
     for (;;) {
       const r = await locate(d, target, fallbacks, o.invoice, seen);
-      if ("target" in r || r.reason !== "not-found" || o.signal?.aborted || now() - start >= LOCATE_WAIT_MS) return r;
+      if ("target" in r || !(r.reason === "not-found" || (r.reason === "row-not-found" && r.empty)) || o.signal?.aborted || now() - start >= LOCATE_WAIT_MS) return r;
       await within(sleep(o.pollMs ?? LOCATE_POLL_MS), (o.pollMs ?? LOCATE_POLL_MS) + 1000, o.signal, () => undefined);
     }
   };
@@ -435,17 +439,11 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
             // A detail page: the invoice's date and amount are on the page itself, not in a row.
             const v = verifyPage(String(await d.evaluate("document.body ? document.body.innerText : ''").catch(() => "")).slice(0, PAGE_TEXT_MAX), o.invoice);
             if (!v.ok) throw new Handoff("ambiguous", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
-            verified.date = true;
-            if (v.amount) verified.amount = true;
-            else if (v.amountVerified === false && !verified.amount) verified.foreignCurrency = true;
-            if (verified.amount) delete verified.foreignCurrency;
+            noteAmount(v.amount, v.amountVerified === false);
           } else if (o.invoice && !step.target.row && !step.target.period) {
             const v = verifySingleRow(await loneRowText(d, r.target), o.invoice);
             if (!v.ok) throw new Handoff("row-not-verified", `The ${step.target.name ? `'${step.target.name.slice(0, 60)}' ` : ""}${step.target.role ?? "element"}'s ${v.detail}.`);
-            verified.date = true;
-            if (v.amount) verified.amount = true;
-            else if (v.amountVerified === false && !verified.amount) verified.foreignCurrency = true;
-            if (verified.amount) delete verified.foreignCurrency;
+            noteAmount(v.amount, v.amountVerified === false);
           }
           source = await refDownloadSource(d, r.target, riskApprove);
         } else throw new Handoff("error", "The download step has neither a url nor a target.");

@@ -62,7 +62,7 @@ export type Approve = (action: string) => Promise<boolean | "aborted">;
 const LATE_TAB_WAIT_MS = 1500;
 const LATE_TAB_POLL_MS = 150;
 
-export async function runPageAction(driver: BrowserDriver, req: PageAction, approve: Approve = async () => false): Promise<ActionResult> {
+export async function runPageAction(driver: BrowserDriver, req: PageAction, approve: Approve = async () => false, signal?: AbortSignal): Promise<ActionResult> {
   driver.setActivity?.(describe(req));
   const delta = deltaEnabled();
   /** `fromAction`: the result of an acting tool, which may be a delta (on unless PI_BROWSER_DELTA=0); browser_snapshot always gets the full list. */
@@ -154,7 +154,7 @@ export async function runPageAction(driver: BrowserDriver, req: PageAction, appr
       let fresh = await newTabs().catch(() => []);
       // A window.open() from a timer or a fetch lands after the settle. A click that changed nothing else gets a longer look before it counts as having opened no tab.
       if (!fresh.length && quiet !== undefined && (await pageFingerprint()) === quiet) {
-        for (let waited = 0; !fresh.length && waited < LATE_TAB_WAIT_MS; waited += LATE_TAB_POLL_MS) {
+        for (let waited = 0; !fresh.length && !signal?.aborted && waited < LATE_TAB_WAIT_MS; waited += LATE_TAB_POLL_MS) {
           await new Promise((r) => setTimeout(r, LATE_TAB_POLL_MS));
           fresh = await newTabs().catch(() => []);
         }

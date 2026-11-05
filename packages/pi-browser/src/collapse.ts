@@ -100,7 +100,8 @@ interface History {
 }
 
 const textOf = (m: ToolResultLike) => m.content.filter((p) => p.type === "text").map((p) => p.text ?? "");
-const docKey = (url: string) => url.split("#")[0]!;
+/** An address without its fragment (a `#` change is not a new page). */
+export const docKey = (url: string) => url.split("#")[0]!;
 const isDeltaBody = (body: string) => body.startsWith("Page changed (delta") || body.startsWith("No interactive elements or visible text changed");
 
 function parseMeta(first: string | undefined): { url: string; title: string } {

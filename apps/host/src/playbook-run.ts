@@ -233,7 +233,7 @@ export function hostConsent(o: {
 const GATED = Symbol("gated");
 
 export type PlaybookRunResult =
-  | { status: "downloaded"; /** set when the playbook was picked by keyword */ note?: string; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** keywords this run confirmed */ learned?: string[] }
+  | { status: "downloaded"; /** set when the playbook was picked by keyword */ note?: string; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** keywords this run confirmed */ learned?: string[]; /** things the replay did that a person should know about */ notes?: string[] }
   | { status: "handoff"; site: string; reason: ReplayReason; text: string; /** the step that failed, and what the page said and was at (website data) */ step?: string; detail?: string; url?: string }
   | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
 
@@ -277,7 +277,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
   if (consent !== GATED) {
     const declined = (text: string): PlaybookRunResult => {
       deps.attempted.add(pb.site); // as the gate's declined event does: a refusal does not keep the site shut
-      return { status: "declined", text };
+      return { status: "declined", text: lead(text) };
     };
     const refused = consent.policy();
     if (refused) return declined(refused);
@@ -285,10 +285,10 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     const { decision } = playbookConsent(consent.approvalMode(), consent.confirmSignIns(), hasSignIn);
     if (decision === "refuse") return declined(`Read-only mode: not running the playbook for ${pb.site}.`);
     if (decision === "ask") {
-      if (signal?.aborted) return { status: "aborted", text: `Stopped before the playbook for ${pb.site} ran.` };
+      if (signal?.aborted) return { status: "aborted", text: lead(`Stopped before the playbook for ${pb.site} ran.`) };
       const aborted = new Promise<"aborted">((resolve) => signal?.addEventListener("abort", () => resolve("aborted"), { once: true }));
       const answer = await Promise.race([consent.approve({ site: pb.site, stepCount: pb.steps.length, hasSignIn }, signal), aborted]);
-      if (answer === "aborted") return { status: "aborted", text: `Stopped while waiting for approval of the playbook for ${pb.site}.` };
+      if (answer === "aborted") return { status: "aborted", text: lead(`Stopped while waiting for approval of the playbook for ${pb.site}.`) };
       if (!answer) return declined(`The user declined the playbook for ${pb.site}. Don't do it by hand; ask the user how to proceed.`);
     }
   }
@@ -319,7 +319,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     if (r.ok) learned = noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount && !req.deferProof });
     else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
   }
-  if (r.ok) return { status: "downloaded", ...(note ? { note } : {}), site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(learned.length ? { learned } : {}) };
+  if (r.ok) return { status: "downloaded", ...(note ? { note } : {}), site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(learned.length ? { learned } : {}), ...(r.notes?.length ? { notes: r.notes } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
   return { status: "handoff", site: pb.site, reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: lead(formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history)) };
@@ -345,7 +345,7 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         const r = await runCore(deps, GATED, { site, merchant, invoice, path, overwrite }, signal);
         if (r.status === "downloaded") {
           const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
-          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${r.note ? r.note + " " : ""}Followed the saved playbook for ${r.site} (${r.steps} steps).${r.foreignCurrency ? ` The ${FOREIGN_CURRENCY_NOTE}; only the date matched.` : ""}`, ...(notes ? { notes } : {}) }, null, 2));
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${r.note ? r.note + " " : ""}Followed the saved playbook for ${r.site} (${r.steps} steps).${r.foreignCurrency ? ` ${FOREIGN_CURRENCY_NOTE}` : ""}`, ...(notes ? { notes } : {}), ...(r.notes?.length ? { replayNotes: r.notes } : {}) }, null, 2));
         }
         return text(r.text);
       },
