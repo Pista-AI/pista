@@ -31,7 +31,7 @@ export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean }; shortcut?: ReplayShortcutOutcome }
+  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean }; /** Things the run did that a person should know about (for example a repeated click that left several tabs open). */ notes?: string[]; shortcut?: ReplayShortcutOutcome }
   | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
 /** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
@@ -335,14 +335,15 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
       await within(sleep(o.pollMs ?? LOCATE_POLL_MS), (o.pollMs ?? LOCATE_POLL_MS) + 1000, o.signal, () => undefined);
     }
   };
-  /** Switches to a tab that was not open in `known`; true when there was one. */
+  /** Switches to the newest tab that was not open in `known`; returns how many new tabs there were. */
   const adoptNewTab = async (known: Set<string>) => {
     const fresh = ((await d.tabs?.().catch(() => undefined)) ?? []).filter((t) => !known.has(t.id));
-    if (!fresh.length || !d.switchTab) return false;
-    await d.switchTab(fresh[0]!.id);
+    if (!fresh.length || !d.switchTab) return 0;
+    await d.switchTab(fresh.at(-1)!.id);
     await settle(d);
-    return true;
+    return fresh.length;
   };
+  const notes: string[] = [];
   const run = async (step: ReplayStep, index: number) => {
     if (o.signal?.aborted) throw new Handoff("aborted", "The run was stopped.");
     if (step.kind !== "navigate" && step.kind !== "wait" && o.approve && !(await o.approve(step, index))) throw new Handoff("declined", "The user declined this step.");
@@ -366,7 +367,11 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
         // The click should have opened a tab (the capture saw one). A tab can show up late, so look again before clicking a second time.
         for (let attempt = 0; step.opensTab && d.tabs && !res.openedTab; attempt++) {
           await within(sleep(NEW_TAB_WAIT_MS), NEW_TAB_WAIT_MS + 1000, o.signal, () => undefined);
-          if (await adoptNewTab(known)) break;
+          const adopted = await adoptNewTab(known);
+          if (adopted) {
+            if (adopted > 1) notes.push(`step ${index}: repeating the click left ${adopted} new tabs open; the newest one was used.`);
+            break;
+          }
           if (attempt === 1) throw new Handoff("expectation-timeout", `expected a new tab after clicking ${describeLocator(step.target)}; none opened`);
           res = await click(r.target, "click");
         }
@@ -513,5 +518,5 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   }
   if (failure) return { ...failure, ...(shortcut ? { shortcut } : {}) };
   if (!saved) return { ok: false, failedIndex: steps.length - 1, step: steps[steps.length - 1]!, reason: "error", detail: "The playbook has no download step.", url: "", snapshot: "", ...(shortcut ? { shortcut } : {}) };
-  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), verified, ...(shortcut ? { shortcut } : {}) };
+  return { ok: true, download: saved, steps: playbook.steps.length, urls: Array.from({ length: steps.length }, (_, i) => urls[i] ?? ""), verified, ...(notes.length ? { notes } : {}), ...(shortcut ? { shortcut } : {}) };
 }

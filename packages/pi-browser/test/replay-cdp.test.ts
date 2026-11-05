@@ -240,11 +240,24 @@ const openTabs = async () => new Set(((await (await fetch(`${CDP}/json/list`)).j
 test("a click that opens a tab whose download button appears late is followed and the download completes", { skip }, async () => {
   const before = await openTabs();
   const r = await runReplay(
-    { startUrl: `${base}late-opener.html`, steps: [{ kind: "click", target: { role: "link", name: "Open invoice" }, opensTab: true }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }] },
+    { startUrl: `${base}late-window-open.html`, steps: [{ kind: "click", target: { role: "link", name: "Open invoice" }, opensTab: true }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }] },
     options("invoices/late.pdf"),
   );
   assert.ok(r.ok, JSON.stringify(r));
   assert.ok(readFileSync(join(dir, "invoices/late.pdf"), "latin1").startsWith("%PDF"));
+  await closeExtraTabs(before);
+});
+
+test("a click whose window.open fires from a timer is still reported as an opened tab, and the driver is on it", { skip }, async () => {
+  const before = await openTabs();
+  const opened = await driver!.navigate(`${base}late-window-open.html`);
+  assert.ok(!opened.note);
+  const { runPageAction } = await import("../src/actions.ts");
+  const snap = String((await runPageAction(driver!, { action: "snapshot" })).text);
+  const ref = /\[(e\d+)\] link "Open invoice"/.exec(snap)![1]!;
+  const r = await runPageAction(driver!, { action: "click", target: ref });
+  assert.equal(r.openedTab, true, JSON.stringify(r));
+  assert.ok((await driver!.state()).url.endsWith("/late-detail.html"));
   await closeExtraTabs(before);
 });
 
