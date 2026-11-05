@@ -379,3 +379,47 @@ test("a routed run confirms a pending keyword only when the replay verified the 
   await miss.run({ merchant }); // the same transaction retried
   assert.deepEqual(getPlaybook("127.0.0.1")!.merchantMisses, { "ACME ROBOTICS": 1 });
 });
+
+function saveSite(site: string, merchants?: string[]): void {
+  savePlaybook(validatePlaybook({ startUrl: `https://${site}/billing`, steps: [{ kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }], ...(merchants ? { merchants } : {}) }, site));
+}
+
+test("a site with no playbook resolves by the merchant keyword and the result names both", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  const d = direct("full-access");
+  const r = await d.run({ site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC" });
+  assert.equal(r.status, "handoff");
+  assert.equal(r.text.split("\n")[0], "Using the playbook for chatgpt.com (keyword OPENAI matches the merchant text).");
+  assert.deepEqual([d.replays(), [...d.attempted]], [1, ["chatgpt.com"]]);
+});
+
+test("without merchant text the site's brand word picks the playbook", async () => {
+  const d = direct("full-access");
+  const r = await d.run({ site: "openai.com" });
+  assert.equal(r.status, "handoff");
+  assert.equal(r.text.split("\n")[0], "Using the playbook for chatgpt.com (keyword OPENAI matches openai.com).");
+});
+
+test("consent is asked for the resolved site", async () => {
+  const d = direct("ask-writes");
+  await d.run({ site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC" });
+  assert.deepEqual(d.asked, [{ site: "chatgpt.com", stepCount: 1, hasSignIn: false }]);
+});
+
+test("two playbooks sharing a keyword list the saved sites and do not replay", async () => {
+  saveSite("openai-billing.com", ["OPENAI"]);
+  const d = direct("full-access");
+  const r = await d.run({ site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC" });
+  assert.equal(r.status, "no-playbook");
+  assert.match(r.text, /^No playbook is saved for openai\.com\. Saved sites: .*chatgpt\.com \(OPENAI\).*openai-billing\.com \(OPENAI\)/);
+  assert.equal(d.replays(), 0);
+});
+
+test("an unknown site with no keyword lists the saved sites", async () => {
+  const d = direct("full-access");
+  const r = await d.run({ site: "unknown-shop.com" });
+  assert.equal(r.status, "no-playbook");
+  assert.match(r.text, /^No playbook is saved for unknown-shop\.com\. Saved sites: .*chatgpt\.com \(OPENAI\)/);
+  assert.match(r.text, /captured automatically after the download/);
+  assert.equal(d.replays(), 0);
+});

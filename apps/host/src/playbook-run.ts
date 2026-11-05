@@ -5,8 +5,9 @@ import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type 
 import { Type } from "typebox";
 import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { deriveShortcut, getPlaybook, LABEL_MAX, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, LABEL_MAX, listPlaybooks, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
+import { matchVendor } from "./transactions.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
 
 /** Event-bus channel on which the approval gate reports a declined playbook_run (data: the site). */
@@ -16,6 +17,31 @@ export const PLAYBOOK_DECLINED = "pista:playbook-declined";
 export function playbookFor(site: unknown): Playbook | null {
   const key = siteOf(site);
   return key ? getPlaybook(key) : null;
+}
+
+/**
+ * The playbook a playbook_run call means: the one for `site`, else the single saved playbook whose confirmed keyword matches the merchant text
+ * (the site's brand word when none was given). `note` says so when the match was by keyword; `listing` is the reply when nothing resolved.
+ */
+export function resolvePlaybook(site: unknown, merchant?: string): { pb: Playbook | null; note?: string; listing?: string } {
+  const key = siteOf(site);
+  const direct = key ? getPlaybook(key) : null;
+  if (direct) return { pb: direct };
+  const metas = listPlaybooks();
+  const brand = key?.split(".")[0];
+  const text = merchant?.trim() || brand;
+  const m = text ? matchVendor(text, metas) : { kind: "none" as const };
+  if (m.kind === "one") {
+    const pb = getPlaybook(m.site);
+    if (pb) {
+      const kw = pb.merchants?.find((k) => matchVendor(text!, [{ site: pb.site, merchants: [k] }]).kind === "one");
+      return { pb, note: `Using the playbook for ${pb.site} (keyword ${kw ?? "match"} matches ${merchant?.trim() ? "the merchant text" : key}).` };
+    }
+  }
+  const name = String(site).slice(0, 100);
+  if (!metas.length) return { pb: null, listing: `No playbook is saved for ${name}. Find the invoice with the browser tools, then call playbook_save.` };
+  const saved = metas.map((x) => (x.merchants?.length ? `${x.site} (${x.merchants.join(", ")})` : x.site)).join(", ");
+  return { pb: null, listing: `No playbook is saved for ${name}. Saved sites: ${saved}. Find the invoice with the browser tools; it will be captured automatically after the download.` };
 }
 
 /**
@@ -231,14 +257,15 @@ export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRu
 }
 
 async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
-  const pb = playbookFor(req.site);
+  const { pb, note, listing } = resolvePlaybook(req.site, req.merchant);
   // Even with no playbook (or no path yet) the invoice is in context, so the host can capture the path the model finds.
   try {
     deps.trace.invoice = checkInvoice(req.invoice);
     deps.trace.merchant = req.merchant;
   } catch {}
-  if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
-  if (!pb.steps.length) return { status: "no-playbook", text: [`No saved path for ${pb.site} yet. Find the invoice with the browser tools, then call playbook_save.`, notesBlock(pb)].filter(Boolean).join("\n\n") };
+  if (!pb) return { status: "no-playbook", text: listing ?? "" };
+  const lead = (t: string) => (note ? `${note}\n${t}` : t);
+  if (!pb.steps.length) return { status: "no-playbook", text: lead([`No saved path for ${pb.site} yet. Find the invoice with the browser tools, then call playbook_save.`, notesBlock(pb)].filter(Boolean).join("\n\n")) };
   const invoice = checkInvoice(req.invoice);
   const root = deps.downloadRoot();
   if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
@@ -294,7 +321,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
   if (r.ok) return { status: "downloaded", site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(learned.length ? { learned } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
-  return { status: "handoff", site: pb.site, reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history) };
+  return { status: "handoff", site: pb.site, reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: lead(formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history)) };
 }
 
 export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): void {
@@ -303,20 +330,21 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
       name: "playbook_run",
       label: "Playbook: run",
       description:
-        "Follow the saved playbook for a website to download one invoice, without exploring. Give `site` (its address or domain) and `invoice` (the transaction's date as yyyy-mm-dd, and its amount and currency when known). Optionally `path` (relative to the project folder, as for browser_download) and `overwrite`. Returns the saved file, or, when a step fails, which step failed and the current page so you can continue from there. One call per invoice.",
+        "Follow the saved playbook for a website to download one invoice, without exploring. Give `site` (its address or domain) if known, and `merchant` (the merchant text from the transaction) so the host can pick the playbook by keyword when the site has none. Give `invoice` (the transaction's date as yyyy-mm-dd, and its amount and currency when known). Optionally `path` (relative to the project folder, as for browser_download) and `overwrite`. Returns the saved file, or, when a step fails, which step failed and the current page so you can continue from there. One call per invoice.",
       promptSnippet: "playbook_run: follow a site's saved playbook to download one invoice",
       parameters: Type.Object({
         site: Type.String({ description: "The vendor's address or domain" }),
+        merchant: Type.Optional(Type.String({ description: "The merchant text from the transaction, e.g. 'OPENAI *CHATGPT SUBSC'" })),
         invoice: Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }),
         path: Type.Optional(Type.String({ description: "Where to save it, relative to the project folder" })),
         overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
       }),
-      execute: async (_id, { site, invoice, path, overwrite }, signal) => {
+      execute: async (_id, { site, merchant, invoice, path, overwrite }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const r = await runCore(deps, GATED, { site, invoice, path, overwrite }, signal);
+        const r = await runCore(deps, GATED, { site, merchant, invoice, path, overwrite }, signal);
         if (r.status === "downloaded") {
           const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
-          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `Followed the saved playbook for ${r.site} (${r.steps} steps).`, ...(notes ? { notes } : {}) }, null, 2));
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${resolvePlaybook(site, merchant).note ? resolvePlaybook(site, merchant).note + " " : ""}Followed the saved playbook for ${r.site} (${r.steps} steps).`, ...(notes ? { notes } : {}) }, null, 2));
         }
         return text(r.text);
       },
