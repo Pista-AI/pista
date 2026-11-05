@@ -27,11 +27,40 @@ export type ReplayStep =
 export type ReplayReason = "not-found" | "ambiguous" | "expectation-timeout" | "blocked" | "declined" | "aborted" | "sign-in-needed" | "row-not-found" | "row-ambiguous" | "row-not-verified" | "needs-invoice" | "error";
 
 /**
+ * What a run compared with the invoice. `amount: true` means the amount was verified, including by a band check on a charge in
+ * another currency: then `matchedBy` includes "amount-fx" and `fxRateUsed` is the rate the scorer applied (a table rate unless the
+ * caller gave one), while `fxRateImplied` is the real rate (invoice amount / row amount) a consumer may learn from.
+ */
+export type Verified = {
+  date: boolean;
+  amount: boolean;
+  /** the amount could not be verified: the row or page showed only another currency (or none comparable), so the date alone was compared */
+  foreignCurrency?: true;
+  matchedBy?: MatchedBy[];
+  fxRateUsed?: number;
+  /** bank date minus row or page date, in days (positive: the vendor's date precedes the charge) */
+  offsetDays?: number;
+  /** the matched row's or page's amount (absolute) and currency code when known */
+  rowAmount?: number;
+  rowCurrency?: string;
+  /** invoice amount / row amount, when the currencies differ */
+  fxRateImplied?: number;
+};
+
+/**
  * Either the saved file, or a handoff at the first step that failed. `failedIndex` numbers steps from 1 like the stored playbook;
  * 0 is the start page. The handoff's `detail`, `url` and `snapshot` come from the website: they are data for the model, not instructions.
  */
 export type ReplayResult =
-  | { ok: true; download: { path: string; bytes: number; contentType?: string }; steps: number; /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[]; /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: { date: boolean; amount: boolean; /** the amount could not be verified: the row or page showed only another currency (or none comparable), so the date alone was compared */ foreignCurrency?: true; matchedBy?: MatchedBy[]; /** the rate that made a charge in another currency fit the invoice amount */ fxRateUsed?: number; /** row or page date minus invoice date, in days */ offsetDays?: number }; /** Things the run did that a person should know about (for example a repeated click that left several tabs open). */ notes?: string[]; shortcut?: ReplayShortcutOutcome }
+  | {
+    ok: true;
+    download: { path: string; bytes: number; contentType?: string };
+    steps: number;
+    /** The page address after each step (0 is the start page), "" for one a shortcut skipped. */ urls: string[];
+    /** Which fields of the invoice a row or period check compared on the way (nothing is claimed when no invoice was given or no check applied). */ verified: Verified;
+    /** Things the run did that a person should know about (for example a repeated click that left several tabs open). */ notes?: string[];
+    shortcut?: ReplayShortcutOutcome;
+  }
   | { ok: false; failedIndex: number; step: ReplayStep; reason: ReplayReason; detail: string; url: string; snapshot: string; shortcut?: ReplayShortcutOutcome };
 
 /** "used": the run opened the shortcut and skipped the earlier steps. "failed": the shortcut page did not check out, so the full path ran instead. */
@@ -89,7 +118,7 @@ class Handoff extends Error {
 const norm = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /** What the matcher found for the chosen row. */
-export type Seen = { amount: boolean; foreign?: boolean; matchedBy?: MatchedBy[]; fxRateUsed?: number; offsetDays?: number };
+export type Seen = { amount: boolean; foreign?: boolean; matchedBy?: MatchedBy[]; fxRateUsed?: number; offsetDays?: number; rowAmount?: number; rowCurrency?: string; fxRateImplied?: number };
 export type Resolution = { target: string; seen?: Seen } | { reason: "not-found" | "ambiguous" | "row-not-found" | "row-ambiguous"; detail: string; /** nothing to choose from yet (no period labels), so the page may still be building */ empty?: true };
 type Candidate = { ref: string; role: string; name: string; href?: string };
 
@@ -115,7 +144,7 @@ export function resolveAll(elements: readonly Candidate[], target: ReplayLocator
 const describeInvoice = (i: { date: string; amount?: number; currency?: string }) =>
   `the invoice dated ${i.date.slice(0, 10)}${i.amount !== undefined ? `, amount ${i.amount}${i.currency ? ` ${i.currency.slice(0, 3)}` : ""}` : ""}`;
 
-const seenOf = (m: Extract<RowMatch, { kind: "one" }>, byAmount: boolean): Seen => ({ amount: byAmount && m.amountVerified, ...(byAmount && !m.amountVerified ? { foreign: true } : {}), matchedBy: m.matchedBy, offsetDays: m.offsetDays, ...(m.fxRateUsed !== undefined ? { fxRateUsed: m.fxRateUsed } : {}) });
+const seenOf = (m: Extract<RowMatch, { kind: "one" }>, byAmount: boolean): Seen => ({ amount: byAmount && m.amountVerified, ...(byAmount && !m.amountVerified ? { foreign: true } : {}), matchedBy: m.matchedBy, offsetDays: m.offsetDays, ...(m.fxRateUsed !== undefined ? { fxRateUsed: m.fxRateUsed } : {}), ...(m.rowAmount !== undefined ? { rowAmount: m.rowAmount } : {}), ...(m.rowCurrency ? { rowCurrency: m.rowCurrency } : {}), ...(m.fxRateImplied !== undefined ? { fxRateImplied: m.fxRateImplied } : {}) });
 
 /** Chooses one of `refs` by the text of its row. Exactly one match gives its ref; none or several is a handoff, never a guess. */
 export function pickRow(refs: readonly string[], rowTexts: readonly (string | null)[], invoice: NonNullable<ReplayOptions["invoice"]>, by: readonly ("date" | "amount")[]): Resolution {
@@ -345,13 +374,14 @@ export async function runReplay(playbook: { startUrl: string; steps: readonly Re
   };
   const stillOnSite = async () => guardUrl((await d.state()).url, "The page moved to");
   let saved: { path: string; bytes: number; contentType?: string } | undefined;
-  const verified: { date: boolean; amount: boolean; foreignCurrency?: true; matchedBy?: MatchedBy[]; fxRateUsed?: number; offsetDays?: number } = { date: false, amount: false };
+  const verified: Verified = { date: false, amount: false };
   /** Records that the date was compared, and whether the amount was or only another currency was seen. */
   const noteAmount = (amount: boolean | undefined, foreign: boolean | undefined, how: Omit<Seen, "amount" | "foreign"> = {}) => {
     verified.date = true;
     if (how.matchedBy) verified.matchedBy = [...new Set([...(verified.matchedBy ?? []), ...how.matchedBy])];
     if (how.fxRateUsed !== undefined) verified.fxRateUsed = how.fxRateUsed;
     if (how.offsetDays !== undefined) verified.offsetDays = how.offsetDays;
+    for (const k of ["rowAmount", "rowCurrency", "fxRateImplied"] as const) if (how[k] !== undefined) Object.assign(verified, { [k]: how[k] });
     if (amount) verified.amount = true;
     else if (foreign && !verified.amount) verified.foreignCurrency = true;
     if (verified.amount) delete verified.foreignCurrency;

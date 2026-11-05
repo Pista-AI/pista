@@ -266,7 +266,7 @@ test("a click that opens a tab on a listed second host is followed, and the deta
   const invoice = { date: "2026-09-03", amount: 49, currency: "EUR" };
   const r = await runReplay(...hop("page"), { ...twoHosts("invoices/x1.pdf", ["127.0.0.1", "localhost"]), invoice });
   assert.ok(r.ok, JSON.stringify(r));
-  assert.deepEqual(r.verified, { date: true, amount: true, matchedBy: ["date", "amount"], offsetDays: 0 });
+  assert.deepEqual(r.verified, { date: true, amount: true, matchedBy: ["date", "amount"], offsetDays: 0, rowAmount: 49, rowCurrency: "EUR" });
   assert.ok(readFileSync(join(dir, "invoices/x1.pdf"), "latin1").includes("inv-2026-09"));
   await closeExtraTabs(before);
 });
