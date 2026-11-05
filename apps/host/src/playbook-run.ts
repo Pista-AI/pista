@@ -83,7 +83,7 @@ function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): voi
     }
     return;
   }
-  const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), site);
+  const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), pb.hosts);
   if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found, history: log("shortcut confirmed") });
   else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) savePlaybook({ ...rest, shortcutCandidate: found, history: log("shortcut learned") });
   else if (!found && c) savePlaybook(rest);
@@ -285,7 +285,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     return (deps.replay ?? runReplay)(pb, {
       driver,
       domainRules: deps.domainRules,
-      allowUrl: (u) => siteOf(u) === pb.site && /^https?:/i.test(u),
+      allowUrl: (u) => pb.hosts.includes(siteOf(u) ?? "") && /^https?:/i.test(u),
       downloadRoot: root,
       downloadPath: path,
       overwrite,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
@@ -60,13 +60,63 @@ describe("playbook_save", () => {
     ]);
   });
 
+  it("lists every domain the path visits as hosts, and refuses more than four", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1
+    t.add({ kind: "click", locator: { role: "link", name: "View invoice" }, urlAfter: "https://invoice.stripe.com/i/acct/live", openedTab: true }); // 2
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    const msg = savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t").message;
+    assert.match(msg, /^Saved a playbook for vendor\.com/);
+    assert.deepEqual(getPlaybook("vendor.com")?.hosts, ["vendor.com", "stripe.com"]);
+    const many = new PlaybookTrace();
+    many.add({ kind: "navigate", url: "https://a1.com/" });
+    for (const d of ["b2.com", "c3.com", "d4.com", "e5.com"]) many.add({ kind: "click", locator: { role: "link", name: "Next" }, urlAfter: `https://${d}/x` });
+    many.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download" }, path: "a.pdf" });
+    assert.match(savePlaybookFromTrace(many.list(), [1, 2, 3, 4, 5, 6], undefined, "t").message, /^Not saved: .*at most 4/);
+    assert.equal(getPlaybook("a1.com"), null);
+  });
+
+  it("repairs a cross-host playbook from replayed entries and keeps the old hosts", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1
+    t.add({ kind: "click", locator: { role: "link", name: "View invoice" }, urlAfter: "https://invoice.stripe.com/i/acct/live", openedTab: true }); // 2
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    savePlaybookFromTrace(t.list(), [1, 2, 3], undefined, "t");
+    const r = new PlaybookTrace();
+    r.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1
+    r.add({ kind: "replayed", index: 1, step: { kind: "navigate", url: "https://invoice.stripe.com/i/acct/live" } }); // 2
+    r.add({ kind: "download", source: "ref", locator: { role: "link", name: "Save PDF" }, contentType: "application/pdf", path: "a.pdf" }); // 3
+    assert.match(savePlaybookFromTrace(r.list(), [1, 2, 3], undefined, "t").message, /^Updated the playbook for vendor\.com/);
+    assert.deepEqual(getPlaybook("vendor.com")?.hosts, ["vendor.com", "stripe.com"]);
+  });
+
+  it("verifies a download on a detail page by the page when its row shows no date, and says so", () => {
+    const t = new PlaybookTrace();
+    t.add({ kind: "navigate", url: "https://vendor.com/billing" }); // 1
+    t.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["Download invoice"], clickedIndex: 0 }, pageText: "Invoice date: 3 Sep 2026\nTotal 49.00 EUR\nDownload invoice" }); // 2
+    const inv = { date: "2026-09-03", amount: 49, currency: "EUR" };
+    const msg = savePlaybookFromTrace(t.list(), [1, 2], undefined, "t", inv).message;
+    assert.match(msg, /verified by page/);
+    assert.doesNotMatch(msg, /handed back/);
+    assert.deepEqual(getPlaybook("vendor.com")?.steps, [{ kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf", verify: "page" }]);
+    // The amount is required on the page when the invoice has one: capture never accepts what replay would reject.
+    const dateOnly = new PlaybookTrace();
+    dateOnly.add({ kind: "navigate", url: "https://third.com/billing" });
+    dateOnly.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["Download invoice"], clickedIndex: 0 }, pageText: "Invoice date: 3 Sep 2026\nThank you" });
+    assert.match(savePlaybookFromTrace(dateOnly.list(), [1, 2], undefined, "t", inv).message, /handed back/);
+    assert.ok(!JSON.stringify(readFileSync(join(process.env.PISTA_HOME!, "playbooks", "vendor.com.json"), "utf8")).includes("pageText"));
+    const bare = new PlaybookTrace();
+    bare.add({ kind: "navigate", url: "https://other.com/billing" });
+    bare.add({ kind: "download", source: "ref", locator: { role: "link", name: "Download invoice" }, contentType: "application/pdf", path: "a.pdf", rowContext: { texts: ["Download invoice"], clickedIndex: 0 }, pageText: "Welcome back" });
+    assert.match(savePlaybookFromTrace(bare.list(), [1, 2], undefined, "t", inv).message, /handed back/);
+  });
+
   it("rejects a path without a start navigate, with a non-download tail, with unknown entries or from another site", () => {
     const rows = trace([{ kind: "download", source: "url", url: "http://localhost:1/x.pdf", path: "x.pdf" }]).list(); // 7, other site
     const bad = (steps: number[], re: RegExp) => assert.match(savePlaybookFromTrace(rows, steps, undefined, "t").message, re);
     bad([4, 6], /first chosen entry must be a navigate/);
     bad([2, 4], /last chosen entry must be the download/);
     bad([2, 99], /no entry 99/);
-    bad([2, 7], /different site/);
     bad([6, 2], /increasing order/);
     assert.equal(getPlaybook("127.0.0.1"), null);
   });

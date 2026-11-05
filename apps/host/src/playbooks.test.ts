@@ -52,6 +52,22 @@ describe("sanitizeUrl", () => {
   });
 });
 
+describe("hosts", () => {
+  it("accepts a listed second host and rejects an unlisted one", () => {
+    assert.doesNotThrow(() => sanitizeUrl("https://invoice.stripe.com/i/x", ["example.com", "stripe.com"]));
+    assert.throws(() => sanitizeUrl("https://evil.com/", ["example.com", "stripe.com"]), /different site/);
+    assert.throws(() => sanitizeUrl("https://invoice.stripe.com/i/x", "example.com"), /different site/);
+  });
+  it("loads an old file without hosts as the site alone, and keeps site first, deduped, at most four", () => {
+    assert.deepEqual(validatePlaybook(base(), "example.com").hosts, ["example.com"]);
+    const many = validatePlaybook(base({ hosts: ["Stripe.com", "pay.example.com", "a.org", "b.org", "c.org", 7] }), "example.com");
+    assert.deepEqual(many.hosts, ["example.com", "stripe.com", "a.org", "b.org"]);
+    const two = validatePlaybook(base({ hosts: ["stripe.com"], steps: [{ kind: "navigate", url: "https://invoice.stripe.com/i/x" }] }), "example.com");
+    assert.equal(two.steps.length, 1);
+    assert.throws(() => validatePlaybook(base({ steps: [{ kind: "navigate", url: "https://invoice.stripe.com/i/x" }] }), "example.com"), /different site/);
+  });
+});
+
 describe("validatePlaybook", () => {
   it("drops unknown fields and truncates long text", () => {
     const pb = validatePlaybook(base({ evil: 1, steps: [{ kind: "click", target: { name: "x".repeat(500), bogus: 1 }, extra: 1 }] }), "example.com");

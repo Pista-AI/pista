@@ -4,8 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { BrowserDriver } from "../src/driver.ts";
-import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay, verifySingleRow } from "../src/replay.ts";
+import { expectationMet, pickRow, pollUntil, resolveAll, resolveLocator, runReplay, verifyPage, verifySingleRow } from "../src/replay.ts";
 import { rowTextOf } from "../src/row-match.ts";
+
+test("a detail page proves the invoice only with its date and, when the invoice has one, a matching amount", () => {
+  const inv = { date: "2026-10-03", amount: 49, currency: "EUR" };
+  assert.deepEqual(verifyPage("Invoice date: 3 Oct 2026\nTotal 49.00 EUR", inv), { ok: true, amount: true });
+  const dueOnly = verifyPage("Due date: 5 Oct 2026\nTotal 12.00 EUR", inv);
+  assert.ok(!dueOnly.ok && dueOnly.detail.includes("neither") === false, JSON.stringify(dueOnly)); // date in tolerance, wrong amount
+  const noAmount = verifyPage("Invoice date: 5 Oct 2026\nThank you", inv);
+  assert.ok(!noAmount.ok && noAmount.detail === "page shows the date but not the amount", JSON.stringify(noAmount));
+  assert.deepEqual(verifyPage("Invoice date: 3 Oct 2026", { date: "2026-10-03" }), { ok: true, amount: false });
+  const list = verifyPage("1 Oct 2026 10.00 EUR\n3 Oct 2026 49.00 EUR\n1 Nov 2026 49.00 EUR\n1 Dec 2026 49.00 EUR", inv);
+  assert.ok(!list.ok && list.detail.includes("too many dates"), JSON.stringify(list));
+  assert.ok(!verifyPage("Nothing relevant 15 Jan 2025", inv).ok);
+});
 
 test("a lone download is acted on only when its row shows exactly the invoice date", () => {
   const inv = { date: "2026-10-03" };

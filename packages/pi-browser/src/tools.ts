@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { NotAnInvoice, refDownloadSource, rejectWebPage, saveDownload } from "./download.ts";
 import { scripts } from "./page-scripts.ts";
 import { isPeriodLabel } from "./row-match.ts";
-import { loneRowText } from "./replay.ts";
+import { loneRowText, PAGE_TEXT_MAX } from "./replay.ts";
 import { declineCookieBanner, runPageAction, waitForLoad, type ActionResult, type PageAction } from "./actions.ts";
 import type { RiskApprover } from "./approval.ts";
 import { registerChooseTool } from "./choose.ts";
@@ -30,7 +30,7 @@ export type TracePeriodContext = { names: (string | null)[]; clickedIndex: numbe
 export type BrowserTraceEntry =
   | { kind: "navigate"; url: string }
   | { kind: "click"; locator: { role?: string; name?: string; text?: string; frameUrl?: string }; urlAfter: string; /** The click opened a new tab and the tools followed it; `urlAfter` is that tab's address. */ openedTab?: true; rowContext?: TraceRowContext; periodContext?: TracePeriodContext }
-  | { kind: "download"; url?: string; /** "url": the model supplied the address; "ref": it came from the page (the element's link or its click). */ source: "ref" | "url"; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string; rowContext?: TraceRowContext }
+  | { kind: "download"; url?: string; /** "url": the model supplied the address; "ref": it came from the page (the element's link or its click). */ source: "ref" | "url"; locator?: { role?: string; name?: string; text?: string }; contentType?: string; path: string; rowContext?: TraceRowContext; /** The page text at the download (capped), so the host can tell whether a detail page shows the invoice. In memory only, like `rowContext`. */ pageText?: string }
   | { kind: "signIn"; origin: string };
 
 export interface BrowserToolOptions {
@@ -377,6 +377,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           // A lone candidate gets its own row text too, so the host can check the invoice's date on it (see TraceRowContext).
           const single = located && ref && !listContext ? await loneRowText(d, ref) : undefined;
           const rowContext = listContext ?? (single !== undefined ? { texts: [single], clickedIndex: 0 } : undefined);
+          const pageText = single !== undefined ? String(await d.evaluate("document.body ? document.body.innerText : ''").catch(() => "")).slice(0, PAGE_TEXT_MAX) : undefined;
           const saved = await saveDownload(d, { root: folder, path, overwrite, validate: rejectWebPage(url ? "url" : "ref") }, url ? { url } : fromRef!).catch((error) => {
             if (!(error instanceof NotAnInvoice)) throw error;
             // Nothing was written or replaced. A result (not an error) so the host's repeat guard can count it by `site`.
@@ -389,7 +390,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
           if ("rejected" in saved) return { content: [{ type: "text" as const, text: JSON.stringify(saved, null, 2) }], details: saved };
           const replaced = saved.replaced;
           const direct = url ?? (href && !listContext ? href : undefined);
-          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : {}), ...(located ? { locator: located } : {}), ...(rowContext ? { rowContext } : {}), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
+          if (direct || located) options.onTrace?.({ kind: "download", source: rawUrl ? "url" : "ref", ...(direct ? { url: direct } : {}), ...(located ? { locator: located } : {}), ...(rowContext ? { rowContext } : {}), ...(pageText ? { pageText } : {}), ...(saved.contentType ? { contentType: saved.contentType } : {}), path });
           const meta = { path, bytes: saved.bytes, ...(saved.contentType ? { contentType: saved.contentType } : {}), ...(replaced ? { note: `Saved${replaced}.` } : {}) };
           return { content: [{ type: "text" as const, text: JSON.stringify(meta, null, 2) }], details: meta };
         },

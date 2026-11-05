@@ -46,11 +46,16 @@ export function isOpaque(v: string): boolean {
   return OPAQUE_CHARS.test(v) && /\d/.test(v) && /[A-Za-z]/.test(v) && v.split(/[-_.]/).some((p) => p.length >= 20);
 }
 
-/** Same-site http(s) URL without userinfo, fragment, secret-looking query params or long opaque values. Throws otherwise. */
-export function sanitizeUrl(url: string, site: string): string {
+/** Most registrable domains a playbook may span (its site plus the hosts a path hops to, e.g. a payment page). */
+export const MAX_HOSTS = 4;
+type Sites = string | readonly string[];
+const listed = (sites: Sites): readonly string[] => (typeof sites === "string" ? [sites] : sites);
+
+/** Http(s) URL on the playbook's site or one of its listed hosts, without userinfo, fragment, secret-looking query params or long opaque values. Throws otherwise. */
+export function sanitizeUrl(url: string, site: Sites): string {
   const u = parseHttp(url);
   if (u.username || u.password) throw new Error("url must not contain credentials");
-  if (siteKey(url) !== site) throw new Error("url is on a different site");
+  if (!listed(site).includes(siteKey(url))) throw new Error("url is on a different site");
   // A secret in the path cannot be stripped without breaking replay, so the URL is rejected.
   if (u.pathname.split("/").some((seg) => isOpaque(seg))) throw new Error("url path contains an opaque value");
   u.hash = "";
@@ -67,7 +72,7 @@ const obj = (v: unknown): Record<string, unknown> => {
 /** Over-long strings are truncated, not rejected. */
 const str = (v: unknown, max: number): string | undefined => (typeof v === "string" && v ? v.slice(0, max) : undefined);
 
-function locator(v: unknown, site: string): PlaybookLocator {
+function locator(v: unknown, site: Sites): PlaybookLocator {
   const o = obj(v);
   const out: PlaybookLocator = {};
   const role = str(o.role, MAX_TEXT), name = str(o.name, MAX_TEXT), text = str(o.text, MAX_TEXT), selector = str(o.selector, MAX_SELECTOR);
@@ -82,7 +87,7 @@ function locator(v: unknown, site: string): PlaybookLocator {
   return out;
 }
 
-function expectOf(v: unknown, site: string): PlaybookExpect | undefined {
+function expectOf(v: unknown, site: Sites): PlaybookExpect | undefined {
   if (v === undefined || v === null) return undefined;
   const o = obj(v);
   const out: PlaybookExpect = {};
@@ -96,7 +101,7 @@ function expectOf(v: unknown, site: string): PlaybookExpect | undefined {
   return out;
 }
 
-function step(v: unknown, site: string): PlaybookStep | null {
+function step(v: unknown, site: Sites): PlaybookStep | null {
   const o = obj(v);
   const expect = expectOf(o.expect, site);
   const withExpect = expect ? { expect } : {};
@@ -110,7 +115,7 @@ function step(v: unknown, site: string): PlaybookStep | null {
     }
     case "signIn": {
       const origin = parseHttp(String(o.origin));
-      if (siteKey(origin.href) !== site) throw new Error("signIn origin is on a different site");
+      if (!listed(site).includes(siteKey(origin.href))) throw new Error("signIn origin is on a different site");
       origin.hostname = origin.hostname.replace(/\.$/, "");
       return { kind: "signIn", origin: origin.origin, ...withExpect };
     }
@@ -123,6 +128,7 @@ function step(v: unknown, site: string): PlaybookStep | null {
       if (typeof o.url === "string" && o.url) out.url = sanitizeUrl(o.url, site);
       const fileType = str(o.fileType, 20);
       if (fileType) out.fileType = fileType;
+      if (o.verify === "row" || o.verify === "page") out.verify = o.verify;
       return out;
     }
     default:
@@ -166,7 +172,7 @@ function stableAddress(url: string): boolean {
  * whose page address (`urlsAfter[i]`, for stored step i + 1) differs from the start, is same-site and carries no id, token or secret
  * query. Returns undefined when no click qualifies. The one place shortcuts are derived, from a capture or from a replay.
  */
-export function deriveShortcut(startUrl: string, steps: readonly PlaybookStep[], urlsAfter: readonly (string | undefined)[], site: string): PlaybookShortcut | undefined {
+export function deriveShortcut(startUrl: string, steps: readonly PlaybookStep[], urlsAfter: readonly (string | undefined)[], site: Sites): PlaybookShortcut | undefined {
   let found: PlaybookShortcut | undefined;
   for (let i = 0; i < steps.length && !byInvoice(steps[i]!); i++) {
     const raw = urlsAfter[i];
@@ -180,7 +186,7 @@ export function deriveShortcut(startUrl: string, steps: readonly PlaybookStep[],
 }
 
 /** A shortcut kept only when its address is clean and `afterStep` is a step before any invoice-dependent step or the download. */
-function shortcutOf(v: unknown, site: string, steps: readonly PlaybookStep[]): PlaybookShortcut | undefined {
+function shortcutOf(v: unknown, site: Sites, steps: readonly PlaybookStep[]): PlaybookShortcut | undefined {
   if (!v || typeof v !== "object") return undefined;
   const { url, afterStep } = v as { url?: unknown; afterStep?: unknown };
   if (typeof url !== "string" || typeof afterStep !== "number" || !Number.isInteger(afterStep) || afterStep < 1 || afterStep > steps.length) return undefined;
@@ -196,6 +202,14 @@ function shortcutOf(v: unknown, site: string, steps: readonly PlaybookStep[]): P
 export function validatePlaybook(input: unknown, site: string): Playbook {
   const o = obj(input);
   if (o.site !== undefined && o.site !== site) throw new Error("site does not match");
+  // Older files have no `hosts`: the playbook then spans its own site only. The site always comes first.
+  const hosts = [site, ...(Array.isArray(o.hosts) ? o.hosts : []).flatMap((h) => {
+    try {
+      return typeof h === "string" ? [siteKey(`http://${h.trim()}`)] : [];
+    } catch {
+      return [];
+    }
+  })].filter((h, i, all) => all.indexOf(h) === i).slice(0, MAX_HOSTS);
   if (!Array.isArray(o.steps)) throw new Error("steps must be an array");
   if (o.steps.length > MAX_STEPS) throw new Error(`too many steps (max ${MAX_STEPS})`);
   const now = new Date().toISOString();
@@ -212,8 +226,8 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
         }
       }).slice(-MAX_HISTORY)
     : [];
-  const steps = o.steps.flatMap((s) => step(s, site) ?? []);
-  const shortcut = shortcutOf(o.shortcut, site, steps), candidate = shortcutOf(o.shortcutCandidate, site, steps);
+  const steps = o.steps.flatMap((s) => step(s, hosts) ?? []);
+  const shortcut = shortcutOf(o.shortcut, hosts, steps), candidate = shortcutOf(o.shortcutCandidate, hosts, steps);
   const merchants = cleanUserMerchants(o.merchants);
   const pending = cleanMerchants(o.merchantsPending).filter((m) => !merchants.includes(m));
   const whyIn = o.merchantsPendingWhy && typeof o.merchantsPendingWhy === "object" ? (o.merchantsPendingWhy as Record<string, unknown>) : {};
@@ -225,7 +239,8 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
   return {
     version: 1,
     site,
-    startUrl: sanitizeUrl(String(o.startUrl), site),
+    hosts,
+    startUrl: sanitizeUrl(String(o.startUrl), hosts),
     steps,
     ...(shortcut ? { shortcut, ...(count(o.shortcutFails) ? { shortcutFails: count(o.shortcutFails) } : {}) } : candidate ? { shortcutCandidate: candidate } : {}),
     ...(merchants.length ? { merchants } : {}),
@@ -293,7 +308,7 @@ export function listPlaybooks(): PlaybookMeta[] {
     if (!n.endsWith(".json")) continue;
     const pb = getPlaybook(n.slice(0, -5));
     if (!pb) continue;
-    out.push({ site: pb.site, startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), ...(pb.merchants ? { merchants: pb.merchants } : {}), ...(pb.merchantsPending ? { merchantsPending: pb.merchantsPending } : {}), ...(pb.merchantsPendingWhy ? { merchantsPendingWhy: pb.merchantsPendingWhy } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
+    out.push({ site: pb.site, ...(pb.hosts.length > 1 ? { hosts: pb.hosts } : {}), startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), ...(pb.merchants ? { merchants: pb.merchants } : {}), ...(pb.merchantsPending ? { merchantsPending: pb.merchantsPending } : {}), ...(pb.merchantsPendingWhy ? { merchantsPendingWhy: pb.merchantsPendingWhy } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
   }
   return out.sort((a, b) => a.site.localeCompare(b.site));
 }
