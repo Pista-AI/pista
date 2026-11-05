@@ -130,10 +130,13 @@ const knownCurrency = (c?: string) => (c && KNOWN_CUR.has(c.toUpperCase()) ? c.t
  * majority (at least 3 lines, at least 2/3 one sign): the majority sign is an expense (returned positive), the other sign is a
  * refund or credit. With fewer lines, a tie or a weak mix nothing is inferred and every line is "unclear sign".
  */
-function applySigns(lines: ParsedLine[]): void {
-  const ok = lines.filter((l) => l.ok);
-  const neg = ok.filter((l) => l.amount! < 0).length, pos = ok.length - neg;
+function applySigns(lines: ParsedLine[], grouped: Set<ParsedLine>): void {
   const reject = (l: ParsedLine, reason: string) => Object.assign(l, { ok: false, reason });
+  // Record layout (debit export): a negative amount is an expense, a positive one is income.
+  for (const l of lines) if (grouped.has(l) && l.ok) { if (l.amount! < 0) l.amount = Math.abs(l.amount!); else reject(l, "income (positive amount)"); }
+  const ok = lines.filter((l) => l.ok && !grouped.has(l));
+  if (ok.length >= 2 && ok.every((l) => l.amount! < 0)) { for (const l of ok) l.amount = Math.abs(l.amount!); return; }
+  const neg = ok.filter((l) => l.amount! < 0).length, pos = ok.length - neg;
   if (ok.length === 1) {
     if (neg) reject(ok[0]!, "refund or credit (negative amount)");
     return;
@@ -146,6 +149,23 @@ function applySigns(lines: ParsedLine[]): void {
   }
 }
 
+const AMOUNT_LINE = new RegExp(String.raw`^[-+]?\s?(?:${NUM})$`);
+const isAmountLine = (t: string) => AMOUNT_LINE.test(t) && (/^[-+]|[.,]\d{1,2}$/.test(t)) && t.replace(/\D/g, "").length <= 12;
+
+/** Card/bank export record: a date-only line, then type, merchant, signed amount and (optionally) balance lines, up to the next date-only line. */
+function parseRecord(rows: { raw: string; lineNo: number }[]): ParsedLine | undefined {
+  const [head, ...tail] = rows;
+  const texts = tail.map((r) => r.raw.trim().replace(/\s+/g, " "));
+  const amountAt = texts.findIndex(isAmountLine);
+  if (amountAt < 0) return undefined;
+  const d = dates(head!.raw.trim(), null);
+  const words = texts.filter((t, i) => !isAmountLine(t) && /\p{L}/u.test(t) && i !== texts.findIndex((x) => !isAmountLine(x)));
+  const merchant = [...words].sort((a, b) => b.length - a.length)[0];
+  const amount = parseAmounts(texts[amountAt]!, { strict: true })[0];
+  const raw = rows.map((r) => r.raw.trim()).join(" | ");
+  return finish({ lineNo: head!.lineNo, raw, date: d.date, amount: amount?.value, currency: knownCurrency(amount?.currency) ?? "SEK", merchant: merchant && cleanMerchant(merchant) || undefined }, d.count, amount ? 1 : 0, d.ambiguous && "ambiguous date");
+}
+
 export function parseTransactions(text: string): { lines: ParsedLine[] } {
   const rows = text.replace(/[−–]/g, "-").split(/\r?\n/);
   const header = findHeader(rows);
@@ -154,7 +174,16 @@ export function parseTransactions(text: string): { lines: ParsedLine[] } {
   const cells = (raw: string) => splitCells(raw, header!.delim);
   const order = pasteOrder(body.map((r) => (header ? (header.pick.date >= 0 ? cells(r.raw)[header.pick.date] ?? "" : "") : r.raw)));
   const lines: ParsedLine[] = [];
-  for (const r of body) {
+  const grouped = new Set<ParsedLine>();
+  const dateOnly = (raw: string) => !header && dates(raw.trim(), null).count === 1 && !removeRaws(raw.trim(), dates(raw.trim(), null).raws).trim();
+  for (let i = 0; i < body.length; i++) {
+    const r = body[i]!;
+    if (dateOnly(r.raw)) {
+      let end = i + 1;
+      while (end < body.length && !dateOnly(body[end]!.raw)) end++;
+      const rec = end > i + 1 ? parseRecord(body.slice(i, end)) : undefined;
+      if (rec) { lines.push(rec); grouped.add(rec); i = end - 1; continue; }
+    }
     if (header) {
       const c = cells(r.raw), cell = (k: Col) => (header.pick[k] >= 0 ? c[header.pick[k]] ?? "" : "");
       const d = dates(cell("date"), order), amounts = parseAmounts(cell("amount"));
@@ -170,7 +199,7 @@ export function parseTransactions(text: string): { lines: ParsedLine[] } {
     const merchant = cleanMerchant(removeAmounts(rest));
     lines.push(finish({ lineNo: r.lineNo, raw: r.raw, date: d.date, amount: amounts[0]?.value, currency: knownCurrency(amounts[0]?.currency), merchant: merchant || undefined }, d.count, amounts.length, d.ambiguous && "ambiguous date"));
   }
-  applySigns(lines);
+  applySigns(lines, grouped);
   return { lines };
 }
 
