@@ -422,11 +422,14 @@ export function recordSuccess(site: string): Playbook | null {
   });
 }
 
-export function recordFailure(site: string): Playbook | null {
+/** Logs a failed replay; `count` false keeps the reason in the history without counting it against the playbook. */
+export function recordFailure(site: string, reason?: string, count = true): Playbook | null {
   return mutate(site, (pb, now) => {
-    pb.failCount++;
-    if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
-    pb.history.push({ at: now, summary: "replay failed" });
+    if (count) {
+      pb.failCount++;
+      if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
+    }
+    pb.history.push({ at: now, summary: reason ? `replay failed: ${reason}` : "replay failed" });
   });
 }
 

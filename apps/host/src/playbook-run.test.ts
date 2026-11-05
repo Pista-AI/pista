@@ -72,13 +72,17 @@ test("failures count towards needs-attention at three; declines and stops do not
   const repairing = (reason: string) => ({ type: "playbook.event", threadId: "t", kind: "repairing", site: "127.0.0.1", step: 2, reason, stepCount: 2, invoice: inv });
   assert.deepEqual(run(handoff("declined")), []);
   assert.deepEqual(run(handoff("aborted")), []);
-  for (const r of ["row-not-found", "row-ambiguous", "needs-invoice", "sign-in-needed", "blocked", "expectation-timeout"] as const) {
-    const ev = run(handoff(r));
-    assert.deepEqual(ev.map((e) => e.type === "playbook.event" && e.kind), ["repairing"], r);
-  }
+  assert.deepEqual(run(handoff("sign-in-needed")).map((e) => e.type === "playbook.event" && e.kind), ["repairing"]);
+  assert.equal(getPlaybook("127.0.0.1")!.failCount, 0, "a sign-in is not the playbook's fault");
+  // A blocked page and a missing row are not the path's fault; they are kept in the history but do not count.
+  run(handoff("blocked"));
+  run(handoff("row-not-found"));
   assert.equal(getPlaybook("127.0.0.1")!.failCount, 0);
-  assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link")]);
-  assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link")]);
+  assert.deepEqual(getPlaybook("127.0.0.1")!.history.slice(-2).map((h) => h.summary), ["replay failed: blocked", "replay failed: row-not-found"]);
+  // A page that never showed what was expected counts.
+  assert.deepEqual(run(handoff("expectation-timeout")), [repairing("The page didn't show what was expected")]);
+  assert.equal(getPlaybook("127.0.0.1")!.failCount, 1);
+  run(handoff("not-found"));
   assert.deepEqual(run(handoff("not-found")), [repairing("Couldn't find the next button or link"), { type: "playbook.event", threadId: "t", kind: "needs-attention", site: "127.0.0.1", step: 2, stepCount: 2 }]);
   assert.equal(getPlaybook("127.0.0.1")!.status, "needs-attention");
   assert.equal(run(handoff("not-found")).length, 1, "flagged once");
@@ -322,7 +326,8 @@ test("a direct run leaves the same attempted set and events as the tool, and ret
   const d = direct("full-access");
   const r = await d.run();
   assert.deepEqual([...d.attempted], [...t.attempted]);
-  assert.equal(r.status === "handoff" && r.text, toolText);
+  const noHistory = (t: string | false) => String(t).replace(/Recent history[^]*?\n\n/, "");
+  assert.equal(noHistory(r.status === "handoff" && r.text), noHistory(toolText));
   assert.ok(d.events.length > 0);
   assert.equal(d.events.every((e) => (e as { type: string }).type === "playbook.event"), true);
 });

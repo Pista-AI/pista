@@ -8,7 +8,7 @@ import { denyToolCall, isShellTool, toolRulesDeny, type Denial, type ToolRules }
 export { denyToolCall };
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
-import { PlaybookTrace, registerPlaybookNote, registerPlaybookSave } from "./playbook-capture.ts";
+import { PlaybookTrace, autoCapture, registerPlaybookNote, registerPlaybookSave } from "./playbook-capture.ts";
 import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
 import { batchGate, endFirstPass, firstPassEvent, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
@@ -181,6 +181,19 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
       // Same condition as browser_download (downloadRoot): a playbook ends in a download.
       registerPlaybookSave(pi, trace, (e) => hub.emit(e), ref.threadId);
       registerPlaybookNote(pi);
+      // A download the host can turn into a playbook is saved here, so it does not depend on the model remembering playbook_save.
+      pi.on("tool_result", (event) => {
+        if (event.toolName !== "browser_download") return undefined;
+        const block = event.content.find((c) => c.type === "text");
+        let cap: ReturnType<typeof autoCapture>;
+        try {
+          cap = autoCapture(trace, block && "text" in block ? block.text : "", ref.threadId);
+        } catch {
+          return undefined; // never lose the download result
+        }
+        if (cap.event) hub.emit(cap.event);
+        return cap.note ? { content: [...event.content, { type: "text" as const, text: `\n${cap.note}` }] } : undefined;
+      });
       const runDeps: PlaybookRunDeps = { driver: () => driver, domainRules, downloadRoot: () => ref.cwd, invoicesOnly: opts.invoicesOnly, trace, attempted, confirmRisk: browserApprover(hub, ref), emit: (e) => hub.emit(e), threadId: ref.threadId };
       registerPlaybookRun(pi, runDeps);
       const { firstPass } = opts;

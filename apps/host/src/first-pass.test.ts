@@ -236,3 +236,22 @@ test("trial: a line counts only toward the keyword that routed it", async () => 
   const pb = getPlaybook("kappa.test")!;
   assert.deepEqual([pb.merchants, pb.merchantsPending], [["KAPPA PRO"], ["KAPPA"]]);
 });
+
+test("a needs-attention site is skipped with its failures and last reason, and a handoff carries the step and detail", () => {
+  make("delta.test", { merchants: ["DELTA"], status: "needs-attention", failCount: 3, history: [{ at: "2026-01-01T00:00:00Z", summary: "replay failed: blocked" }] });
+  const { routed, rest } = routeLines(parseTransactions("2026-01-15 DELTA SERVICES 9.00 USD").lines, all());
+  assert.equal(routed.length, 0);
+  const out = { fetched: [], learned: [], handedOff: [], declined: [], rest, ran: true };
+  assert.match(summarise(out), /skipped: delta\.test needs attention after 3 failures \(last: blocked\)/);
+  const line = rest[0]!.line;
+  const text = summarise({ ...out, rest: [], handedOff: [{ line, site: "acme.test", why: "not-found", step: 'click link "Old"', detail: "no such link", url: "https://acme.test/billing" }] });
+  assert.match(text, /acme\.test, not-found at click link "Old"/);
+  assert.match(text, /no such link \| https:\/\/acme\.test\/billing/);
+});
+
+test("a paste whose only matching site needs attention still gets a summary with the skip line", async () => {
+  make("eps.test", { merchants: ["EPSILON"], status: "needs-attention", failCount: 3, history: [{ at: "2026-01-01T00:00:00Z", summary: "replay failed: not-found" }] });
+  const out = await runFirstPass("2026-01-15 EPSILON LTD 9.00 USD", { playbooks: () => all().filter((p) => p.site === "eps.test"), allow: async () => true, run: async (r) => downloaded(r.site, 1) });
+  assert.deepEqual([out!.ran, out!.skipOnly], [false, true], "the thread's first pass stays unused");
+  assert.match(summarise(out!), /skipped: eps\.test needs attention after 3 failures \(last: not-found\)/);
+});

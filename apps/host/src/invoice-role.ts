@@ -39,7 +39,7 @@ Getting the file: call browser_download with the path above and either the url o
 Use the page's download control by ref (browser_download with ref).
 Never re-type or shorten a URL from a page: pass its ref to browser_navigate or browser_download. A link that opens a new tab is followed automatically; browser_tabs lists the tabs.
 Call it found only when browser_download reports a saved file with a size above zero.
-After a successful download you got by browsing (not by playbook_run alone), call playbook_save with the invoice it was for to record the shortest path (start page to the download, without dead ends), so it can be repeated later. If the invoice came from a bank or card transaction, pass the transaction's merchant text as merchant.
+Downloads are captured into a playbook automatically. Call playbook_save (with the invoice, and the transaction's merchant text as merchant when there is one) only if the download result says it could not be captured, and fix what that reason names.
 When a site surprised you (wrong portal or account, a download that only works through a button, a link that opens a new tab), record one factual sentence with playbook_note so the next run knows. No credentials, no personal data.
 
 ### Step 4: manifest and summary
