@@ -7,10 +7,10 @@ import { liveOf, makeManager, setupHome } from "./test-helpers.ts";
 
 const { projectDir } = setupHome("playbook-run", { cleanup: "exit" });
 const { approvalExtension } = await import("./extensions.ts");
-const { formatHandoff, playbookConsent, playbookGuardMessage, recordRun, registerPlaybookRun, runPlaybookForInvoice, serialised } = await import("./playbook-run.ts");
+const { PLAYBOOK_DECLINED, formatHandoff, playbookConsent, playbookGuardMessage, recordRun, registerPlaybookRun, runPlaybookForInvoice, serialised } = await import("./playbook-run.ts");
 const { Hub } = await import("./hub.ts");
 const { PlaybookTrace, savePlaybookFromTrace } = await import("./playbook-capture.ts");
-const { HISTORY, getPlaybook, savePlaybook, unfence, validatePlaybook } = await import("./playbooks.ts");
+const { HISTORY, deletePlaybook, getPlaybook, savePlaybook, unfence, validatePlaybook } = await import("./playbooks.ts");
 
 const B = "http://127.0.0.1:8765/invoices/";
 function save(steps: unknown[] = [{ kind: "click", target: { role: "link", name: "October 2026" } }, { kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }]): Playbook {
@@ -378,4 +378,78 @@ test("a routed run confirms a pending keyword only when the replay verified the 
   await miss.run({ merchant });
   await miss.run({ merchant }); // the same transaction retried
   assert.deepEqual(getPlaybook("127.0.0.1")!.merchantMisses, { "ACME ROBOTICS": 1 });
+});
+
+function saveSite(site: string, merchants?: string[]): void {
+  savePlaybook(validatePlaybook({ startUrl: `https://${site}/billing`, steps: [{ kind: "download", target: { role: "link", name: "Download invoice" }, fileType: "pdf" }], ...(merchants ? { merchants } : {}) }, site));
+}
+
+test("a site with no playbook resolves by the merchant keyword and the result names both", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  const d = direct("full-access");
+  const r = await d.run({ site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC" });
+  assert.equal(r.status, "handoff");
+  assert.equal(r.text.split("\n")[0], "Using the playbook for chatgpt.com (keyword OPENAI matches the merchant text).");
+  assert.deepEqual([d.replays(), [...d.attempted]], [1, ["chatgpt.com"]]);
+});
+
+test("without merchant text the site's brand word picks the playbook", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  const d = direct("full-access");
+  const r = await d.run({ site: "openai.com" });
+  assert.equal(r.status, "handoff");
+  assert.equal(r.text.split("\n")[0], "Using the playbook for chatgpt.com (keyword OPENAI matches openai.com).");
+});
+
+test("consent is asked for the resolved site", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  const d = direct("ask-writes");
+  await d.run({ site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC" });
+  assert.deepEqual(d.asked, [{ site: "chatgpt.com", stepCount: 1, hasSignIn: false }]);
+});
+
+test("two playbooks sharing a keyword list the saved sites and do not replay", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  saveSite("openai-billing.com", ["OPENAI"]);
+  const d = direct("full-access");
+  const r = await d.run({ site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC" });
+  assert.equal(r.status, "no-playbook");
+  assert.match(r.text, /^No playbook is saved for openai\.com\. Saved sites: .*chatgpt\.com \(OPENAI\).*openai-billing\.com \(OPENAI\)/);
+  assert.equal(d.replays(), 0);
+  deletePlaybook("openai-billing.com");
+});
+
+test("an unknown site with no keyword lists the saved sites", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  const d = direct("full-access");
+  const r = await d.run({ site: "unknown-shop.com" });
+  assert.equal(r.status, "no-playbook");
+  assert.match(r.text, /^No playbook is saved for unknown-shop\.com\. Saved sites: .*chatgpt\.com \(OPENAI\)/);
+  assert.match(r.text, /captured automatically after the download/);
+  assert.equal(d.replays(), 0);
+});
+
+test("a playbook with only pending keywords or no steps does not resolve", async () => {
+  savePlaybook(validatePlaybook({ startUrl: "https://acmex.com/billing", steps: [{ kind: "download", url: "https://acmex.com/i.pdf" }], merchantsPending: ["ACMEX"] }, "acmex.com"));
+  savePlaybook(validatePlaybook({ startUrl: "https://notes-only.com/", steps: [], merchants: ["NOTESCO"] }, "notes-only.com"));
+  const d = direct("full-access");
+  const a = await d.run({ site: "acmex-pay.com", merchant: "ACMEX LTD" });
+  const b = await d.run({ site: "other.com", merchant: "NOTESCO 123" });
+  assert.deepEqual([a.status, b.status, d.replays()], ["no-playbook", "no-playbook", 0]);
+  assert.match(String((a as { text?: string }).text), /^No playbook is saved for acmex-pay\.com\./);
+  deletePlaybook("acmex.com");
+  deletePlaybook("notes-only.com");
+});
+
+test("the approval gate resolves by merchant keyword: the card names the resolved site and a decline reports it", async () => {
+  saveSite("chatgpt.com", ["OPENAI"]);
+  const asks: Record<string, unknown>[] = [];
+  const emitted: unknown[][] = [];
+  const hub = { ask: async (build: (id: string) => Record<string, unknown>) => (asks.push(build("a1")), { allow: false }) } as never;
+  const store = { config: { approvalMode: "ask-writes" }, toolRules: undefined } as never;
+  const handlers = new Map<string, Handler>();
+  (approvalExtension(hub, store, { threadId: "t" } as never) as unknown as { factory: (pi: unknown) => void }).factory({ on: (n: string, h: Handler) => handlers.set(n, h), getAllTools: () => [], events: { on: () => {}, emit: (...a: unknown[]) => emitted.push(a) } });
+  await handlers.get("tool_call")!({ toolName: "playbook_run", input: { site: "openai.com", merchant: "OPENAI *CHATGPT SUBSC", invoice: { date: "2026-10-03" } } }, {});
+  assert.match(String(asks[0]!.action), /^Follow the saved playbook for chatgpt\.com\?/);
+  assert.deepEqual(emitted, [[PLAYBOOK_DECLINED, "chatgpt.com"]]);
 });

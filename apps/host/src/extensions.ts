@@ -9,7 +9,7 @@ export { denyToolCall };
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 import { PlaybookTrace, autoCapture, registerPlaybookNote, registerPlaybookSave } from "./playbook-capture.ts";
-import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookFor, playbookGuardMessage, registerPlaybookRun, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
+import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookGuardMessage, registerPlaybookRun, resolvePlaybook, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
 import { batchGate, endFirstPass, firstPassEvent, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
 export { hostConsent } from "./playbook-run.ts";
@@ -465,7 +465,8 @@ export function approvalExtension(hub: Hub, store: ConfigStore, ref: ThreadRef, 
         }
         const mode = store.config.approvalMode;
         // A playbook run clicks and downloads like the browser tools, so it is asked about where they are: once per run, naming the playbook.
-        const found = event.toolName === "playbook_run" ? playbookFor((event.input as { site?: unknown }).site) : undefined;
+        const runInput = event.toolName === "playbook_run" ? (event.input as { site?: unknown; merchant?: unknown }) : undefined;
+        const found = runInput ? (resolvePlaybook(runInput.site, runInput.merchant).pb ?? undefined) : undefined;
         const playbook = found?.steps.length ? found : undefined; // a notes-only site has no path to follow
         if (event.toolName === "playbook_run" && !playbook) return undefined; // nothing to follow; the tool says so
         const action = playbook ? `Follow the saved playbook for ${playbook.site}${playbook.hosts.length > 1 ? ` (also visits ${playbook.hosts.slice(1).join(", ")})` : ""}? (${playbook.steps.length} steps)` : undefined;
