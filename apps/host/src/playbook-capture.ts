@@ -4,6 +4,7 @@ import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { docKey, matchPeriod, pickRow, verifyPage, verifySingleRow, type BrowserTraceEntry, type TracePeriodContext, type TraceRowContext } from "@pista/pi-browser";
 import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
+import { upsertRow } from "./manifest.ts";
 import { merchantKeyword } from "./merchants.ts";
 import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
@@ -379,6 +380,21 @@ function prune(path: TraceRow[], invoice: InvoiceParams): TraceRow[] {
       return false;
     }
   });
+}
+
+/** After a validated browser_download (not rejected) for a known invoice: the manifest row for that transaction becomes found with the file, or is added (labelled with the download's site). */
+export function recordDownloadRow(cwd: string, trace: PlaybookTrace, resultText: string): void {
+  try {
+    const r = JSON.parse(resultText) as { path?: unknown; rejected?: unknown };
+    if (typeof r.path !== "string" || r.rejected) return;
+    const inv = checkInvoice(trace.invoice);
+    if (inv.amount === undefined) return;
+    const rows = trace.list();
+    const site = [rows.at(-1), rows.at(-2)].map((x) => (x ? trySiteKey(urlOf(x)) : undefined)).find(Boolean);
+    if (!site) return;
+    // The site is only a hint for which row, and never a label: a row the host adds has no vendor, so a later model label wins.
+    upsertRow(cwd, { date: inv.date, amount: inv.amount, currency: inv.currency, hint: site }, { vendor: "", status: "found", file: r.path, note: "downloaded and checked by the host" });
+  } catch {}
 }
 
 /**

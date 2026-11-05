@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setupHome } from "./test-helpers.ts";
 import { traceOf, type TraceEntry } from "./test-trace-fixtures.ts";
 
 setupHome("playbook-autocapture", { cleanup: "exit" });
-const { PlaybookTrace, autoCapture } = await import("./playbook-capture.ts");
+const { PlaybookTrace, autoCapture, recordDownloadRow } = await import("./playbook-capture.ts");
 const { formatHandoff, recordRun } = await import("./playbook-run.ts");
 const { HISTORY, getPlaybook, savePlaybook, validatePlaybook, deletePlaybook } = await import("./playbooks.ts");
 
@@ -233,4 +236,22 @@ test("the model's re-click that replaces a replayed click which opened a tab kee
   assert.match(autoCapture(t, OK, "t").note ?? "", /\(2 steps/);
   const clicks = getPlaybook("example.com")!.steps.filter((s) => s.kind === "click") as { opensTab?: true }[];
   assert.deepEqual(clicks.map((c) => c.opensTab), [true]);
+});
+
+test("a validated download flips the matching row to found, a new one is appended, a rejected one changes nothing", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pista-rec-"));
+  mkdirSync(join(cwd, "invoices"));
+  const file = join(cwd, "invoices", "manifest.json");
+  writeFileSync(file, JSON.stringify([{ vendor: "Acme", date: "2026-10-03", amount: 12.5, currency: "EUR", status: "pending", file: "", note: "" }]));
+  const path = [{ kind: "navigate" as const, url: B }, click, dl];
+  recordDownloadRow(cwd, trace(path, { date: "2026-10-03", amount: 12.5, currency: "EUR" }), JSON.stringify({ path: "invoices/a.pdf", rejected: "not-an-invoice" }));
+  assert.equal(JSON.parse(readFileSync(file, "utf8"))[0].status, "pending");
+  recordDownloadRow(cwd, trace(path), OK);
+  let rows = JSON.parse(readFileSync(file, "utf8"));
+  assert.deepEqual([rows.length, rows[0].vendor, rows[0].status, rows[0].file], [1, "Acme", "found", "invoices/a.pdf"]);
+  recordDownloadRow(cwd, trace(path, { date: "2026-11-01", amount: 7, currency: "EUR" }), OK);
+  rows = JSON.parse(readFileSync(file, "utf8"));
+  assert.deepEqual([rows.length, rows[1].vendor, rows[1].status], [2, "", "found"], "a new row carries no label");
+  recordDownloadRow(cwd, trace(path, null), OK);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).length, 2);
 });

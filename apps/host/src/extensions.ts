@@ -8,7 +8,8 @@ import { denyToolCall, isShellTool, toolRulesDeny, type Denial, type ToolRules }
 export { denyToolCall };
 import { isLocalProvider } from "./local.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
-import { PlaybookTrace, autoCapture, registerPlaybookNote, registerPlaybookSave } from "./playbook-capture.ts";
+import { findRow } from "./manifest.ts";
+import { PlaybookTrace, autoCapture, recordDownloadRow, registerPlaybookNote, registerPlaybookSave } from "./playbook-capture.ts";
 import { PLAYBOOK_DECLINED, hostConsent, playbookConsent, playbookGuardMessage, registerPlaybookRun, resolvePlaybook, runPlaybookForInvoice, type PlaybookRunDeps } from "./playbook-run.ts";
 import { batchGate, endFirstPass, firstPassEvent, firstPassOnce, runFirstPass, runKeepingGuardShut, startFirstPass, summarise, writeManifestRows } from "./first-pass.ts";
 import { getPlaybook, listPlaybooks } from "./playbooks.ts";
@@ -185,9 +186,11 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
       pi.on("tool_result", (event) => {
         if (event.toolName !== "browser_download") return undefined;
         const block = event.content.find((c) => c.type === "text");
+        const resultText = block && "text" in block ? block.text : "";
+        if (ref.cwd) recordDownloadRow(ref.cwd, trace, resultText); // the host keeps the manifest row for a download it validated
         let cap: ReturnType<typeof autoCapture>;
         try {
-          cap = autoCapture(trace, block && "text" in block ? block.text : "", ref.threadId);
+          cap = autoCapture(trace, resultText, ref.threadId);
         } catch {
           return undefined; // never lose the download result
         }
@@ -230,6 +233,7 @@ export function browserExtension(hub: Hub, ref: ThreadRef, domainRules?: DomainR
               allow: async (routed) => !(declined = !(await batchGate(consent, routed, known(), ask))),
               run: (req, signal) => runKeepingGuardShut(attempted, (scratch) => runPlaybookForInvoice({ ...runDeps, attempted: scratch }, consent, req, signal)),
               writeManifest: (rows) => ref.cwd && writeManifestRows(ref.cwd, rows),
+              rowLabel: (key) => { const v = ref.cwd ? findRow(ref.cwd, key)?.vendor : undefined; return typeof v === "string" && v.trim() ? v.trim() : undefined; },
             }, stop.signal);
             if (out) hub.emit(firstPassEvent(ref.threadId, out, known()));
             if (stop.signal.aborted) {
