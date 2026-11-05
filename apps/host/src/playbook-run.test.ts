@@ -497,8 +497,8 @@ test("the transaction text, without the merchant keywords, reaches the replay fr
   await t.run({ overwrite: true });
   assert.equal(seen[1].invoice.reference, undefined);
   const d = direct("full-access", true, replay);
-  await d.run({ merchant: "ACME CLOUD", reference: "ACME CLOUD ref 55", overwrite: true });
-  assert.equal(seen[2].invoice.reference, "ref 55");
+  await d.run({ merchant: "ACME CLOUD", reference: "ACME CLOUD ref X55", overwrite: true });
+  assert.equal(seen[2].invoice.reference, "ref X55");
 });
 
 test("the playbook_run text says how the match was made, and that a date-only match did not verify the amount", async () => {
