@@ -121,3 +121,32 @@ test("a handoff at the start page leaves no replayed entries; the next download 
   assert.deepEqual([pb.status, pb.failCount], ["ok", 0]);
   assert.ok(pb.history.some((h) => h.summary.startsWith("captured by host")));
 });
+
+test("first-time capture: playbook_run finds no playbook, the model explores and downloads, the host saves it", async () => {
+  fresh();
+  const { runPlaybookForInvoice, hostConsent } = await import("./playbook-run.ts");
+  const t = new PlaybookTrace();
+  const consent = hostConsent({ store: { config: { approvalMode: "full-access" }, toolRules: undefined }, approve: async () => true });
+  const r = await runPlaybookForInvoice({ trace: t, attempted: new Set(), driver: () => ({}) as never, downloadRoot: () => "/tmp", confirmRisk: (async () => true) as never, emit: () => {}, threadId: "t" }, consent, { site: "billing.example.com", invoice: INV });
+  assert.equal(r.status, "no-playbook");
+  for (const e of [{ kind: "navigate" as const, url: B }, click, dl]) t.add(e);
+  assert.match(autoCapture(t, OK, "t").note ?? "", /^Saved a playbook/);
+});
+
+test("a handoff on the second host is repaired with both hosts", () => {
+  fresh();
+  deletePlaybook("shop.test");
+  const A = "https://shop.test/";
+  savePlaybook(validatePlaybook({ startUrl: A, hosts: ["shop.test", "example.com"], steps: [{ kind: "click", target: { role: "link", name: "Pay portal" } }, { kind: "navigate", url: `${B}portal` }, { kind: "download", target: { role: "link", name: "Old" }, fileType: "pdf" }] }, "shop.test"));
+  const t = trace([
+    { kind: "navigate", url: A },
+    { kind: "replayed", index: 1, step: { kind: "click", target: { role: "link", name: "Pay portal" } } },
+    { kind: "replayed", index: 2, step: { kind: "navigate", url: `${B}portal` } },
+    { kind: "click", locator: { role: "link", name: "Invoices", text: "Invoices" }, urlAfter: `${B}invoices` },
+    dl,
+  ]);
+  assert.match(autoCapture(t, OK, "t").note ?? "", /^Saved a playbook for shop\.test/);
+  const pb = getPlaybook("shop.test")!;
+  assert.deepEqual(pb.hosts.sort(), ["example.com", "shop.test"]);
+  assert.ok(pb.history.some((h) => h.summary.startsWith("repaired after handoff at step 3")));
+});

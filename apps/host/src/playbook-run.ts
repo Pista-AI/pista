@@ -255,13 +255,16 @@ export function runPlaybookForInvoice(deps: PlaybookRunDeps, consent: PlaybookRu
 
 async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
   const pb = playbookFor(req.site);
+  // Even with no playbook (or no path yet) the invoice is in context, so the host can capture the path the model finds.
+  try {
+    deps.trace.invoice = checkInvoice(req.invoice);
+    deps.trace.merchant = req.merchant;
+  } catch {}
   if (!pb) return { status: "no-playbook", text: `No playbook is saved for ${String(req.site).slice(0, 100)}. Find the invoice with the browser tools, then call playbook_save.` };
   if (!pb.steps.length) return { status: "no-playbook", text: [`No saved path for ${pb.site} yet. Find the invoice with the browser tools, then call playbook_save.`, notesBlock(pb)].filter(Boolean).join("\n\n") };
   const invoice = checkInvoice(req.invoice);
   const root = deps.downloadRoot();
   if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
-  deps.trace.invoice = invoice;
-  deps.trace.merchant = req.merchant;
   const path = req.path?.trim() || defaultPath(pb.site, invoice);
   if (deps.invoicesOnly && !isInvoicesPath(root, path)) throw new Error("playbook_run: path must be under invoices/ in the project folder.");
   const overwrite = req.overwrite;

@@ -91,7 +91,8 @@ export function abortFirstPass(threadId: string): void {
 export async function runFirstPass(text: string, deps: FirstPassDeps, signal?: AbortSignal): Promise<FirstPassOutcome | undefined> {
   const playbooks = deps.playbooks();
   const { routed, rest } = routeLines(parseTransactions(text).lines, playbooks);
-  if (!routed.length) return undefined;
+  // Nothing to run, but a site that was skipped is worth telling the model about.
+  if (!routed.length) return rest.some((r) => r.why?.startsWith("skipped:")) ? { fetched: [], learned: [], handedOff: [], declined: [], rest, ran: true } : undefined;
   if (!(await deps.allow(routed))) return { fetched: [], learned: [], handedOff: [], declined: routed.map((r) => ({ line: r.line, site: r.site })), rest, ran: false };
   const out: FirstPassOutcome = { fetched: [], learned: [], handedOff: [], declined: [], rest, ran: !signal?.aborted };
   const rows: ManifestRow[] = [];
