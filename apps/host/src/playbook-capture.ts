@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { upsertRow } from "./manifest.ts";
 import { merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, assertRouteKey, autoRouteKey, getRoute, setRoute, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -198,7 +198,7 @@ export function stepLabel(s: PlaybookStep | undefined): string {
 const sameStep = (a: PlaybookStep | undefined, b: PlaybookStep | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Saves the playbook (as an update when the site already has one) and returns the message for the model plus the event to emit, if any. */
-export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown, unsure?: boolean, summary?: { created: string; updated: string }): { message: string; event?: HostEvent; /** One line for the host's own capture: what was saved. */ saved?: string; /** Why nothing was saved. */ reason?: string } {
+export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[], waitFor: Record<string, string> | undefined, threadId: string, invoice?: unknown, merchant?: unknown, unsure?: boolean, summary?: { created: string; updated: string }, routeOpt?: { route?: string; auto?: boolean }): { message: string; event?: HostEvent; /** One line for the host's own capture: what was saved. */ saved?: string; /** Why nothing was saved. */ reason?: string } {
   try {
     const { unverified, verifiedBy, ...built } = playbookFromTrace(rows, chosen, waitFor, invoice === undefined ? undefined : checkInvoice(invoice));
     const note = unverified ? " Saved. The last step will be handed back to you on each run, because the download's row doesn't show the invoice date." : verifiedBy ? ` The download is verified by ${verifiedBy === "page" ? "page" : "row"}.` : "";
@@ -206,6 +206,9 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     // Hosts the stored playbook already visits stay (site first, at most MAX_HOSTS), so a repair of one part does not drop the rest.
     const fresh = validatePlaybook({ ...built, hosts: [...new Set([...built.hosts, ...(old?.hosts ?? [])])].slice(0, MAX_HOSTS) }, built.site);
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
+    // An explicit key wins; for an invoice from a third-party site (a mailbox, a billing host) the host names the route by merchant.
+    if (routeOpt?.route !== undefined) assertRouteKey(routeOpt.route);
+    const route = routeOpt?.route ?? (routeOpt?.auto ? autoRouteKey(merchant, built.site) : undefined);
     // Keywords on file carry over; a new one is added (pending, with the reason when broad) once the playbook is saved.
     const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}), notes: old?.notes ?? [], avoid: old?.avoid ?? [] };
     const learnKeyword = (): string => {
@@ -213,6 +216,26 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
       const why = getPlaybook(built.site)?.merchantsPendingWhy?.[keyword];
       return ` Suggested the merchant keyword ${keyword}; ${why ? "it is broad, so the owner confirms it" : "a later verified download for a matching transaction confirms it"} before it is used.`;
     };
+    // A route holds its own start page, steps and counters; the default route, the shared keywords and notes stay as they are.
+    const saveAsRoute = () => {
+      const key = route!;
+      const now = new Date().toISOString();
+      const base = old ?? validatePlaybook({ steps: [], startUrl: `https://${built.site}/` }, built.site);
+      const oldRoute = getRoute(base, key);
+      const next = { startUrl: fresh.startUrl, steps: fresh.steps, ...(fresh.shortcut ? { shortcut: fresh.shortcut } : {}), successCount: oldRoute?.successCount ?? 0, failCount: 0, status: "ok" as const, ...(oldRoute?.lastSucceeded ? { lastSucceeded: oldRoute.lastSucceeded } : {}), updatedAt: now };
+      const same = oldRoute && oldRoute.startUrl === next.startUrl && oldRoute.steps.length === next.steps.length && oldRoute.steps.every((x, i) => sameStep(x, next.steps[i]));
+      const label = `${built.site}, route ${key}`;
+      if (same) {
+        recordSuccess(built.site, undefined, undefined, key); // the same path just worked again
+        return { saved: `The playbook for ${label} already matches this path.`, message: `The playbook for ${label} already matches this path; nothing changed.${note}${learnKeyword()}` };
+      }
+      const pb = { ...base, hosts: fresh.hosts, ...(old ? {} : { createdAt: now }), ...carry };
+      setRoute(pb, key, next);
+      savePlaybook({ ...pb, updatedAt: now, history: [...base.history, ...(fresh.shortcut ? [{ at: now, summary: HISTORY.shortcutLearned }] : []), { at: now, summary: `${oldRoute ? summary?.updated ?? "path re-recorded" : summary?.created ?? "path saved"} (route ${key})` }] });
+      const stepCount = next.steps.length;
+      return { saved: `Saved a playbook route for ${label} (${stepCount} steps).`, message: `${oldRoute ? "Updated" : "Saved"} route ${key} of the playbook for ${built.site} with ${stepCount} steps after the start page.${note}${learnKeyword()}`, event: { type: "playbook.event" as const, threadId, kind: oldRoute ? ("updated" as const) : ("learned" as const), site: built.site, stepCount, ...(oldRoute ? { step: 1, before: "Open the start page", after: "Open a different start page" } : {}) } };
+    };
+    if (route !== undefined) return saveAsRoute();
     const learned = fresh.shortcut ? [{ at: new Date().toISOString(), summary: HISTORY.shortcutLearned }] : [];
     const how = unverified ? `${fresh.steps.length} steps; the last is handed back each run` : `${fresh.steps.length} steps, ${verifiedBy ? `verified by ${verifiedBy}` : "unchecked"}`;
     const saved = `Saved a playbook for ${built.site} (${how}).`;
@@ -253,9 +276,10 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
         waitFor: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Entry number -> text expected on the page afterwards" })),
         invoice: Type.Optional(Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }, { description: "The invoice the saved download was for. Needed when a step picks one row of a list or a month; the playbook then picks that row by the invoice's date (and amount) next time. Used only to check the rule against the page; it is not stored in the playbook (it stays in this conversation)." })),
         unsure: Type.Optional(Type.Boolean({ description: "Set true when the merchant text is generic or could belong to several vendors, so the keyword is not confirmed without the owner." })),
+        route: Type.Optional(Type.String({ description: "Save this path as a named route of the site's playbook (`<task>:<qualifier>`, e.g. 'invoice:telia') instead of its default path. Leave out unless a different strategy for the same site should be kept alongside; for an invoice from a third-party site the host names the route itself." })),
         merchant: Type.Optional(Type.String({ description: "The bank or card transaction's merchant text this invoice was for, exactly as it appeared. The host derives one short keyword from it (never stores the raw text) so later transactions from the same vendor can be matched to this site." })),
       }),
-      execute: async (_id, { steps, waitFor, invoice, merchant, unsure }) => {
+      execute: async (_id, { steps, waitFor, invoice, merchant, unsure, route }) => {
         const rows = trace.list();
         let text: string;
         if (!steps) {
@@ -267,7 +291,7 @@ export function registerPlaybookSave(pi: ExtensionAPI, trace: PlaybookTrace, emi
             trace.invoice = invoice;
             trace.merchant = typeof merchant === "string" ? merchant : undefined;
           }
-          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant, unsure);
+          const r = savePlaybookFromTrace(rows, steps, waitFor, threadId, invoice, merchant, unsure, undefined, { route, auto: true });
           if (r.event) emit(r.event);
           text = r.message;
         }
@@ -449,7 +473,7 @@ export function autoCapture(trace: PlaybookTrace, resultText: string, threadId: 
   const onPath = new Set(path.map((x) => trySiteKey(urlOf(x))).filter(Boolean));
   if (rows.some((x) => x.kind === "signIn" && !onPath.has(trySiteKey(x.origin) ?? ""))) return {};
   const summary = { created: HISTORY.captured, updated: k !== undefined ? HISTORY.repaired(k) : HISTORY.captured };
-  const save = (entries: TraceRow[]) => savePlaybookFromTrace(rows.map((r) => entries.find((e) => e.n === r.n) ?? r), entries.map((x) => x.n), undefined, threadId, invoice, trace.merchant, undefined, summary);
+  const save = (entries: TraceRow[]) => savePlaybookFromTrace(rows.map((r) => entries.find((e) => e.n === r.n) ?? r), entries.map((x) => x.n), undefined, threadId, invoice, trace.merchant, undefined, summary, { auto: true });
   // Dead ends are pruned first; if that path cannot be saved, the full one gets one try.
   const pruned = prune(path, invoice);
   let res = save(pruned);

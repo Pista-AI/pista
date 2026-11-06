@@ -860,6 +860,20 @@ export interface PlaybookAvoid { url: string; why: string; at: string }
 
 export interface PlaybookShortcut { url: string; afterStep: number }
 
+/** One learned strategy under a site, keyed by task (`<task>[:<qualifier>]`, e.g. `invoice:stripe`): the per-strategy part of a Playbook. The playbook's own top-level fields are the default route. */
+export interface PlaybookRoute {
+  startUrl: string;
+  steps: PlaybookStep[];
+  shortcut?: PlaybookShortcut;
+  shortcutCandidate?: PlaybookShortcut;
+  shortcutFails?: number;
+  lastSucceeded?: string;
+  successCount: number;
+  failCount: number;
+  status: "ok" | "needs-attention";
+  updatedAt: string;
+}
+
 export interface Playbook {
   version: 1;
   /** Registrable domain the playbook belongs to. */
@@ -901,6 +915,8 @@ export interface Playbook {
   /** Consecutive failures since the last success. */
   failCount: number;
   status: "ok" | "needs-attention";
+  /** Further strategies on this site by route key (`^[a-z0-9][a-z0-9:._-]{0,63}$`); counters and status are per route. Absent in older files. */
+  routes?: Record<string, PlaybookRoute>;
   history: { at: string; summary: string }[];
 }
 
@@ -918,6 +934,8 @@ export interface PlaybookMeta {
   merchantsPending?: string[];
   merchantsPendingWhy?: Playbook["merchantsPendingWhy"];
   stepCount: number;
+  /** How many further routes the playbook holds, when it has any. */
+  routeCount?: number;
   status: Playbook["status"];
   lastSucceeded?: string;
   successCount: number;
