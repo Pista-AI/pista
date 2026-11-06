@@ -67,6 +67,12 @@ export class Hub {
     }
   }
 
+  /** Tells the live-view windows that the agent's Chrome is gone, so they drop the last frame. */
+  emitClosed(): void {
+    const text = JSON.stringify({ kind: "evt", event: { type: "browser.closed" } } satisfies HostFrame);
+    for (const ws of this.viewers) if (ws.readyState === ws.OPEN) ws.send(text);
+  }
+
   describe(ws: WebSocket, client: { nativeBrowser?: boolean } | undefined): void {
     const info = this.clients.get(ws);
     if (info) info.nativeBrowser = Boolean(client?.nativeBrowser);

@@ -290,3 +290,25 @@ test("a click that opens a new tab is followed, listed and switchable, traced, a
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("onClosed fires once when the browser goes away, and not after unsubscribing", async () => {
+  const first = fakeBrowser();
+  const second = fakeBrowser();
+  const { driver } = driverWith([first, second]);
+  let closed = 0;
+  const off = driver.onClosed(() => closed++);
+  await driver.state();
+  first.die();
+  assert.equal(closed, 1);
+  off();
+  await driver.state();
+  second.die();
+  assert.equal(closed, 1);
+});
+
+test("bringToFront is false while no browser is running", async () => {
+  const b = fakeBrowser();
+  const { driver, launches } = driverWith([b]);
+  assert.equal(await driver.bringToFront(), false);
+  assert.equal(launches(), 0);
+});

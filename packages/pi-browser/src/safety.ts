@@ -153,7 +153,7 @@ export function stopNote(action: string, effect: string): string {
 
 /** The refusal text for typing into a password or other secret field (card number, security code, one-time code, PIN, ID number). Never includes the value. */
 export function passwordNote(label: string | undefined): string {
-  return `Not typed: ${label ?? "the focused field"} is a password or other secret field (card number, security code, one-time code, PIN, ID number). Nothing was entered. Ask the user to type it themselves in the browser pane, then continue from browser_snapshot.`;
+  return `Not typed: ${label ?? "the focused field"} is a password or other secret field (card number, security code, one-time code, PIN, ID number). Nothing was entered. Ask the user to type it themselves in the browser, then continue from browser_snapshot.`;
 }
 
 /** The result when the user pressed Stop while a held action waited for their answer: the action was not performed at all. */

@@ -50,6 +50,7 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
   private downloadListeners = new Set<(event: CdpEvent) => void>();
   private pageInfo = { url: "", title: "" };
   private casting = false;
+  private closedListeners = new Set<() => void>();
   private feed = new ScreencastFeed({
     start: () => void this.startCast(),
     stop: () => void this.stopCast(),
@@ -115,7 +116,9 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
       for (const m of [this.sessionOf, this.openers, this.ours]) m.clear();
       const { transport } = browser;
       transport.onClose(() => {
-        if (this.browser === browser) this.browser = undefined;
+        if (this.browser !== browser) return;
+        this.browser = undefined;
+        for (const cb of [...this.closedListeners]) cb();
       });
       transport.onEvent((event) => this.onBrowserEvent(event));
       // Popups and tabs the page opens are separate top-level targets; attach to every new one and hold it until it is set up (and guarded, when there are rules).
@@ -211,6 +214,12 @@ export class ChromeDriver extends CdpDriver implements BrowserDriver {
   /** Subscribes to live frames of the agent tab. The screencast runs only while someone listens, and never launches the browser by itself. */
   onFrame(cb: (frame: ScreencastFrame) => void): () => void {
     return this.feed.subscribe(cb);
+  }
+
+  /** Calls `cb` when the running browser goes away (the user quit it, or it crashed); the next browser step launches a new one. */
+  onClosed(cb: () => void): () => void {
+    this.closedListeners.add(cb);
+    return () => void this.closedListeners.delete(cb);
   }
 
   // Start and stop run one after the other, so a quick stop can never overtake a start that is still setting up.

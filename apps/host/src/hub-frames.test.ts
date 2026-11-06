@@ -29,3 +29,15 @@ test("only subscribed windows get frames; a slow socket is skipped; counts are r
   slow.close();
   assert.deepEqual(counts, [1, 2, 1, 0]);
 });
+
+test("the closed signal reaches only subscribed windows", () => {
+  const hub = new Hub();
+  const a = fakeWs();
+  const b = fakeWs();
+  hub.add(a.ws);
+  hub.add(b.ws);
+  hub.setViewer(a.ws, true);
+  hub.emitClosed();
+  assert.equal(JSON.parse(a.sent[0]).event.type, "browser.closed");
+  assert.equal(b.sent.length, 0);
+});

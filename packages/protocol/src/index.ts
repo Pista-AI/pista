@@ -1017,8 +1017,8 @@ export interface Methods {
   "approval.respond": { params: { approvalId: string; allow: boolean; always?: boolean; note?: string }; result: void };
   /** Starts or stops the live view of the agent's Chrome tab for this window; frames arrive as `browser.frame` events only while subscribed. */
   "browser.view": { params: { subscribe: boolean }; result: void };
-  /** Brings the agent's Chrome window to the front so the user can take over. */
-  "browser.showChrome": { params: {}; result: void };
+  /** Brings the agent's Chrome window to the front so the user can take over; `shown` is false when Chrome is not running. */
+  "browser.showChrome": { params: {}; result: { shown: boolean } };
   "browser.respond": {
     params: { requestId: string; ok: boolean; result?: BrowserResult; error?: string };
     result: void;
@@ -1035,6 +1035,8 @@ export type HostEvent =
   | { type: "thread.removed"; threadId: string }
   | { type: "browser.request"; requestId: string; threadId: string; request: BrowserAction }
   | ({ type: "browser.frame" } & BrowserFrame)
+  /** The agent's Chrome went away; subscribed windows clear the last frame. */
+  | { type: "browser.closed" }
   | { type: "approval.request"; approvalId: string; threadId: string; toolName: string; args: unknown; reason: string; action?: string; toolLimit?: { used: number; more: number } }
   | { type: "approval.resolved"; approvalId: string }
   | { type: "auth.prompt"; promptId: string; provider: string; prompt: AuthPrompt }

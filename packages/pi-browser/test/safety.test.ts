@@ -65,7 +65,7 @@ test("page-supplied names are sanitized in the action text", () => {
 });
 
 test("passwordNote never carries a value", () => {
-  assert.match(passwordNote('input "Password"'), /secret field.*Nothing was entered.*type it themselves in the browser pane/);
+  assert.match(passwordNote('input "Password"'), /secret field.*Nothing was entered.*type it themselves in the browser/);
 });
 
 // The rest needs real layout, so it drives a headless Chromium over CDP (PISTA_CHROME to point at one) and skips without it.
@@ -172,7 +172,7 @@ test("browser_type refuses password fields without typing or echoing the value, 
   const secret = "hunter2-secret";
   for (const pattern of [/\[(e\d+)\] textbox:password "Password"/, /\[(e\d+)\] textbox "New"/]) {
     const refused = await call("browser_type", { ref: refOf(body, pattern), text: secret });
-    assert.match(refused.meta.note ?? "", /secret field.*Nothing was entered\. Ask the user to type it themselves in the browser pane/);
+    assert.match(refused.meta.note ?? "", /secret field.*Nothing was entered\. Ask the user to type it themselves in the browser/);
     assert.ok(!JSON.stringify(refused).includes(secret), "the value must never be echoed");
   }
   assert.equal(await driver.evaluate("[...document.querySelectorAll('input:not([type=submit])')].map((i) => i.value).join('')"), "");
@@ -292,7 +292,7 @@ test("a field known only by its label is masked in the snapshot and refused by b
   const typed = "9999888877776666";
   for (const pattern of [/\[(e\d+)\] textbox "Card number"/, /\[(e\d+)\] textbox "One-time code"/, /\[(e\d+)\] textbox "SSN"/]) {
     const refused = await call("browser_type", { ref: refOf(body, pattern), text: typed });
-    assert.match(refused.meta.note ?? "", /secret field.*Nothing was entered\. Ask the user to type it themselves in the browser pane/);
+    assert.match(refused.meta.note ?? "", /secret field.*Nothing was entered\. Ask the user to type it themselves in the browser/);
     assert.ok(!JSON.stringify(refused).includes(typed));
   }
   assert.equal(await driver.evaluate("document.getElementById('f1').value"), "4111111111111111");
