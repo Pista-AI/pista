@@ -42,27 +42,26 @@ const trialKeyword = (p: Pb | undefined, merchant: string) => [...pendingKeyword
 
 /** Lines that exactly one playbook claims by a confirmed keyword, or, as a trial, by a pending keyword that is not broad. Everything else is left to the model. */
 export function routeLines(lines: ParsedLine[], playbooks: Pb[]): { routed: Routed[]; rest: Left[] } {
-  const usable = playbooks.filter((p) => p.status !== "needs-attention" && hasPath(p)); // a notes-only site has no path to run
-  const shut = playbooks.filter((p) => p.status === "needs-attention" && hasPath(p));
+  // Status is per line: the route the line would run (invoice:<merchant>) if the playbook has one, else the default path.
+  const routeOf = (p: Pb, merchant: string) => { const slug = routeSlug(merchant); return slug ? p.routes?.[`invoice:${slug}`] : undefined; };
+  const attention = (p: Pb, merchant: string) => (routeOf(p, merchant) ?? p).status === "needs-attention";
   const routed: Routed[] = [], rest: Left[] = [];
   for (const line of lines) {
     if (!line.ok || !line.merchant || !line.date) { rest.push({ line, why: line.reason }); continue; }
-    const one = matchVendor(line.merchant, usable);
-    if (one.kind === "one") {
-      // Only the route this line would run counts: a route that needs attention is skipped, the rest of the playbook still runs.
-      const slug = routeSlug(line.merchant), pb = usable.find((p) => p.site === one.site), r = slug ? pb?.routes?.[`invoice:${slug}`] : undefined;
-      if (r?.status === "needs-attention") rest.push({ line, why: `skipped: the ${one.site} route invoice:${slug} needs attention after ${r.failCount} failures`, site: one.site });
-      else routed.push({ line, site: one.site, trial: false });
-      continue;
-    }
+    const m = line.merchant;
+    const usable = playbooks.filter((p) => hasPath(p) && !attention(p, m)); // a notes-only site has no path to run
+    const shut = playbooks.filter((p) => hasPath(p) && attention(p, m));
+    const one = matchVendor(m, usable);
+    if (one.kind === "one") { routed.push({ line, site: one.site, trial: false }); continue; }
     if (one.kind === "many") { rest.push({ line, why: "more than one saved site claims it" }); continue; }
-    const trials = usable.filter((p) => pendingKeywords(p, line.merchant!).length > 0);
-    if (trials.length === 1) routed.push({ line, site: trials[0]!.site, trial: true, keyword: trialKeyword(trials[0], line.merchant!) });
+    const trials = usable.filter((p) => pendingKeywords(p, m).length > 0);
+    if (trials.length === 1) routed.push({ line, site: trials[0]!.site, trial: true, keyword: trialKeyword(trials[0], m) });
     else {
-      const skipped = matchVendor(line.merchant, shut);
+      const skipped = matchVendor(m, shut);
       const pb = skipped.kind === "one" ? shut.find((p) => p.site === skipped.site) : undefined;
+      const r = pb && routeOf(pb, m);
       const last = [...(pb?.history ?? [])].reverse().find((h) => h.summary.startsWith(HISTORY.replayFailed))?.summary.replace(new RegExp(`^${HISTORY.replayFailed}:?\\s*`), "");
-      rest.push(pb ? { line, why: `skipped: ${pb.site} needs attention after ${pb.failCount ?? 0} failures${last ? ` (last: ${last})` : ""}`, site: pb.site } : { line });
+      rest.push(pb ? { line, why: `skipped: ${r ? `the ${pb.site} route invoice:${routeSlug(m)}` : pb.site} needs attention after ${(r ?? pb).failCount ?? 0} failures${last ? ` (last: ${last})` : ""}`, site: pb.site } : { line });
     }
   }
   return { routed, rest };

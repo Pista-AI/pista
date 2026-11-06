@@ -136,7 +136,7 @@ test("a failure counts on its route; needs-attention on one route leaves the oth
   const r = routeLines(lines, [pb]);
   assert.deepEqual(r.routed.map((x) => x.site), ["google.com"]);
   assert.equal(r.rest.length, 1);
-  assert.match(String((r.rest[0] as { why?: string }).why), /invoice:telia needs attention/);
+  assert.match(String((r.rest[0] as { why?: string }).why), /route invoice:telia needs attention/);
 });
 
 test("a playbook with routes only has a path: the guard applies and a keyword-less run lists the routes", async () => {
@@ -149,4 +149,44 @@ test("a playbook with routes only has a path: the guard applies and a keyword-le
   const r = await runPlaybookForInvoice(deps as never, consent as never, { site: "google.com", invoice: { date: "2026-10-03" }, path: "invoices/z.pdf" }, undefined);
   assert.equal(r.status, "no-playbook");
   assert.match(r.text, /routes: invoice:openai/);
+});
+
+test("re-capturing the default path keeps the routes", () => {
+  twoRoutes();
+  autoCapture(gmailTrace("again"), OK, "t");
+  const pb = getPlaybook("google.com")!;
+  assert.deepEqual(Object.keys(pb.routes!).sort(), ["invoice:openai", "invoice:telia"]);
+  assert.match(pb.startUrl, /q=again/);
+  autoCapture(gmailTrace("again2"), OK, "t"); // a repair of an existing default path
+  assert.deepEqual(Object.keys(getPlaybook("google.com")!.routes!).sort(), ["invoice:openai", "invoice:telia"]);
+});
+
+test("a failed default route does not shut a healthy vendor route", () => {
+  twoRoutes();
+  for (let i = 0; i < 3; i++) recordRun("google.com", fail, "t", INV, 1);
+  const pb = getPlaybook("google.com")!;
+  assert.equal(pb.status, "needs-attention");
+  const lines = [{ ok: true, merchant: "TELIA SVERIGE", date: "2026-10-03", amount: -10 }] as never;
+  assert.equal(routeLines(lines, [pb]).routed.length, 1);
+  const none = [{ ok: true, merchant: "OPENAI", date: "2026-10-03", amount: -10 }] as never;
+  assert.equal(routeLines(none, [validatePlaybook({ ...pb, routes: undefined, merchants: ["OPENAI"] }, "google.com")]).routed.length, 0, "no route: the default status counts");
+});
+
+test("at the route cap a new route falls back to the default path with a note; loading keeps the first 12", () => {
+  fresh();
+  const routes = Object.fromEntries(Array.from({ length: 14 }, (_, i) => [`invoice:v${i}`, { startUrl: `${MAIL}v${i}`, steps: [dlStep] }]));
+  savePlaybook(validatePlaybook({ startUrl: MAIL, steps: [], routes }, "google.com"));
+  assert.equal(Object.keys(getPlaybook("google.com")!.routes!).length, 12);
+  const r = autoCapture(gmailTrace("cap", "TELIA SVERIGE"), OK, "t");
+  assert.match(r.note ?? "", /^Saved a playbook for google\.com/);
+  const pb = getPlaybook("google.com")!;
+  assert.equal(Object.keys(pb.routes!).length, 12);
+  assert.ok(pb.steps.length > 0);
+  assert.ok(pb.notes.some((n) => /Route cap reached for invoice:telia/.test(n.text)));
+});
+
+test("a short mailbox label does not claim a vendor whose name merely contains it", () => {
+  assert.equal(autoRouteKey("AMAZON WEB SERVICES", "web.de"), "invoice:amazon-web");
+  assert.equal(autoRouteKey("MAILCHIMP", "mail.com"), "invoice:mailchimp");
+  assert.equal(autoRouteKey("WEB SHOP", "web.de"), undefined, "the first word is the site's name");
 });

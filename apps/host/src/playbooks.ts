@@ -364,6 +364,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
 
 export const ROUTE_KEY = /^[a-z0-9][a-z0-9:._-]{0,63}$/;
 export const MAX_ROUTES = 12;
+let warnedCap = false;
 
 export function assertRouteKey(key: unknown): asserts key is string {
   if (typeof key !== "string" || !ROUTE_KEY.test(key)) throw new Error("invalid route key (use <task> or <task>:<qualifier>: lowercase letters, digits and : . _ -, at most 64 characters)");
@@ -376,7 +377,12 @@ function cleanRoutes(v: unknown, hosts: Sites): Record<string, PlaybookRoute> | 
   const date = (x: unknown) => (typeof x === "string" && !Number.isNaN(Date.parse(x)) ? x : undefined);
   const count = (x: unknown) => (typeof x === "number" && Number.isInteger(x) && x >= 0 ? x : 0);
   for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
-    if (!ROUTE_KEY.test(key) || Object.keys(out).length >= MAX_ROUTES) continue;
+    if (!ROUTE_KEY.test(key)) continue;
+    if (Object.keys(out).length >= MAX_ROUTES) {
+      if (!warnedCap) console.warn(`[playbooks] more than ${MAX_ROUTES} routes in a playbook; the rest are ignored`);
+      warnedCap = true;
+      break;
+    }
     try {
       const r = obj(raw);
       if (!Array.isArray(r.steps) || !r.steps.length || r.steps.length > MAX_STEPS) continue;
@@ -435,12 +441,12 @@ export function routeSlug(merchant: unknown): string | undefined {
   return slug || undefined;
 }
 
-/** The route key capture uses for an invoice: `invoice:<merchant-slug>` when the merchant is known and the site is not its own (a mailbox or billing host), else undefined (the default route). The merchant's own domain is judged by name: the site's name contains the merchant's first word, or the other way round. */
+/** The route key capture uses for an invoice: `invoice:<merchant-slug>` when the merchant is known and the site is not its own (a mailbox or billing host), else undefined (the default route). The merchant's own domain is judged by name: the site's name contains the merchant's first word, or the merchant's first word is the site's name. */
 export function autoRouteKey(merchant: unknown, site: string): string | undefined {
   const slug = routeSlug(merchant);
   if (!slug) return undefined;
   const label = site.split(".")[0]!.replace(/[^a-z0-9]/g, ""), first = slug.split("-")[0]!, flat = slug.replace(/-/g, "");
-  const own = (first.length >= 3 && label.includes(first)) || (label.length >= 3 && flat.includes(label));
+  const own = (first.length >= 3 && label.includes(first)) || (label.length >= 3 && first === label);
   return own ? undefined : `invoice:${slug}`;
 }
 

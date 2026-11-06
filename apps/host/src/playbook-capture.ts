@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { describeStep, type HostEvent, type Playbook, type PlaybookExpect, type PlaybookLocator, type PlaybookShortcut, type PlaybookStep } from "@pista/protocol";
 import { upsertRow } from "./manifest.ts";
 import { merchantKeyword } from "./merchants.ts";
-import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, assertRouteKey, autoRouteKey, getRoute, setRoute, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
+import { deriveShortcut, getPlaybook, addPendingMerchant, isOpaque, LABEL_MAX, MAX_TEXT, recordSuccess, savePlaybook, MAX_HOSTS, siteKey, trySiteKey, siteOf, isInternalHost, HISTORY, validatePlaybook, addSiteNote, MAX_NOTES, MAX_ROUTES, assertRouteKey, autoRouteKey, getRoute, setRoute, notesBlock, NOTE_MAX, WHY_MAX } from "./playbooks.ts";
 
 export const TRACE_LIMIT = 200;
 /** A step a playbook run did before it handed off; saving after a repair keeps it as stored. */
@@ -208,9 +208,14 @@ export function savePlaybookFromTrace(rows: readonly TraceRow[], chosen: number[
     const keyword = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
     // An explicit key wins; for an invoice from a third-party site (a mailbox, a billing host) the host names the route by merchant.
     if (routeOpt?.route !== undefined) assertRouteKey(routeOpt.route);
-    const route = routeOpt?.route ?? (routeOpt?.auto ? autoRouteKey(merchant, built.site) : undefined);
+    let route = routeOpt?.route ?? (routeOpt?.auto ? autoRouteKey(merchant, built.site) : undefined);
     // Keywords on file carry over; a new one is added (pending, with the reason when broad) once the playbook is saved.
-    const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}), notes: old?.notes ?? [], avoid: old?.avoid ?? [] };
+    const carry = { ...(old?.merchants ? { merchants: old.merchants } : {}), ...(old?.merchantMisses ? { merchantMisses: old.merchantMisses } : {}), ...(old?.merchantLastMiss ? { merchantLastMiss: old.merchantLastMiss } : {}), ...(old?.merchantsPending ? { merchantsPending: old.merchantsPending } : {}), ...(old?.merchantsPendingWhy ? { merchantsPendingWhy: old.merchantsPendingWhy } : {}), notes: old?.notes ?? [], avoid: old?.avoid ?? [], ...(old?.routes ? { routes: old.routes } : {}) };
+    // At the route cap a new route is not stored: the path goes to the default route and a note says why.
+    if (route !== undefined && !old?.routes?.[route] && Object.keys(old?.routes ?? {}).length >= MAX_ROUTES) {
+      carry.notes = [...carry.notes, { text: `Route cap reached for ${route}; its path was saved as the default route`.slice(0, NOTE_MAX), at: new Date().toISOString(), by: "model" as const }].slice(-MAX_NOTES);
+      route = undefined;
+    }
     const learnKeyword = (): string => {
       if (!keyword || !addPendingMerchant(built.site, keyword, { unsure })) return "";
       const why = getPlaybook(built.site)?.merchantsPendingWhy?.[keyword];
