@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { confineToFolder, runReplay, type BrowserDriver, type DomainRules, type ReplayReason, type ReplayResult, type RiskApprover } from "@pista/pi-browser";
 import { Type } from "typebox";
-import type { ApprovalMode, HostEvent, Playbook, PlaybookStep } from "@pista/protocol";
+import type { ApprovalMode, HostEvent, Playbook, PlaybookRoute, PlaybookStep } from "@pista/protocol";
 import { checkInvoice, stepTargetName, type InvoiceParams, type PlaybookTrace } from "./playbook-capture.ts";
-import { bandFor, matchSentence, deriveShortcut, getPlaybook, LABEL_MAX, listPlaybooks, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
+import { bandFor, matchSentence, deriveShortcut, getPlaybook, getRoute, hasPath, LABEL_MAX, listPlaybooks, noteMerchantOutcome, notesBlock, recordFailure, recordSuccess, savePlaybook, selectRoute, setRoute, siteOf, transactionKey, unfence, HISTORY, OPEN, CLOSE } from "./playbooks.ts";
 import { isInvoicesPath } from "./project-files.ts";
 import { matchVendor } from "./transactions.ts";
 import { toolRulesDeny, type ToolRules } from "./policy-tools.ts";
@@ -30,7 +30,7 @@ export function resolvePlaybook(site: unknown, merchant?: unknown): { pb: Playbo
   const metas = listPlaybooks();
   const given = typeof merchant === "string" ? merchant.trim() : "";
   const text = given || key?.split(".")[0];
-  const m = text ? matchVendor(text, metas.filter((x) => x.stepCount > 0)) : { kind: "none" as const }; // a notes-only playbook has no path to follow
+  const m = text ? matchVendor(text, metas.filter((x) => x.stepCount > 0 || x.routeCount)) : { kind: "none" as const }; // a notes-only playbook has no path to follow
   if (m.kind === "one") {
     const pb = getPlaybook(m.site);
     if (pb) {
@@ -51,7 +51,7 @@ export function resolvePlaybook(site: unknown, merchant?: unknown): { pb: Playbo
 export function playbookGuardMessage(attempted: ReadonlySet<string>, toolName: string, input: unknown): string | undefined {
   if (toolName !== "browser_navigate" && toolName !== "browser_download") return undefined;
   const site = siteOf((input as { url?: unknown } | null)?.url);
-  if (!site || attempted.has(site) || !getPlaybook(site)?.steps.length) return undefined; // a notes-only site has no path to try first
+  if (!site || attempted.has(site) || !hasPath(getPlaybook(site) ?? { steps: [] })) return undefined; // a notes-only site has no path to try first
   return `Blocked: a saved playbook exists for ${site}. Call playbook_run with the site and the invoice first; if it hands off, continue from the page it leaves you on.`;
 }
 
@@ -82,42 +82,49 @@ function reasonText(r: Extract<ReplayResult, { ok: false }>): string {
 /** Shortcut failures in a row (the full path then worked) after which the shortcut is dropped: one slow page must not lose it. */
 const SHORTCUT_FAILS = 2;
 
-/** After a successful run: counts a failed shortcut (dropping it at the second in a row), or learns one; seen on two successful runs it is kept. */
-function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>): void {
+/** After a successful run: counts a failed shortcut (dropping it at the second in a row), or learns one; seen on two successful runs it is kept. Acts on the route that ran. */
+function noteShortcut(site: string, r: Extract<ReplayResult, { ok: true }>, route?: string): void {
   const pb = getPlaybook(site);
-  if (!pb) return;
+  const cur = pb && getRoute(pb, route);
+  if (!pb || !cur) return;
   const at = new Date().toISOString();
-  const { shortcut, shortcutCandidate: c, shortcutFails, ...rest } = pb;
-  const log = (summary: string) => [...pb.history, { at, summary }];
+  const { shortcut, shortcutCandidate: c, shortcutFails, ...rest } = cur;
+  const put = (next: PlaybookRoute, summary?: string) => {
+    setRoute(pb, route, next);
+    if (summary) pb.history = [...pb.history, { at, summary }];
+    savePlaybook(pb);
+  };
   if (shortcut) {
-    if (r.shortcut === "used" && shortcutFails) savePlaybook({ ...rest, shortcut });
+    if (r.shortcut === "used" && shortcutFails) put({ ...rest, shortcut });
     else if (r.shortcut === "failed") {
       const fails = (shortcutFails ?? 0) + 1;
-      savePlaybook(fails >= SHORTCUT_FAILS ? { ...rest, history: log("shortcut dropped") } : { ...rest, shortcut, shortcutFails: fails });
+      if (fails >= SHORTCUT_FAILS) put(rest, "shortcut dropped");
+      else put({ ...rest, shortcut, shortcutFails: fails });
     }
     return;
   }
-  const found = r.shortcut === "failed" ? undefined : deriveShortcut(pb.startUrl, pb.steps, r.urls.slice(1), pb.hosts);
-  if (found && c && found.url === c.url && found.afterStep === c.afterStep) savePlaybook({ ...rest, shortcut: found, history: log("shortcut confirmed") });
-  else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) savePlaybook({ ...rest, shortcutCandidate: found, history: log(HISTORY.shortcutLearned) });
-  else if (!found && c) savePlaybook(rest);
+  const found = r.shortcut === "failed" ? undefined : deriveShortcut(cur.startUrl, cur.steps, r.urls.slice(1), pb.hosts);
+  if (found && c && found.url === c.url && found.afterStep === c.afterStep) put({ ...rest, shortcut: found }, "shortcut confirmed");
+  else if (found && !(c && found.url === c.url && found.afterStep === c.afterStep)) put({ ...rest, shortcutCandidate: found }, HISTORY.shortcutLearned);
+  else if (!found && c) put(rest);
 }
 
 /** Records the outcome on the playbook and returns the event(s) to emit. `step` counts like the stored playbook: 0 is the start page (left out of the event), stored steps count from 1. */
-export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number): HostEvent[] {
+export function recordRun(site: string, r: ReplayResult, threadId: string, invoice?: InvoiceParams, stepCount?: number, route?: string): HostEvent[] {
   const extra = { ...(stepCount !== undefined ? { stepCount } : {}), ...(invoice ? { invoice } : {}) };
   if (r.ok) {
-    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { to: invoice?.currency, rowCurrency: r.verified.rowCurrency, offsetDays: r.verified.offsetDays, fxRateImplied: r.verified.fxRateImplied, matchedBy: r.verified.matchedBy, amountVerified: r.verified.amount });
-    noteShortcut(site, r);
+    recordSuccess(site, matchSentence(r.verified, invoice?.currency) || undefined, { to: invoice?.currency, rowCurrency: r.verified.rowCurrency, offsetDays: r.verified.offsetDays, fxRateImplied: r.verified.fxRateImplied, matchedBy: r.verified.matchedBy, amountVerified: r.verified.amount }, route);
+    noteShortcut(site, r, route);
     return [{ type: "playbook.event", threadId, kind: "followed", site, ...extra }];
   }
   if (r.reason === "declined" || r.reason === "aborted") return [];
   const events: HostEvent[] = [{ type: "playbook.event", threadId, kind: "repairing", site, step: r.failedIndex || undefined, reason: reasonText(r), ...extra }];
   {
     const counts = !NOT_COUNTED.has(r.reason);
-    const before = getPlaybook(site)?.status;
-    const after = recordFailure(site, r.reason, counts);
-    if (counts && after?.status === "needs-attention" && before !== "needs-attention") events.push({ type: "playbook.event", threadId, kind: "needs-attention", site, step: r.failedIndex || undefined, ...(stepCount !== undefined ? { stepCount } : {}) });
+    const before = (route === undefined ? getPlaybook(site) : getPlaybook(site)?.routes?.[route])?.status;
+    const after = recordFailure(site, r.reason, counts, route);
+    const afterStatus = route === undefined ? after?.status : after?.routes?.[route]?.status;
+    if (counts && afterStatus === "needs-attention" && before !== "needs-attention") events.push({ type: "playbook.event", threadId, kind: "needs-attention", site, step: r.failedIndex || undefined, ...(stepCount !== undefined ? { stepCount } : {}) });
   }
   return events;
 }
@@ -233,8 +240,8 @@ export function hostConsent(o: {
 const GATED = Symbol("gated");
 
 export type PlaybookRunResult =
-  | { status: "downloaded"; /** set when the playbook was picked by keyword */ note?: string; site: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** how the row was matched (see matchSentence) */ how?: string; /** keywords this run confirmed */ learned?: string[]; /** things the replay did that a person should know about */ notes?: string[] }
-  | { status: "handoff"; site: string; reason: ReplayReason; text: string; /** the step that failed, and what the page said and was at (website data) */ step?: string; detail?: string; url?: string }
+  | { status: "downloaded"; /** set when the playbook was picked by keyword */ note?: string; site: string; /** the route that ran; absent for the default route */ route?: string; path: string; bytes: number; contentType?: string; steps: number; /** the row check compared the amount too */ amountVerified: boolean; /** the page showed only another currency, so only the date was compared */ foreignCurrency?: boolean; /** how the row was matched (see matchSentence) */ how?: string; /** keywords this run confirmed */ learned?: string[]; /** things the replay did that a person should know about */ notes?: string[] }
+  | { status: "handoff"; site: string; route?: string; reason: ReplayReason; text: string; /** the step that failed, and what the page said and was at (website data) */ step?: string; detail?: string; url?: string }
   | { status: "declined" | "aborted" | "no-playbook" | "error" | "exists"; text: string };
 
 export interface PlaybookRunRequest {
@@ -242,6 +249,8 @@ export interface PlaybookRunRequest {
   invoice: unknown;
   /** The transaction's merchant text when the run was routed by a keyword. Only compared against the site's keywords, never stored. */
   merchant?: string;
+  /** A route of the playbook to follow (e.g. `invoice:telia`). Without one, the route named for the merchant if the playbook has it, else the default. */
+  route?: string;
   /** The transaction's text (an invoice or order number may be in it); the merchant keywords are taken out before the replay looks for it in a row. Never stored. */
   reference?: string;
   /** Leave pending keywords as they are on a hit; the caller promotes them once the whole batch verified (see first-pass.ts). */
@@ -280,15 +289,18 @@ function learnedRates(pb: { billing?: { currency: string; rate?: number; rateTo?
 
 async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | typeof GATED, req: PlaybookRunRequest, signal?: AbortSignal): Promise<PlaybookRunResult> {
   // Resolved once here; the approval gate resolves the same way before the call, so a playbook saved in between could in theory differ (the consent then named another site).
-  const { pb, note, listing } = resolvePlaybook(req.site, req.merchant);
+  const { pb: found, note, listing } = resolvePlaybook(req.site, req.merchant);
   // Even with no playbook (or no path yet) the invoice is in context, so the host can capture the path the model finds.
   try {
     deps.trace.invoice = checkInvoice(req.invoice);
     deps.trace.merchant = req.merchant;
   } catch {}
-  if (!pb) return { status: "no-playbook", text: listing ?? "" };
-  const lead = (t: string) => (note ? `${note}\n${t}` : t);
-  if (!pb.steps.length) return { status: "no-playbook", text: lead([`No saved path for ${pb.site} yet. Find the invoice with the browser tools, then call playbook_save.`, notesBlock(pb)].filter(Boolean).join("\n\n")) };
+  if (!found) return { status: "no-playbook", text: listing ?? "" };
+  const picked = selectRoute(found, req.route, req.merchant);
+  if ("error" in picked) return { status: "error", text: picked.error };
+  const route = picked.key, pb = picked.view; // from here on `pb` is the playbook laid out for the route that runs
+  const lead = (t: string) => { const l = [note, route ? `Route: ${route}.` : ""].filter(Boolean).join("\n"); return l ? `${l}\n${t}` : t; };
+  if (!pb.steps.length) return { status: "no-playbook", text: lead([`No saved path for ${pb.site} yet${found.routes ? ` (routes: ${Object.keys(found.routes).join(", ")}; pass route to use one)` : ""}. Find the invoice with the browser tools, then call playbook_save.`, notesBlock(pb)].filter(Boolean).join("\n\n")) };
   const invoice = checkInvoice(req.invoice);
   const root = deps.downloadRoot();
   if (!root) throw new Error("playbook_run: no project folder is known for this thread.");
@@ -335,7 +347,7 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
       onStep: (i, status) => (status === "start" && i === 0 ? (done.length = 0) : status === "done" && done.push(i)),
     });
   });
-  for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length)) deps.emit(e);
+  for (const e of recordRun(pb.site, r, deps.threadId, invoice, pb.steps.length, route)) deps.emit(e);
   // A replay that passed the row check proves the keyword; a missing or unverified row counts against it.
   let learned: string[] = [];
   if (req.merchant) {
@@ -343,10 +355,10 @@ async function runCore(deps: PlaybookRunDeps, consent: PlaybookRunConsent | type
     if (r.ok) learned = noteMerchantOutcome(pb.site, req.merchant, "hit", { amountVerified: r.verified.date && r.verified.amount && !req.deferProof });
     else if (r.reason === "row-not-found" || r.reason === "row-not-verified") noteMerchantOutcome(pb.site, req.merchant, "miss", { txKey: transactionKey(invoice) });
   }
-  if (r.ok) return { status: "downloaded", ...(note ? { note } : {}), site: pb.site, path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(matchSentence(r.verified, invoice.currency) ? { how: matchSentence(r.verified, invoice.currency) } : {}), ...(learned.length ? { learned } : {}), ...(r.notes?.length ? { notes: r.notes } : {}) };
+  if (r.ok) return { status: "downloaded", ...(note ? { note } : {}), site: pb.site, ...(route ? { route } : {}), path: r.download.path, bytes: r.download.bytes, ...(r.download.contentType ? { contentType: r.download.contentType } : {}), steps: r.steps, amountVerified: r.verified.date && r.verified.amount, ...(r.verified.foreignCurrency ? { foreignCurrency: true } : {}), ...(matchSentence(r.verified, invoice.currency) ? { how: matchSentence(r.verified, invoice.currency) } : {}), ...(learned.length ? { learned } : {}), ...(r.notes?.length ? { notes: r.notes } : {}) };
   // What the playbook already did becomes part of this thread's trace, so playbook_save can keep it and replace only the broken part.
   if (r.reason !== "declined" && r.reason !== "aborted") for (const i of done) deps.trace.add(i === 0 ? { kind: "navigate", url: pb.startUrl } : { kind: "replayed", index: i, step: pb.steps[i - 1]! });
-  return { status: "handoff", site: pb.site, reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: lead(formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history)) };
+  return { status: "handoff", site: pb.site, ...(route ? { route } : {}), reason: r.reason, step: r.failedIndex === 0 ? "the start page" : describeStep(r.step), detail: r.detail, url: r.url, text: lead(formatHandoff(pb.site, invoice, pb.steps.length, r, notesBlock(pb), getPlaybook(pb.site)?.history)) };
 }
 
 export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): void {
@@ -363,14 +375,15 @@ export function registerPlaybookRun(pi: ExtensionAPI, deps: PlaybookRunDeps): vo
         invoice: Type.Object({ date: Type.String({ description: "yyyy-mm-dd" }), amount: Type.Optional(Type.Number()), currency: Type.Optional(Type.String()) }),
         path: Type.Optional(Type.String({ description: "Where to save it, relative to the project folder" })),
         overwrite: Type.Optional(Type.Boolean({ description: "Replace the file if it already exists (default false)" })),
+        route: Type.Optional(Type.String({ description: "A saved route of the site's playbook to follow, e.g. 'invoice:telia'. Leave out to let the host pick by merchant." })),
         reference: Type.Optional(Type.String({ description: "The transaction's full text, so an invoice or order number in it can be looked for in the page" })),
       }),
-      execute: async (_id, { site, merchant, invoice, path, overwrite, reference }, signal) => {
+      execute: async (_id, { site, merchant, invoice, path, overwrite, reference, route }, signal) => {
         const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
-        const r = await runCore(deps, GATED, { site, merchant, invoice, path, overwrite, reference }, signal);
+        const r = await runCore(deps, GATED, { site, merchant, invoice, path, overwrite, reference, route }, signal);
         if (r.status === "downloaded") {
           const notes = notesBlock(playbookFor(r.site) ?? { site: r.site });
-          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${r.note ? r.note + " " : ""}Followed the saved playbook for ${r.site} (${r.steps} steps).${r.how ? ` ${r.how[0]!.toUpperCase()}${r.how.slice(1)}${r.how.endsWith(".") ? "" : "."}` : ""}`, ...(notes ? { notes } : {}), ...(r.notes?.length ? { replayNotes: r.notes } : {}) }, null, 2));
+          return text(JSON.stringify({ path: r.path, bytes: r.bytes, ...(r.contentType ? { contentType: r.contentType } : {}), note: `${r.note ? r.note + " " : ""}Followed the saved playbook for ${r.site}${r.route ? `, route ${r.route}` : ""} (${r.steps} steps).${r.how ? ` ${r.how[0]!.toUpperCase()}${r.how.slice(1)}${r.how.endsWith(".") ? "" : "."}` : ""}`, ...(notes ? { notes } : {}), ...(r.notes?.length ? { replayNotes: r.notes } : {}) }, null, 2));
         }
         return text(r.text);
       },

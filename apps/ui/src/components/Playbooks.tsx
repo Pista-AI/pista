@@ -141,7 +141,7 @@ export function Playbooks() {
             <div className="login-info">
               <strong>{p.site}</strong>
               {p.hosts && <small>Also visits {p.hosts.slice(1).join(", ")}</small>}
-              <small>{p.stepCount === 0 ? "No saved path yet" : `${p.stepCount === 1 ? "1 step" : `${p.stepCount} steps`} · ${lastSucceeded(p.lastSucceeded)}`}</small>
+              <small>{p.stepCount === 0 ? (p.routeCount ? `${p.routeCount === 1 ? "1 route" : `${p.routeCount} routes`}` : "No saved path yet") : `${p.stepCount === 1 ? "1 step" : `${p.stepCount} steps`} · ${lastSucceeded(p.lastSucceeded)}`}</small>
               {describeStart(p.startUrl, p.shortcutUrl).map((line) => <small key={line}>{line}</small>)}
             </div>
             <span className="playbook-actions">

@@ -3,11 +3,11 @@ import { basename } from "node:path";
 import type { FirstPassLine, HostEvent, Playbook } from "@pista/protocol";
 import { keywordMatches, type BroadReason } from "./merchants.ts";
 import { upsertRow, vendorSlug } from "./manifest.ts";
-import { HISTORY, lowerFirst, confirmByProof, notesBlock, unfence } from "./playbooks.ts";
+import { HISTORY, hasPath, lowerFirst, confirmByProof, notesBlock, routeSlug, unfence } from "./playbooks.ts";
 import { playbookConsent, type PlaybookRunConsent, type PlaybookRunRequest, type PlaybookRunResult } from "./playbook-run.ts";
 import { matchVendor, parseTransactions, type ParsedLine } from "./transactions.ts";
 
-type Pb = Pick<Playbook, "site" | "merchants" | "merchantsPending" | "merchantsPendingWhy" | "steps" | "status"> & Partial<Pick<Playbook, "notes" | "avoid" | "failCount" | "history">>;
+type Pb = Pick<Playbook, "site" | "merchants" | "merchantsPending" | "merchantsPendingWhy" | "steps" | "status"> & Partial<Pick<Playbook, "notes" | "avoid" | "failCount" | "history" | "routes">>;
 type Left = { line: ParsedLine; why?: string; /** the site a routed line was tried on or meant for */ site?: string };
 export interface Routed { line: ParsedLine; site: string; /** a pending keyword matched: the run is its proof */ trial: boolean; /** the pending keyword that routed a trial line: the most specific one that matches */ keyword?: string }
 export interface ManifestRow { vendor: string; date: string; amount: number; currency: string; status: "found"; file: string; note: string }
@@ -42,21 +42,26 @@ const trialKeyword = (p: Pb | undefined, merchant: string) => [...pendingKeyword
 
 /** Lines that exactly one playbook claims by a confirmed keyword, or, as a trial, by a pending keyword that is not broad. Everything else is left to the model. */
 export function routeLines(lines: ParsedLine[], playbooks: Pb[]): { routed: Routed[]; rest: Left[] } {
-  const usable = playbooks.filter((p) => p.status !== "needs-attention" && p.steps.length > 0); // a notes-only site has no path to run
-  const shut = playbooks.filter((p) => p.status === "needs-attention" && p.steps.length > 0);
+  // Status is per line: the route the line would run (invoice:<merchant>) if the playbook has one, else the default path.
+  const routeOf = (p: Pb, merchant: string) => { const slug = routeSlug(merchant); return slug ? p.routes?.[`invoice:${slug}`] : undefined; };
+  const attention = (p: Pb, merchant: string) => (routeOf(p, merchant) ?? p).status === "needs-attention";
   const routed: Routed[] = [], rest: Left[] = [];
   for (const line of lines) {
     if (!line.ok || !line.merchant || !line.date) { rest.push({ line, why: line.reason }); continue; }
-    const one = matchVendor(line.merchant, usable);
+    const m = line.merchant;
+    const usable = playbooks.filter((p) => hasPath(p) && !attention(p, m)); // a notes-only site has no path to run
+    const shut = playbooks.filter((p) => hasPath(p) && attention(p, m));
+    const one = matchVendor(m, usable);
     if (one.kind === "one") { routed.push({ line, site: one.site, trial: false }); continue; }
     if (one.kind === "many") { rest.push({ line, why: "more than one saved site claims it" }); continue; }
-    const trials = usable.filter((p) => pendingKeywords(p, line.merchant!).length > 0);
-    if (trials.length === 1) routed.push({ line, site: trials[0]!.site, trial: true, keyword: trialKeyword(trials[0], line.merchant!) });
+    const trials = usable.filter((p) => pendingKeywords(p, m).length > 0);
+    if (trials.length === 1) routed.push({ line, site: trials[0]!.site, trial: true, keyword: trialKeyword(trials[0], m) });
     else {
-      const skipped = matchVendor(line.merchant, shut);
+      const skipped = matchVendor(m, shut);
       const pb = skipped.kind === "one" ? shut.find((p) => p.site === skipped.site) : undefined;
+      const r = pb && routeOf(pb, m);
       const last = [...(pb?.history ?? [])].reverse().find((h) => h.summary.startsWith(HISTORY.replayFailed))?.summary.replace(new RegExp(`^${HISTORY.replayFailed}:?\\s*`), "");
-      rest.push(pb ? { line, why: `skipped: ${pb.site} needs attention after ${pb.failCount ?? 0} failures${last ? ` (last: ${last})` : ""}`, site: pb.site } : { line });
+      rest.push(pb ? { line, why: `skipped: ${r ? `the ${pb.site} route invoice:${routeSlug(m)}` : pb.site} needs attention after ${(r ?? pb).failCount ?? 0} failures${last ? ` (last: ${last})` : ""}`, site: pb.site } : { line });
     }
   }
   return { routed, rest };
@@ -70,7 +75,7 @@ export function routeLines(lines: ParsedLine[], playbooks: Pb[]): { routed: Rout
 export async function batchGate(consent: PlaybookRunConsent, routed: Routed[], playbooks: Pb[], ask: (text: string, sites: string[]) => Promise<boolean>): Promise<boolean> {
   if (!routed.length || consent.policy()) return false;
   const sites = [...new Set(routed.map((r) => r.site))];
-  const signIn = (s: string) => (playbooks.find((p) => p.site === s)?.steps ?? []).some((st) => st.kind === "signIn");
+  const signIn = (s: string) => ((p) => [...(p?.steps ?? []), ...Object.values(p?.routes ?? {}).flatMap((r) => r.steps)])(playbooks.find((p) => p.site === s)).some((st) => st.kind === "signIn");
   if (sites.some((s) => playbookConsent(consent.approvalMode(), consent.confirmSignIns(), signIn(s)).decision === "refuse")) return false;
   // Full access: only forced sign-in asks are left, and they are asked per site.
   if (consent.approvalMode() === "full-access") return true;

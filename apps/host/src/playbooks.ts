@@ -4,8 +4,8 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { getDomain } from "tldts";
 import { rateFor as fxRate } from "@pista/pi-browser";
-import type { MerchantRefusal, Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
-import { BROAD_REASONS, broadReason, checkMerchant, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, mostSpecificKeyword, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
+import type { MerchantRefusal, Playbook, PlaybookExpect, PlaybookLocator, PlaybookMeta, PlaybookRoute, PlaybookShortcut, PlaybookStep } from "@pista/protocol";
+import { BROAD_REASONS, broadReason, checkMerchant, cleanMerchant, cleanMerchants, cleanUserMerchants, keywordMatches, merchantKeyword, mostSpecificKeyword, MAX_MERCHANT_INPUT, MAX_MERCHANT_INPUT_CHARS, MAX_MERCHANTS, type BroadContext } from "./merchants.ts";
 import { CLIENT_DIR } from "./pi-env.ts";
 
 /** Consecutive failures after which a playbook is flagged "needs-attention". */
@@ -333,6 +333,7 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
   const billing = bi && typeof bi.currency === "string" && /^[A-Z]{3}$/.test(bi.currency) && typeof bi.dayOffset === "number" && Number.isFinite(bi.dayOffset) && typeof bi.samples === "number" && Number.isInteger(bi.samples) && bi.samples >= 0
     ? { currency: bi.currency, dayOffset: bi.dayOffset, ...(typeof bi.rate === "number" && Number.isFinite(bi.rate) && bi.rate > 0 && typeof bi.rateTo === "string" && /^[A-Z]{3}$/.test(bi.rateTo) ? { rate: bi.rate, rateTo: bi.rateTo } : {}), samples: bi.samples }
     : undefined;
+  const routes = cleanRoutes(o.routes, hosts);
   return {
     version: 1,
     site,
@@ -354,8 +355,112 @@ export function validatePlaybook(input: unknown, site: string): Playbook {
     successCount: count(o.successCount),
     failCount: count(o.failCount),
     status: o.status === "needs-attention" ? "needs-attention" : "ok",
+    ...(routes ? { routes } : {}),
     history,
   };
+}
+
+// ---- Routes: several learned strategies under one site, keyed by task. The playbook's top-level fields are the default route. ----
+
+export const ROUTE_KEY = /^[a-z0-9][a-z0-9:._-]{0,63}$/;
+export const MAX_ROUTES = 12;
+let warnedCap = false;
+
+export function assertRouteKey(key: unknown): asserts key is string {
+  if (typeof key !== "string" || !ROUTE_KEY.test(key)) throw new Error("invalid route key (use <task> or <task>:<qualifier>: lowercase letters, digits and : . _ -, at most 64 characters)");
+}
+
+/** Keeps the routes that are valid; a bad key or a route that does not parse is dropped, as a bad playbook file is treated as absent. */
+function cleanRoutes(v: unknown, hosts: Sites): Record<string, PlaybookRoute> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, PlaybookRoute> = {};
+  const date = (x: unknown) => (typeof x === "string" && !Number.isNaN(Date.parse(x)) ? x : undefined);
+  const count = (x: unknown) => (typeof x === "number" && Number.isInteger(x) && x >= 0 ? x : 0);
+  for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!ROUTE_KEY.test(key)) continue;
+    if (Object.keys(out).length >= MAX_ROUTES) {
+      if (!warnedCap) console.warn(`[playbooks] more than ${MAX_ROUTES} routes in a playbook; the rest are ignored`);
+      warnedCap = true;
+      break;
+    }
+    try {
+      const r = obj(raw);
+      if (!Array.isArray(r.steps) || !r.steps.length || r.steps.length > MAX_STEPS) continue;
+      const steps = r.steps.flatMap((x) => step(x, hosts) ?? []);
+      const shortcut = shortcutOf(r.shortcut, hosts, steps), candidate = shortcutOf(r.shortcutCandidate, hosts, steps);
+      out[key] = {
+        startUrl: sanitizeUrl(String(r.startUrl), hosts),
+        steps,
+        ...(shortcut ? { shortcut, ...(count(r.shortcutFails) ? { shortcutFails: count(r.shortcutFails) } : {}) } : candidate ? { shortcutCandidate: candidate } : {}),
+        ...(date(r.lastSucceeded) ? { lastSucceeded: date(r.lastSucceeded) } : {}),
+        successCount: count(r.successCount),
+        failCount: count(r.failCount),
+        status: r.status === "needs-attention" ? "needs-attention" : "ok",
+        updatedAt: date(r.updatedAt) ?? new Date().toISOString(),
+      };
+    } catch {}
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** True when the playbook has a path to follow: default steps or at least one route. A notes-only playbook has none. */
+export const hasPath = (pb: Pick<Playbook, "steps" | "routes">): boolean => pb.steps.length > 0 || Object.keys(pb.routes ?? {}).length > 0;
+
+/** The playbook as the replay sees one route: the route's fields laid over the shared ones (site, hosts, merchants, notes, billing). */
+export function withRoute(pb: Playbook, route: PlaybookRoute): Playbook {
+  const { shortcut: _s, shortcutCandidate: _c, shortcutFails: _f, lastSucceeded: _l, ...base } = pb;
+  return { ...base, ...route };
+}
+
+/** The route `key` of a playbook; undefined means the default route (the top-level fields). */
+export function getRoute(pb: Playbook, key?: string): PlaybookRoute | undefined {
+  if (key === undefined) {
+    const { startUrl, steps, shortcut, shortcutCandidate, shortcutFails, lastSucceeded, successCount, failCount, status, updatedAt } = pb;
+    return { startUrl, steps, shortcut, shortcutCandidate, shortcutFails, lastSucceeded, successCount, failCount, status, updatedAt };
+  }
+  return Object.hasOwn(pb.routes ?? {}, key) ? pb.routes![key] : undefined;
+}
+
+/** Stores a route on the playbook (in memory; save it with savePlaybook). `key` undefined writes the default route. Throws on a bad key or too many routes. */
+export function setRoute(pb: Playbook, key: string | undefined, route: PlaybookRoute): void {
+  if (key === undefined) {
+    const { shortcut, shortcutCandidate, shortcutFails, lastSucceeded, ...rest } = route;
+    delete pb.shortcut; delete pb.shortcutCandidate; delete pb.shortcutFails; delete pb.lastSucceeded;
+    Object.assign(pb, rest, { ...(shortcut ? { shortcut } : {}), ...(shortcutCandidate ? { shortcutCandidate } : {}), ...(shortcutFails ? { shortcutFails } : {}), ...(lastSucceeded ? { lastSucceeded } : {}) });
+    return;
+  }
+  assertRouteKey(key);
+  if (!pb.routes?.[key] && Object.keys(pb.routes ?? {}).length >= MAX_ROUTES) throw new Error(`too many routes (max ${MAX_ROUTES})`);
+  pb.routes = { ...pb.routes, [key]: route };
+}
+
+/** `invoice:`-style qualifier for a merchant: its keyword as lowercase a-z0-9 and dashes, at most 40 characters. */
+export function routeSlug(merchant: unknown): string | undefined {
+  const kw = typeof merchant === "string" ? merchantKeyword(merchant) : undefined;
+  const slug = kw?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 40).replace(/-+$/, "");
+  return slug || undefined;
+}
+
+/** The route key capture uses for an invoice: `invoice:<merchant-slug>` when the merchant is known and the site is not its own (a mailbox or billing host), else undefined (the default route). The merchant's own domain is judged by name: the site's name contains the merchant's first word, or the merchant's first word is the site's name. */
+export function autoRouteKey(merchant: unknown, site: string): string | undefined {
+  const slug = routeSlug(merchant);
+  if (!slug) return undefined;
+  const label = site.split(".")[0]!.replace(/[^a-z0-9]/g, ""), first = slug.split("-")[0]!, flat = slug.replace(/-/g, "");
+  const own = (first.length >= 3 && label.includes(first)) || (label.length >= 3 && first === label);
+  return own ? undefined : `invoice:${slug}`;
+}
+
+/** Which route a run uses: the explicit one (an error when it does not exist), else `invoice:<slug>` for the merchant when the playbook has it, else the default. `view` is the playbook laid out for that route. */
+export function selectRoute(pb: Playbook, explicit?: unknown, merchant?: unknown): { key?: string; view: Playbook } | { error: string } {
+  if (explicit !== undefined && explicit !== null && explicit !== "") {
+    if (typeof explicit !== "string" || !ROUTE_KEY.test(explicit)) return { error: "invalid route key" };
+    const r = getRoute(pb, explicit);
+    if (!r) return { error: `No route ${explicit} for ${pb.site}. Routes: ${Object.keys(pb.routes ?? {}).join(", ") || "none"}.` };
+    return { key: explicit, view: withRoute(pb, r) };
+  }
+  const slug = routeSlug(merchant), key = slug ? `invoice:${slug}` : undefined;
+  const r = key ? getRoute(pb, key) : undefined;
+  return r && key ? { key, view: withRoute(pb, r) } : { view: pb };
 }
 
 function fileFor(site: string): string {
@@ -408,7 +513,7 @@ export function listPlaybooks(): PlaybookMeta[] {
     if (!n.endsWith(".json")) continue;
     const pb = getPlaybook(n.slice(0, -5));
     if (!pb) continue;
-    out.push({ site: pb.site, ...(pb.hosts.length > 1 ? { hosts: pb.hosts } : {}), startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), ...(pb.merchants ? { merchants: pb.merchants } : {}), ...(pb.merchantsPending ? { merchantsPending: pb.merchantsPending } : {}), ...(pb.merchantsPendingWhy ? { merchantsPendingWhy: pb.merchantsPendingWhy } : {}), stepCount: pb.steps.length, status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
+    out.push({ site: pb.site, ...(pb.hosts.length > 1 ? { hosts: pb.hosts } : {}), startUrl: pb.startUrl, ...(pb.shortcut ? { shortcutUrl: pb.shortcut.url } : {}), ...(pb.merchants ? { merchants: pb.merchants } : {}), ...(pb.merchantsPending ? { merchantsPending: pb.merchantsPending } : {}), ...(pb.merchantsPendingWhy ? { merchantsPendingWhy: pb.merchantsPendingWhy } : {}), stepCount: pb.steps.length, ...(pb.routes ? { routeCount: Object.keys(pb.routes).length } : {}), status: pb.status, lastSucceeded: pb.lastSucceeded, successCount: pb.successCount, failCount: pb.failCount, updatedAt: pb.updatedAt });
   }
   return out.sort((a, b) => a.site.localeCompare(b.site));
 }
@@ -473,8 +578,9 @@ function mutate(site: string, fn: (pb: Playbook, now: string) => void): Playbook
 }
 
 /** `how` is the match sentence (see matchSentence), kept in the history. `match` updates the billing facts: from an amount-verified run, and a learned rate that did not verify is dropped. */
-export function recordSuccess(site: string, how?: string, match?: { to?: string; rowCurrency?: string; offsetDays?: number; fxRateImplied?: number; matchedBy?: readonly string[]; amountVerified: boolean }): Playbook | null {
+export function recordSuccess(site: string, how?: string, match?: { to?: string; rowCurrency?: string; offsetDays?: number; fxRateImplied?: number; matchedBy?: readonly string[]; amountVerified: boolean }, route?: string): Playbook | null {
   return mutate(site, (pb, now) => {
+    const t = route === undefined ? pb : pb.routes?.[route]; // counters and status belong to the route that ran
     const b = pb.billing, cur = match?.rowCurrency, to = match?.to?.toUpperCase();
     if (match && !match.amountVerified && b?.rate && b.rateTo === to) pb.billing = { currency: b.currency, dayOffset: b.dayOffset, samples: 0 }; // a bad learned rate must not stick
     else if (match?.amountVerified && cur && match.offsetDays !== undefined && Number.isFinite(match.offsetDays)) {
@@ -488,20 +594,25 @@ export function recordSuccess(site: string, how?: string, match?: { to?: string;
       const next = oldRate !== undefined ? mix(oldRate, implied ?? oldRate) : seeded ? implied : undefined;
       pb.billing = { currency: cur, dayOffset: Math.round(mix(same && !moved ? b?.dayOffset : undefined, match.offsetDays) * 10) / 10, ...(next !== undefined ? { rate: Number(next.toPrecision(6)), rateTo: oldRate !== undefined ? b!.rateTo : to } : {}), samples: (same && !moved ? b!.samples : 0) + 1 };
     }
-    pb.successCount++;
-    pb.failCount = 0;
-    pb.status = "ok";
-    pb.lastSucceeded = now;
+    if (t) {
+      t.successCount++;
+      t.failCount = 0;
+      t.status = "ok";
+      t.lastSucceeded = now;
+      t.updatedAt = now;
+    }
     pb.history.push({ at: now, summary: how ? HISTORY.replaySucceededBy(how) : HISTORY.replaySucceeded });
   });
 }
 
 /** Logs a failed replay; `count` false keeps the reason in the history without counting it against the playbook. */
-export function recordFailure(site: string, reason?: string, count = true): Playbook | null {
+export function recordFailure(site: string, reason?: string, count = true, route?: string): Playbook | null {
   return mutate(site, (pb, now) => {
-    if (count) {
-      pb.failCount++;
-      if (pb.failCount >= FAIL_THRESHOLD) pb.status = "needs-attention";
+    const t = route === undefined ? pb : pb.routes?.[route];
+    if (count && t) {
+      t.failCount++;
+      if (t.failCount >= FAIL_THRESHOLD) t.status = "needs-attention";
+      t.updatedAt = now;
     }
     pb.history.push({ at: now, summary: reason ? `${HISTORY.replayFailed}: ${reason}` : HISTORY.replayFailed });
   });
