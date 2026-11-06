@@ -48,7 +48,7 @@ export function Workspace({ drawerWidth }: { drawerWidth?: number }) {
 }
 
 /** Latest frame of the agent's Chrome, shared by the live view and the tab strip. */
-const useChromeFrame = create<{ frame: BrowserFrame | null }>(() => ({ frame: null }));
+const useChromeFrame = create<{ frame: BrowserFrame | null; closed: boolean }>(() => ({ frame: null, closed: false }));
 
 /** The tab strip plus panel controls. `lead` (nav buttons) is shown first when the sidebar is closed. */
 export function WorkspaceTabs({ lead, underTraffic }: { lead?: ReactNode; underTraffic?: boolean }) {
@@ -165,11 +165,16 @@ function TabButton({ tab, active, chrome }: { tab: PanelTab; active: boolean; ch
 /** Read-only live view of the agent's Chrome tab; clicking it brings Chrome to the front. */
 function ChromeLiveView({ visible }: { visible: boolean }) {
   const frame = useChromeFrame((s) => s.frame);
-  const setFrame = (f: BrowserFrame | null) => useChromeFrame.setState({ frame: f });
+  const closed = useChromeFrame((s) => s.closed);
+  const [notice, setNotice] = useState(false);
+  const setFrame = (f: BrowserFrame | null, closed = false) => useChromeFrame.setState({ frame: f, closed });
   // Subscribed only while the tab is showing; the host runs the screencast only while someone is subscribed.
   useEffect(() => {
     if (!visible) return;
-    const off = host.on((event) => event.type === "browser.frame" && setFrame(event));
+    const off = host.on((event) => {
+      if (event.type === "browser.frame") setFrame(event);
+      else if (event.type === "browser.closed") setFrame(null, true);
+    });
     const subscribe = () => void host.call("browser.view", { subscribe: true }).catch(() => {});
     subscribe();
     const offStatus = host.onStatus((connected) => connected && subscribe()); // a new socket starts unsubscribed
@@ -180,7 +185,16 @@ function ChromeLiveView({ visible }: { visible: boolean }) {
       void host.call("browser.view", { subscribe: false }).catch(() => {});
     };
   }, [visible]);
-  const show = () => void host.call("browser.showChrome", {}).catch(() => {});
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(false), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  const show = () =>
+    void host
+      .call("browser.showChrome", {})
+      .then((r) => setNotice(!r.shown))
+      .catch(() => setNotice(true));
   return (
     <>
       <div className="browser-toolbar">
@@ -192,10 +206,16 @@ function ChromeLiveView({ visible }: { visible: boolean }) {
         </button>
       </div>
       <div className="browser-surface" style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "#111" }}>
+        {notice && (
+          <div className="browser-notice" role="status">
+            <Info size={15} />
+            <span>Chrome is not running. It opens on the agent's next browser step.</span>
+          </div>
+        )}
         {frame ? (
           <img src={frameSrc(frame)} alt={frame.title || "Agent browser"} onClick={show} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", cursor: "pointer" }} />
         ) : (
-          <div className="workspace-empty">The agent's Chrome appears here once it opens a page.</div>
+          <div className="workspace-empty">{closed ? "The agent's Chrome closed." : "The agent's Chrome appears here once it opens a page."}</div>
         )}
       </div>
     </>

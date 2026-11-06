@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CdpDriver, ChromeDriver, type BrowserDriver } from "@pista/pi-browser";
-import { createBrowserDriver, PaneBrowserDriver, resolveBrowserDriverConfig, resolveBrowserEngine } from "./browser-driver.ts";
+import { bringChromeToFront, createBrowserDriver, PaneBrowserDriver, resolveBrowserDriverConfig, resolveBrowserEngine } from "./browser-driver.ts";
 import type { Hub } from "./hub.ts";
 
 const found = () => ({ kind: "chrome" as const, path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const none = () => null;
+
+test("showing Chrome is false while no Chrome driver exists", async () => {
+  assert.equal(await bringChromeToFront(), false);
+});
 
 test("the env var pane selects the pane driver", () => {
   assert.deepEqual(resolveBrowserDriverConfig({ PISTA_BROWSER_DRIVER: "pane" }), { kind: "pane" });

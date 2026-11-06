@@ -96,6 +96,7 @@ test("a real invoice-fetch thread from create() refuses reads outside its projec
 
 test("invoice role: lists logins through browser_logins before any search, and keeps the secrets rules", () => {
   assert.ok(INVOICE_FETCH_ROLE.tools.includes("browser_logins"));
+  assert.ok(INVOICE_FETCH_ROLE.tools.includes("browser_show_user"));
   const p = INVOICE_FETCH_ROLE.prompt ?? "";
   assert.match(p, /call browser_logins once/);
   assert.match(p, /before any web search/);

@@ -282,7 +282,7 @@ const handlers: { [M in MethodName]: Handler<M> } = {
     hub.emit({ type: "approval.resolved", approvalId });
   },
   "browser.view": () => {}, // handled per socket in the dispatcher
-  "browser.showChrome": () => bringChromeToFront(),
+  "browser.showChrome": async () => ({ shown: await bringChromeToFront() }),
   "browser.respond": ({ requestId, ok, result, error }) =>
     hub.settle(requestId, ok ? (result ?? {}) : new Error(error ?? "Browser action failed")),
 };

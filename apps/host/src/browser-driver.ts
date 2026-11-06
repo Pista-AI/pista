@@ -113,9 +113,9 @@ export async function closeChromeDriver(timeoutMs = 9000): Promise<void> {
   clearTimeout(timer);
 }
 
-/** Brings the agent's Chrome to the front; a no-op for other drivers. */
-export async function bringChromeToFront(): Promise<void> {
-  await chromeDriver?.bringToFront(); // never launches Chrome: a browser that is not running has nothing to show
+/** Brings the agent's Chrome to the front; false when there is no running Chrome to show (or another driver is active). */
+export async function bringChromeToFront(): Promise<boolean> {
+  return (await chromeDriver?.bringToFront()) ?? false; // never launches Chrome: a browser that is not running has nothing to show
 }
 
 /** The single selection point: builds the driver for a thread according to the configuration. */
@@ -134,6 +134,7 @@ export function createBrowserDriver(config: BrowserDriverConfig, deps: { hub: Hu
         if (count > 0 && !stop) stop = created.onFrame((frame) => deps.hub.emitFrame(frame));
         else if (count === 0) (stop?.(), (stop = undefined));
       };
+      created.onClosed(() => deps.hub.emitClosed());
       deps.hub.onViewersChanged(apply);
       apply(deps.hub.viewerCount); // a window may have subscribed before this driver existed
     }
