@@ -167,7 +167,7 @@ const firstSentence = (s: string) => (s.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? s).sl
 /** Types `text` into a text-like control and reads it back. A secret field is refused by the type action itself; the value is never echoed. */
 async function fillText(io: FieldIo, ref: string, label: string, text: string): Promise<FieldOutcome> {
   const res = await io.act({ action: "type", target: ref, text });
-  if (res.note) return failed(label, /^Not typed:/.test(res.note) ? "secret field, not typed (the user types it in the pane)" : firstSentence(res.note), res.note);
+  if (res.note) return failed(label, /^Not typed:/.test(res.note) ? "secret field, not typed (the user types it in the browser)" : firstSentence(res.note), res.note);
   const now = (await io.probe(ref, true)).value ?? "";
   return norm(now) === norm(text) ? { ok: true, line: `${label} = ${show(now)} ✓` } : failed(label, `typed ${show(text)} but the field shows ${show(now)}`);
 }
@@ -176,7 +176,7 @@ async function fillText(io: FieldIo, ref: string, label: string, text: string): 
 export async function fillCombobox(io: FieldIo, ref: string, label: string, text: string): Promise<FieldOutcome> {
   if (io.choose) return fillComboboxChoose(io, io.choose, ref, label, text);
   const typed = await io.act({ action: "type", target: ref, text });
-  if (typed.note) return failed(label, /^Not typed:/.test(typed.note) ? "secret field, not typed (the user types it in the pane)" : firstSentence(typed.note), typed.note);
+  if (typed.note) return failed(label, /^Not typed:/.test(typed.note) ? "secret field, not typed (the user types it in the browser)" : firstSentence(typed.note), typed.note);
   let marked = (await io.eval(markOptionScript(ref, text))) as { label: string; offered: string[]; count: number };
   for (let waited = 0; !marked.label && waited < SUGGESTION_WAIT_MS; waited += SUGGESTION_POLL_MS) {
     await sleep(SUGGESTION_POLL_MS);
@@ -366,7 +366,7 @@ export function registerFillTool(pi: ExtensionAPI, deps: FillDeps, respond: (sta
       name: "browser_fill",
       label: "Browser: fill form",
       description:
-        "Fill several form fields in one call, in order, then optionally press a submit button. Each field is {ref, value}: text inputs and textareas are typed, dropdowns choose the option with that visible text, checkboxes and radios take \"true\"/\"false\" or their label, a combobox with a suggestion list is typed and the best-matching suggestion is picked. Every field is read back and reported as one line (✓ or ✗). The first field that fails stops the batch and nothing is submitted; fix it and call again with the remaining fields. Password, card, code and PIN fields are refused: the user types those in the pane. A submit that looks like buying, paying, sending, deleting or signing in is held for the user's approval like browser_click. Refs come from browser_snapshot and stay valid for the whole call.",
+        "Fill several form fields in one call, in order, then optionally press a submit button. Each field is {ref, value}: text inputs and textareas are typed, dropdowns choose the option with that visible text, checkboxes and radios take \"true\"/\"false\" or their label, a combobox with a suggestion list is typed and the best-matching suggestion is picked. Every field is read back and reported as one line (✓ or ✗). The first field that fails stops the batch and nothing is submitted; fix it and call again with the remaining fields. Password, card, code and PIN fields are refused: the user types those in the browser. A submit that looks like buying, paying, sending, deleting or signing in is held for the user's approval like browser_click. Refs come from browser_snapshot and stay valid for the whole call.",
       promptSnippet: "browser_fill: fill several form fields (and optionally submit) in one call",
       parameters: Type.Object({
         fields: Type.Array(Type.Object({ ref: Type.String({ description: "Ref from browser_snapshot, e.g. e7" }), value: Type.String({ description: "Text to type, option to choose, or true/false for a checkbox" }) }), { description: "Fields in the order to fill them" }),

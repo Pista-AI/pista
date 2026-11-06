@@ -241,7 +241,7 @@ export function registerBrowserTools(api: ExtensionAPI, rawDriver: () => Browser
     defineTool({
       name: "browser_type",
       label: "Browser: type",
-      description: "Replace the text in an input by its snapshot ref; set submit to press Enter afterwards (held for the user's approval if it would press a buying, paying, sending or deleting button). Password fields are refused: the user types those in the pane.",
+      description: "Replace the text in an input by its snapshot ref; set submit to press Enter afterwards (held for the user's approval if it would press a buying, paying, sending or deleting button). Password fields are refused: the user types those in the browser.",
       parameters: Type.Object({
         ref: Type.String({ description: "Ref from browser_snapshot, e.g. e7 (a CSS selector also works)" }),
         text: Type.String(),

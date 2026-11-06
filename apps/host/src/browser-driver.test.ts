@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CdpDriver, ChromeDriver, type BrowserDriver } from "@pista/pi-browser";
-import { bringChromeToFront, createBrowserDriver, PaneBrowserDriver, resolveBrowserDriverConfig, resolveBrowserEngine } from "./browser-driver.ts";
+import { bringChromeToFront, closeChromeDriver, createBrowserDriver, PaneBrowserDriver, resolveBrowserDriverConfig, resolveBrowserEngine } from "./browser-driver.ts";
 import type { Hub } from "./hub.ts";
 
 const found = () => ({ kind: "chrome" as const, path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const none = () => null;
 
 test("showing Chrome is false while no Chrome driver exists", async () => {
+  await closeChromeDriver();
   assert.equal(await bringChromeToFront(), false);
 });
 

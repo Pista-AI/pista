@@ -167,7 +167,7 @@ function ChromeLiveView({ visible }: { visible: boolean }) {
   const frame = useChromeFrame((s) => s.frame);
   const closed = useChromeFrame((s) => s.closed);
   const [notice, setNotice] = useState(false);
-  const setFrame = (f: BrowserFrame | null, closed = false) => useChromeFrame.setState({ frame: f, closed });
+  const setFrame = (f: BrowserFrame | null, isClosed = false) => useChromeFrame.setState({ frame: f, closed: isClosed });
   // Subscribed only while the tab is showing; the host runs the screencast only while someone is subscribed.
   useEffect(() => {
     if (!visible) return;
